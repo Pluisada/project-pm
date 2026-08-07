@@ -7,7 +7,7 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
-  closestCorners,
+  closestCenter,
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
@@ -23,9 +23,18 @@ import {
   type CardResponse,
 } from "@/lib/api";
 
+// Columns and cards are separate DB tables, each with its own autoincrement
+// id sequence, so a column and a card can share the same numeric id (e.g.
+// column 1 and card 1). dnd-kit registers every draggable/droppable in a
+// single id-keyed map, so passing raw numeric ids causes silent collisions
+// — one entity's drop target clobbers the other's. Prefixing keeps the two
+// id spaces distinct.
+const colDndId = (id: number) => `col-${id}`;
+const cardDndId = (id: number) => `card-${id}`;
+
 export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
   const [board, setBoard] = useState<BoardDetail | null>(null);
-  const [activeCardId, setActiveCardId] = useState<string | null>(null);
+  const [activeCardId, setActiveCardId] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -65,7 +74,8 @@ export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
   }, [board]);
 
   const handleDragStart = (event: DragStartEvent) => {
-    setActiveCardId(event.active.id as string);
+    const raw = event.active.id as string;
+    setActiveCardId(raw.startsWith("card-") ? Number(raw.slice(5)) : null);
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
@@ -76,17 +86,26 @@ export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
       return;
     }
 
-    const cardId = active.id as number;
+    const activeRaw = active.id as string;
+    if (!activeRaw.startsWith("card-")) return;
+    const cardId = Number(activeRaw.slice(5));
     const card = cardsById[cardId];
     if (!card) return;
 
-    // Determine target column and position
-    const overColumn = board.columns.find((col) =>
-      col.cards?.some((c) => c.id === over.id)
-    );
-    const targetColumn = over.id
-      ? board.columns.find((col) => col.id === over.id) || overColumn
-      : null;
+    // over.id is either a column's own droppable (dropped on empty column
+    // area) or a card's droppable (dropped on/near another card) — resolve
+    // both prefixed forms to find which column we're targeting.
+    const overRaw = over.id as string;
+    let targetColumn;
+    if (overRaw.startsWith("col-")) {
+      const overColumnId = Number(overRaw.slice(4));
+      targetColumn = board.columns.find((col) => col.id === overColumnId);
+    } else if (overRaw.startsWith("card-")) {
+      const overCardId = Number(overRaw.slice(5));
+      targetColumn = board.columns.find((col) =>
+        col.cards?.some((c) => c.id === overCardId)
+      );
+    }
 
     if (!targetColumn) return;
 
@@ -222,7 +241,7 @@ export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
     );
   }
 
-  const activeCard = activeCardId ? cardsById[activeCardId as unknown as number] : null;
+  const activeCard = activeCardId ? cardsById[activeCardId] : null;
 
   return (
     <div className="relative overflow-hidden">
@@ -267,7 +286,7 @@ export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
 
         <DndContext
           sensors={sensors}
-          collisionDetection={closestCorners}
+          collisionDetection={closestCenter}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
         >
@@ -276,21 +295,23 @@ export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
               <KanbanColumn
                 key={column.id}
                 column={{
-                  id: String(column.id),
+                  id: colDndId(column.id),
                   title: column.title,
-                  cardIds: column.cards?.map((c) => String(c.id)) || [],
+                  cardIds: column.cards?.map((c) => cardDndId(c.id)) || [],
                 }}
-                cards={column.cards?.map((c) => ({ ...c, id: String(c.id), details: c.details || "No details yet." })) || []}
-                onRename={(colId, title) => handleRenameColumn(Number(colId), title)}
-                onAddCard={(colId, title, details) => handleAddCard(Number(colId), title, details)}
-                onDeleteCard={(colId, cardId) => handleDeleteCard(Number(colId), Number(cardId))}
+                cards={column.cards?.map((c) => ({ ...c, id: cardDndId(c.id), details: c.details || "No details yet." })) || []}
+                onRename={(_colId, title) => handleRenameColumn(column.id, title)}
+                onAddCard={(_colId, title, details) => handleAddCard(column.id, title, details)}
+                onDeleteCard={(_colId, cardDndIdValue) =>
+                  handleDeleteCard(column.id, Number(cardDndIdValue.slice(5)))
+                }
               />
             ))}
           </section>
           <DragOverlay>
             {activeCard ? (
               <div className="w-[260px]">
-                <KanbanCardPreview card={{ ...activeCard, id: String(activeCard.id), details: activeCard.details || "No details yet." }} />
+                <KanbanCardPreview card={{ ...activeCard, id: cardDndId(activeCard.id), details: activeCard.details || "No details yet." }} />
               </div>
             ) : null}
           </DragOverlay>

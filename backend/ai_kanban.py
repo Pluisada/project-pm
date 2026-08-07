@@ -3,7 +3,8 @@ import json
 from typing import Optional
 from sqlalchemy.orm import Session
 
-from models import BoardDetail, ConversationMessage, Card, Column
+from models import ConversationMessage, Card, BoardColumn as Column
+from schemas import BoardDetail
 from database import SessionLocal
 from ai import call_ai, AIError
 
@@ -104,18 +105,23 @@ async def call_ai_with_board(
 Recent Conversation:
 {json.dumps(conversation_history, indent=2)}"""
 
-    messages = conversation_history + [
-        {
-            "role": "user",
-            "content": f"{context}\n\nUser's Request: {user_message}",
-        }
-    ]
+    messages = (
+        [{"role": "system", "content": SYSTEM_PROMPT}]
+        + conversation_history
+        + [
+            {
+                "role": "user",
+                "content": f"{context}\n\nUser's Request: {user_message}",
+            }
+        ]
+    )
 
     try:
         response = await call_ai(
             messages=messages,
             temperature=0.7,
             max_tokens=2000,
+            response_format="json_object",
         )
 
         # Parse AI response as JSON

@@ -5,6 +5,12 @@
 const TOKEN_KEY = "pm_auth_token";
 const USER_KEY = "pm_auth_user";
 
+// Em dev o frontend roda na 3000 e o backend na 8000, entao precisa da origem
+// completa. No build estatico o FastAPI serve os arquivos, entao mesma origem.
+export const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL ||
+  (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "");
+
 export interface LoginRequest {
   username: string;
   password: string;
@@ -48,7 +54,7 @@ export function getAuthState(): AuthState {
  * Login user with credentials
  */
 export async function login(credentials: LoginRequest): Promise<LoginResponse> {
-  const response = await fetch("/api/login", {
+  const response = await fetch(`${API_BASE_URL}/api/login`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -77,7 +83,7 @@ export async function logout(): Promise<void> {
 
   if (token) {
     try {
-      await fetch("/api/logout", {
+      await fetch(`${API_BASE_URL}/api/logout`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,

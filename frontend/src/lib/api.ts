@@ -2,9 +2,7 @@
  * Frontend API client for communicating with backend
  */
 
-import { getAuthHeader } from "./auth";
-
-const API_BASE_URL = typeof window !== "undefined" ? window.location.origin : "";
+import { API_BASE_URL, getAuthHeader } from "./auth";
 
 export interface ApiError {
   detail: string;

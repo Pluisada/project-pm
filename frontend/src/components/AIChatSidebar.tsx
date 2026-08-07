@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { type BoardDetail } from "@/lib/api";
+import { API_BASE_URL } from "@/lib/auth";
 
 interface Message {
   role: "user" | "assistant";
@@ -45,7 +46,7 @@ export const AIChatSidebar = ({ boardId, onBoardUpdate }: AIChatSidebarProps) =>
     setIsLoading(true);
 
     try {
-      const response = await fetch(`/api/boards/${boardId}/ai`, {
+      const response = await fetch(`${API_BASE_URL}/api/boards/${boardId}/ai`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -70,7 +71,7 @@ export const AIChatSidebar = ({ boardId, onBoardUpdate }: AIChatSidebarProps) =>
 
       // If AI made changes and we have a callback, fetch updated board
       if (data.actions_applied?.successful?.length > 0 && onBoardUpdate) {
-        const boardResponse = await fetch(`/api/boards/${boardId}`, {
+        const boardResponse = await fetch(`${API_BASE_URL}/api/boards/${boardId}`, {
           headers: {
             Authorization: `Bearer ${localStorage.getItem("pm_auth_token")}`,
           },

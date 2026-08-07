@@ -8,7 +8,14 @@
       "Bash(chmod +x \"/Users/pauloluisada/Library/Mobile Documents/com~apple~CloudDocs/CloudDocs/IA/Agentic Code Course/Projects/pm/verify_build.sh\")",
       "Bash(bash \"/Users/pauloluisada/Library/Mobile Documents/com~apple~CloudDocs/CloudDocs/IA/Agentic Code Course/Projects/pm/verify_build.sh\")",
       "Bash(chmod +x \"/Users/pauloluisada/Library/Mobile Documents/com~apple~CloudDocs/CloudDocs/IA/Agentic Code Course/Projects/pm/test.sh\")",
-      "Bash(python3 -m py_compile auth.py main.py test_auth.py)"
+      "Bash(python3 -m py_compile auth.py main.py test_auth.py)",
+      "Bash(ps eww *)",
+      "Bash(python3 -m json.tool)",
+      "Bash(python3 -c \"import ai_kanban; import ai; print\\('OK'\\)\")",
+      "Bash(python3 -c ' *)",
+      "mcp__context7__query-docs",
+      "mcp__chrome-devtools__new_page",
+      "mcp__chrome-devtools__take_snapshot"
     ]
   }
 }

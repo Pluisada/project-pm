@@ -7,7 +7,7 @@ import httpx
 
 # Configuration
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_BASE_URL = "https://openrouter.io/api/v1"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 MODEL_ID = "openai/gpt-oss-120b"
 REQUEST_TIMEOUT = 30.0
 
@@ -27,6 +27,7 @@ async def call_ai(
     messages: list[dict],
     temperature: float = 0.7,
     max_tokens: int = 2000,
+    response_format: Optional[str] = None,
 ) -> dict:
     """
     Call OpenRouter API with the configured model.
@@ -57,6 +58,9 @@ async def call_ai(
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+
+    if response_format == "json_object":
+        payload["response_format"] = {"type": "json_object"}
 
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
