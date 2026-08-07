@@ -1,0 +1,350 @@
+{
+  "version": "1.0.0",
+  "description": "Project Management MVP Database Schema",
+  "database_type": "SQLite (MVP), PostgreSQL (Production)",
+  "tables": {
+    "users": {
+      "description": "User accounts",
+      "columns": {
+        "id": {
+          "type": "INTEGER",
+          "constraint": "PRIMARY KEY AUTOINCREMENT",
+          "nullable": false,
+          "description": "Unique user ID"
+        },
+        "username": {
+          "type": "TEXT",
+          "constraint": "UNIQUE NOT NULL",
+          "nullable": false,
+          "description": "Unique username for login"
+        },
+        "password_hash": {
+          "type": "TEXT",
+          "nullable": false,
+          "description": "Hashed password (future: currently hardcoded)"
+        },
+        "email": {
+          "type": "TEXT",
+          "constraint": "UNIQUE",
+          "nullable": true,
+          "description": "User email address"
+        },
+        "full_name": {
+          "type": "TEXT",
+          "nullable": true,
+          "description": "User's full name"
+        },
+        "created_at": {
+          "type": "TIMESTAMP",
+          "default": "CURRENT_TIMESTAMP",
+          "nullable": false,
+          "description": "Account creation timestamp"
+        },
+        "updated_at": {
+          "type": "TIMESTAMP",
+          "default": "CURRENT_TIMESTAMP",
+          "nullable": false,
+          "description": "Last update timestamp"
+        }
+      },
+      "indexes": [
+        "username (UNIQUE)",
+        "email (UNIQUE)",
+        "created_at"
+      ]
+    },
+    "boards": {
+      "description": "Kanban boards (one per user for MVP)",
+      "columns": {
+        "id": {
+          "type": "INTEGER",
+          "constraint": "PRIMARY KEY AUTOINCREMENT",
+          "nullable": false,
+          "description": "Unique board ID"
+        },
+        "user_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES users(id) ON DELETE CASCADE",
+          "nullable": false,
+          "description": "Owner of the board"
+        },
+        "title": {
+          "type": "TEXT",
+          "nullable": false,
+          "default": "My Board",
+          "description": "Board name/title"
+        },
+        "description": {
+          "type": "TEXT",
+          "nullable": true,
+          "description": "Board description"
+        },
+        "created_at": {
+          "type": "TIMESTAMP",
+          "default": "CURRENT_TIMESTAMP",
+          "nullable": false,
+          "description": "Board creation timestamp"
+        },
+        "updated_at": {
+          "type": "TIMESTAMP",
+          "default": "CURRENT_TIMESTAMP",
+          "nullable": false,
+          "description": "Last update timestamp"
+        }
+      },
+      "indexes": [
+        "user_id",
+        "created_at"
+      ]
+    },
+    "columns": {
+      "description": "Kanban board columns (Backlog, In Progress, Done, etc.)",
+      "columns": {
+        "id": {
+          "type": "INTEGER",
+          "constraint": "PRIMARY KEY AUTOINCREMENT",
+          "nullable": false,
+          "description": "Unique column ID"
+        },
+        "board_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES boards(id) ON DELETE CASCADE",
+          "nullable": false,
+          "description": "Parent board"
+        },
+        "title": {
+          "type": "TEXT",
+          "nullable": false,
+          "description": "Column title (Backlog, In Progress, Done, etc.)"
+        },
+        "position": {
+          "type": "INTEGER",
+          "nullable": false,
+          "default": 0,
+          "description": "Column order (0, 1, 2, ...)"
+        },
+        "created_at": {
+          "type": "TIMESTAMP",
+          "default": "CURRENT_TIMESTAMP",
+          "nullable": false,
+          "description": "Column creation timestamp"
+        },
+        "updated_at": {
+          "type": "TIMESTAMP",
+          "default": "CURRENT_TIMESTAMP",
+          "nullable": false,
+          "description": "Last update timestamp"
+        }
+      },
+      "indexes": [
+        "board_id",
+        "(board_id, position)"
+      ]
+    },
+    "cards": {
+      "description": "Kanban cards (tasks/items)",
+      "columns": {
+        "id": {
+          "type": "INTEGER",
+          "constraint": "PRIMARY KEY AUTOINCREMENT",
+          "nullable": false,
+          "description": "Unique card ID"
+        },
+        "column_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES columns(id) ON DELETE CASCADE",
+          "nullable": false,
+          "description": "Parent column"
+        },
+        "title": {
+          "type": "TEXT",
+          "nullable": false,
+          "description": "Card title/task name"
+        },
+        "details": {
+          "type": "TEXT",
+          "nullable": true,
+          "description": "Card description/details"
+        },
+        "position": {
+          "type": "INTEGER",
+          "nullable": false,
+          "default": 0,
+          "description": "Card order within column"
+        },
+        "created_at": {
+          "type": "TIMESTAMP",
+          "default": "CURRENT_TIMESTAMP",
+          "nullable": false,
+          "description": "Card creation timestamp"
+        },
+        "updated_at": {
+          "type": "TIMESTAMP",
+          "default": "CURRENT_TIMESTAMP",
+          "nullable": false,
+          "description": "Last update timestamp"
+        }
+      },
+      "indexes": [
+        "column_id",
+        "(column_id, position)",
+        "created_at"
+      ]
+    },
+    "conversation_messages": {
+      "description": "AI chat conversation history",
+      "columns": {
+        "id": {
+          "type": "INTEGER",
+          "constraint": "PRIMARY KEY AUTOINCREMENT",
+          "nullable": false,
+          "description": "Unique message ID"
+        },
+        "board_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES boards(id) ON DELETE CASCADE",
+          "nullable": false,
+          "description": "Associated board"
+        },
+        "user_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES users(id) ON DELETE CASCADE",
+          "nullable": false,
+          "description": "Message author"
+        },
+        "role": {
+          "type": "TEXT",
+          "nullable": false,
+          "constraint": "CHECK(role IN ('user', 'assistant'))",
+          "description": "Message sender role (user or assistant/AI)"
+        },
+        "content": {
+          "type": "TEXT",
+          "nullable": false,
+          "description": "Message text content"
+        },
+        "metadata": {
+          "type": "TEXT",
+          "nullable": true,
+          "description": "JSON metadata (tokens used, model, etc.)"
+        },
+        "created_at": {
+          "type": "TIMESTAMP",
+          "default": "CURRENT_TIMESTAMP",
+          "nullable": false,
+          "description": "Message timestamp"
+        }
+      },
+      "indexes": [
+        "board_id",
+        "user_id",
+        "(board_id, created_at)",
+        "created_at"
+      ]
+    },
+    "card_actions": {
+      "description": "AI-suggested card actions (for auditing and undo)",
+      "columns": {
+        "id": {
+          "type": "INTEGER",
+          "constraint": "PRIMARY KEY AUTOINCREMENT",
+          "nullable": false,
+          "description": "Unique action ID"
+        },
+        "board_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES boards(id) ON DELETE CASCADE",
+          "nullable": false,
+          "description": "Associated board"
+        },
+        "message_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES conversation_messages(id) ON DELETE SET NULL",
+          "nullable": true,
+          "description": "AI message that triggered this action"
+        },
+        "action_type": {
+          "type": "TEXT",
+          "nullable": false,
+          "constraint": "CHECK(action_type IN ('create', 'update', 'move', 'delete'))",
+          "description": "Type of action performed"
+        },
+        "card_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES cards(id) ON DELETE SET NULL",
+          "nullable": true,
+          "description": "Card affected by action"
+        },
+        "changes": {
+          "type": "TEXT",
+          "nullable": true,
+          "description": "JSON with action details and changes"
+        },
+        "created_at": {
+          "type": "TIMESTAMP",
+          "default": "CURRENT_TIMESTAMP",
+          "nullable": false,
+          "description": "Action timestamp"
+        }
+      },
+      "indexes": [
+        "board_id",
+        "message_id",
+        "card_id",
+        "created_at"
+      ]
+    }
+  },
+  "relationships": {
+    "user_to_boards": {
+      "type": "one-to-many",
+      "from": "users.id",
+      "to": "boards.user_id",
+      "description": "One user can have multiple boards"
+    },
+    "board_to_columns": {
+      "type": "one-to-many",
+      "from": "boards.id",
+      "to": "columns.board_id",
+      "description": "One board contains multiple columns"
+    },
+    "column_to_cards": {
+      "type": "one-to-many",
+      "from": "columns.id",
+      "to": "cards.column_id",
+      "description": "One column contains multiple cards"
+    },
+    "board_to_messages": {
+      "type": "one-to-many",
+      "from": "boards.id",
+      "to": "conversation_messages.board_id",
+      "description": "One board has multiple conversation messages"
+    },
+    "user_to_messages": {
+      "type": "one-to-many",
+      "from": "users.id",
+      "to": "conversation_messages.user_id",
+      "description": "One user creates multiple messages"
+    },
+    "board_to_actions": {
+      "type": "one-to-many",
+      "from": "boards.id",
+      "to": "card_actions.board_id",
+      "description": "One board has multiple card actions"
+    }
+  },
+  "constraints": {
+    "cascade_delete": "Deleting a user or board will cascade delete all related data",
+    "unique_constraints": "username and email must be unique per user",
+    "foreign_keys": "All foreign keys enabled with appropriate cascade rules",
+    "timestamps": "All records have created_at and updated_at for audit trail"
+  },
+  "notes": {
+    "mvp": "Current MVP only uses 1 user (hardcoded), but schema supports multi-user",
+    "future_scaling": "Schema designed for PostgreSQL production deployment",
+    "json_fields": "metadata and changes fields store JSON for flexibility",
+    "conversation_history": "Supports full AI conversation history for context",
+    "audit_trail": "timestamps and card_actions table enable full audit trail",
+    "performance": "Indexes on frequently queried fields (user_id, board_id, created_at)"
+  }
+}

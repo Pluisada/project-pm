@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod +x \"/Users/pauloluisada/Library/Mobile Documents/com~apple~CloudDocs/CloudDocs/IA/Agentic Code Course/Projects/pm/scripts/start.sh\" \"/Users/pauloluisada/Library/Mobile Documents/com~apple~CloudDocs/CloudDocs/IA/Agentic Code Course/Projects/pm/scripts/stop.sh\")",
+      "Bash(npm run *)",
+      "Bash(npm install *)",
+      "Bash(python3 -m py_compile main.py test_main.py)",
+      "Bash(chmod +x \"/Users/pauloluisada/Library/Mobile Documents/com~apple~CloudDocs/CloudDocs/IA/Agentic Code Course/Projects/pm/verify_build.sh\")",
+      "Bash(bash \"/Users/pauloluisada/Library/Mobile Documents/com~apple~CloudDocs/CloudDocs/IA/Agentic Code Course/Projects/pm/verify_build.sh\")",
+      "Bash(chmod +x \"/Users/pauloluisada/Library/Mobile Documents/com~apple~CloudDocs/CloudDocs/IA/Agentic Code Course/Projects/pm/test.sh\")",
+      "Bash(python3 -m py_compile auth.py main.py test_auth.py)"
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.egg-info
+**/.pytest_cache
+**/.git
+**/.gitignore
+**/node_modules
+**/npm-debug.log
+**/yarn-error.log
+**/.next
+**/out
+**/dist
+**/.vscode
+**/.env
+**/pm.db
+**/.DS_Store
