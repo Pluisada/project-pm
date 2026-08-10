@@ -2,6 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+
 ## Project
 
 A Project Management MVP: a Kanban board with drag-and-drop, hardcoded single-user auth, and an AI chat sidebar that can create/edit/move cards. Next.js frontend, FastAPI backend serving the static Next.js export at `/`, SQLite database, packaged as a single Docker container. AI calls go through OpenRouter (`openai/gpt-oss-120b`).
