@@ -2,96 +2,75 @@
 
 import { useEffect, useState } from "react";
 import { getAuthState, logout } from "@/lib/auth";
-import { listBoards, type BoardResponse } from "@/lib/api";
+import { listBoards } from "@/lib/api";
 import { KanbanWithSidebar } from "@/components/KanbanWithSidebar";
 import { LoginPage } from "@/components/LoginPage";
 
+const LoadingScreen = ({ message }: { message: string }) => (
+  <div className="flex min-h-screen items-center justify-center">
+    <div className="text-center">
+      <div className="inline-block">
+        <div className="h-12 w-12 animate-spin rounded-full border-4 border-[var(--primary-blue)] border-t-transparent"></div>
+      </div>
+      <p className="mt-4 text-sm text-[var(--gray-text)]">{message}</p>
+    </div>
+  </div>
+);
+
 export const ProtectedRoute = () => {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [username, setUsername] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [boards, setBoards] = useState<BoardResponse[]>([]);
   const [selectedBoardId, setSelectedBoardId] = useState<number | null>(null);
-  const [boardsLoading, setBoardsLoading] = useState(false);
 
+  // Auth lives in localStorage, so it can only be read after mount — reading it
+  // during render would not match the prerendered static export.
   useEffect(() => {
-    // Check if user is already logged in
     const auth = getAuthState();
-    setIsAuthenticated(auth.isAuthenticated);
-    setUsername(auth.username);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setUsername(auth.isAuthenticated ? auth.username : null);
     setIsLoading(false);
   }, []);
 
-  // Load boards when authenticated
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!username) return;
 
     const loadBoards = async () => {
-      setBoardsLoading(true);
       try {
-        const data = await listBoards();
-        setBoards(data);
+        const boards = await listBoards();
         // Auto-select first board (MVP has 1 board)
-        if (data.length > 0 && !selectedBoardId) {
-          setSelectedBoardId(data[0].id);
+        if (boards.length > 0) {
+          setSelectedBoardId(boards[0].id);
         }
       } catch (err) {
         console.error("Failed to load boards", err);
-      } finally {
-        setBoardsLoading(false);
       }
     };
 
     loadBoards();
-  }, [isAuthenticated, selectedBoardId]);
-
-  const handleLoginSuccess = (user: string) => {
-    setUsername(user);
-    setIsAuthenticated(true);
-  };
+  }, [username]);
 
   const handleLogout = async () => {
     await logout();
-    setIsAuthenticated(false);
     setUsername(null);
-    setBoards([]);
     setSelectedBoardId(null);
   };
 
   if (isLoading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="text-center">
-          <div className="inline-block">
-            <div className="h-12 w-12 animate-spin rounded-full border-4 border-[var(--primary-blue)] border-t-transparent"></div>
-          </div>
-          <p className="mt-4 text-sm text-[var(--gray-text)]">Loading...</p>
-        </div>
-      </div>
-    );
+    return <LoadingScreen message="Loading..." />;
   }
 
-  if (!isAuthenticated || !username) {
-    return <LoginPage onLoginSuccess={handleLoginSuccess} />;
+  if (!username) {
+    return <LoginPage onLoginSuccess={setUsername} />;
   }
 
-  if (boardsLoading || !selectedBoardId) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="text-center">
-          <div className="inline-block">
-            <div className="h-12 w-12 animate-spin rounded-full border-4 border-[var(--primary-blue)] border-t-transparent"></div>
-          </div>
-          <p className="mt-4 text-sm text-[var(--gray-text)]">Loading boards...</p>
-        </div>
-      </div>
-    );
+  if (!selectedBoardId) {
+    return <LoadingScreen message="Loading boards..." />;
   }
 
   return (
-    <div className="relative">
+    <div className="flex h-screen flex-col">
       {/* Header with user info and logout */}
-      <div className="fixed right-0 top-0 z-50 flex items-center gap-4 p-4">
+      <div className="flex items-center justify-end gap-4 border-b border-[var(--stroke)] bg-white p-4">
         <span className="text-sm text-[var(--gray-text)]">
           Welcome, <span className="font-semibold text-[var(--navy-dark)]">{username}</span>
         </span>
@@ -104,7 +83,9 @@ export const ProtectedRoute = () => {
       </div>
 
       {/* Kanban board with AI sidebar */}
-      <KanbanWithSidebar boardId={selectedBoardId} />
+      <div className="min-h-0 flex-1">
+        <KanbanWithSidebar boardId={selectedBoardId} />
+      </div>
     </div>
   );
 };

@@ -208,3 +208,26 @@ export async function deleteCard(boardId: number, cardId: number): Promise<void>
     method: "DELETE",
   });
 }
+
+// ============================================================================
+// AI API
+// ============================================================================
+
+export interface AIChatResponse {
+  response: string;
+  // Empty object when the AI suggested no actions
+  actions_applied: {
+    successful?: { type: string }[];
+    failed?: { type: string }[];
+  };
+}
+
+export async function sendAIMessage(
+  boardId: number,
+  message: string
+): Promise<AIChatResponse> {
+  return apiCall<AIChatResponse>(`/api/boards/${boardId}/ai`, {
+    method: "POST",
+    body: JSON.stringify({ message }),
+  });
+}

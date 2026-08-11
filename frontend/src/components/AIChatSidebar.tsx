@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { type BoardDetail } from "@/lib/api";
-import { API_BASE_URL } from "@/lib/auth";
+import { sendAIMessage, type ApiError } from "@/lib/api";
 
 interface Message {
   role: "user" | "assistant";
@@ -12,87 +11,53 @@ interface Message {
 
 interface AIChatSidebarProps {
   boardId: number;
-  onBoardUpdate?: (board: BoardDetail) => void;
+  onBoardChange?: () => void;
 }
 
-export const AIChatSidebar = ({ boardId, onBoardUpdate }: AIChatSidebarProps) => {
+const TYPING_DOT_DELAYS = ["0s", "0.2s", "0.4s"];
+
+const EXAMPLE_PROMPTS = [
+  "Create a bug fix task",
+  "Move urgent items to In Progress",
+  "What's in the backlog?",
+];
+
+export const AIChatSidebar = ({ boardId, onBoardChange }: AIChatSidebarProps) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
-
   useEffect(() => {
-    scrollToBottom();
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const handleSendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const addMessage = (role: Message["role"], content: string) => {
+    setMessages((prev) => [...prev, { role, content, timestamp: new Date() }]);
+  };
+
+  const sendMessage = async () => {
     if (!input.trim() || isLoading) return;
 
-    const userMessage: Message = {
-      role: "user",
-      content: input,
-      timestamp: new Date(),
-    };
-
-    setMessages((prev) => [...prev, userMessage]);
+    const message = input;
+    addMessage("user", message);
     setInput("");
     setError(null);
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/boards/${boardId}/ai`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${localStorage.getItem("pm_auth_token")}`,
-        },
-        body: JSON.stringify({ message: input }),
-      });
+      const result = await sendAIMessage(boardId, message);
+      addMessage("assistant", result.response);
 
-      if (!response.ok) {
-        throw new Error("Failed to get AI response");
-      }
-
-      const data = await response.json();
-
-      const assistantMessage: Message = {
-        role: "assistant",
-        content: data.response,
-        timestamp: new Date(),
-      };
-
-      setMessages((prev) => [...prev, assistantMessage]);
-
-      // If AI made changes and we have a callback, fetch updated board
-      if (data.actions_applied?.successful?.length > 0 && onBoardUpdate) {
-        const boardResponse = await fetch(`${API_BASE_URL}/api/boards/${boardId}`, {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem("pm_auth_token")}`,
-          },
-        });
-
-        if (boardResponse.ok) {
-          const updatedBoard = await boardResponse.json();
-          onBoardUpdate(updatedBoard);
-        }
+      // The board is reloaded by the parent, so only signal that it changed
+      if (result.actions_applied?.successful?.length) {
+        onBoardChange?.();
       }
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Unknown error";
-      setError(errorMessage);
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: `Error: ${errorMessage}. Please try again.`,
-          timestamp: new Date(),
-        },
-      ]);
+      const detail = (err as ApiError).detail || "Failed to get AI response";
+      setError(detail);
+      addMessage("assistant", `Error: ${detail}. Please try again.`);
     } finally {
       setIsLoading(false);
     }
@@ -101,8 +66,13 @@ export const AIChatSidebar = ({ boardId, onBoardUpdate }: AIChatSidebarProps) =>
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSendMessage(e as any);
+      sendMessage();
     }
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    sendMessage();
   };
 
   const handleClearHistory = () => {
@@ -111,7 +81,7 @@ export const AIChatSidebar = ({ boardId, onBoardUpdate }: AIChatSidebarProps) =>
   };
 
   return (
-    <div className="flex h-screen flex-col border-l border-[var(--stroke)] bg-white/50 backdrop-blur">
+    <div className="flex h-full flex-col border-l border-[var(--stroke)] bg-white/50 backdrop-blur">
       {/* Header */}
       <div className="border-b border-[var(--stroke)] px-6 py-4">
         <h2 className="text-lg font-semibold text-[var(--navy-dark)]">AI Assistant</h2>
@@ -131,9 +101,9 @@ export const AIChatSidebar = ({ boardId, onBoardUpdate }: AIChatSidebarProps) =>
               <div className="mt-4 space-y-2 text-xs text-[var(--gray-text)]">
                 <p className="font-semibold text-[var(--navy-dark)]">Try asking:</p>
                 <ul className="space-y-1">
-                  <li>• "Create a bug fix task"</li>
-                  <li>• "Move urgent items to In Progress"</li>
-                  <li>• "What's in the backlog?"</li>
+                  {EXAMPLE_PROMPTS.map((prompt) => (
+                    <li key={prompt}>{`• "${prompt}"`}</li>
+                  ))}
                 </ul>
               </div>
             </div>
@@ -168,9 +138,13 @@ export const AIChatSidebar = ({ boardId, onBoardUpdate }: AIChatSidebarProps) =>
               <div className="flex justify-start">
                 <div className="rounded-2xl bg-[var(--surface)] px-4 py-3">
                   <div className="flex gap-1">
-                    <div className="h-2 w-2 rounded-full bg-[var(--primary-blue)] animate-bounce" />
-                    <div className="h-2 w-2 rounded-full bg-[var(--primary-blue)] animate-bounce" style={{ animationDelay: "0.2s" }} />
-                    <div className="h-2 w-2 rounded-full bg-[var(--primary-blue)] animate-bounce" style={{ animationDelay: "0.4s" }} />
+                    {TYPING_DOT_DELAYS.map((delay) => (
+                      <div
+                        key={delay}
+                        className="h-2 w-2 rounded-full bg-[var(--primary-blue)] animate-bounce"
+                        style={{ animationDelay: delay }}
+                      />
+                    ))}
                   </div>
                 </div>
               </div>
@@ -189,7 +163,7 @@ export const AIChatSidebar = ({ boardId, onBoardUpdate }: AIChatSidebarProps) =>
 
       {/* Input */}
       <div className="border-t border-[var(--stroke)] px-6 py-4 space-y-3">
-        <form onSubmit={handleSendMessage} className="flex gap-2">
+        <form onSubmit={handleSubmit} className="flex gap-2">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
