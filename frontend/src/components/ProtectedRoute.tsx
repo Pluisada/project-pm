@@ -79,6 +79,9 @@ export const ProtectedRoute = () => {
     await logout();
     setUsername(null);
     setRole(null);
+    // An admin demonstrably exists by now (we just logged one out), so
+    // don't fall back to the stale needsSetup=true from initial bootstrap.
+    setNeedsSetup(false);
     setSelectedBoardId(null);
     setView("board");
   };

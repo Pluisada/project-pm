@@ -88,6 +88,7 @@ export const SetupPage = ({ onSetupSuccess }: SetupPageProps) => {
                 placeholder="Choose a username"
                 disabled={loading}
                 minLength={3}
+                maxLength={50}
                 className="mt-2 w-full rounded-lg border border-[var(--stroke)] bg-white px-4 py-3 text-sm outline-none transition placeholder:text-[var(--gray-text)] focus:border-[var(--primary-blue)] focus:ring-2 focus:ring-[var(--primary-blue)]/20 disabled:opacity-50"
                 autoComplete="username"
               />
@@ -109,6 +110,7 @@ export const SetupPage = ({ onSetupSuccess }: SetupPageProps) => {
                 placeholder="At least 8 characters"
                 disabled={loading}
                 minLength={8}
+                maxLength={128}
                 className="mt-2 w-full rounded-lg border border-[var(--stroke)] bg-white px-4 py-3 text-sm outline-none transition placeholder:text-[var(--gray-text)] focus:border-[var(--primary-blue)] focus:ring-2 focus:ring-[var(--primary-blue)]/20 disabled:opacity-50"
                 autoComplete="new-password"
               />
@@ -130,6 +132,7 @@ export const SetupPage = ({ onSetupSuccess }: SetupPageProps) => {
                 placeholder="Repeat your password"
                 disabled={loading}
                 minLength={8}
+                maxLength={128}
                 className="mt-2 w-full rounded-lg border border-[var(--stroke)] bg-white px-4 py-3 text-sm outline-none transition placeholder:text-[var(--gray-text)] focus:border-[var(--primary-blue)] focus:ring-2 focus:ring-[var(--primary-blue)]/20 disabled:opacity-50"
                 autoComplete="new-password"
               />

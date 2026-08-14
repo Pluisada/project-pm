@@ -65,6 +65,21 @@ function storeAuth(data: LoginResponse): void {
 }
 
 /**
+ * Backend errors are usually a plain string `detail`, but FastAPI/Pydantic
+ * validation errors (422) return `detail` as an array of {type, loc, msg,
+ * ...} objects instead. Normalize to a single string so callers never try
+ * to render/stringify the array directly.
+ */
+export function extractErrorDetail(errorData: unknown, fallback: string): string {
+  const detail = (errorData as { detail?: unknown } | null)?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail) && typeof detail[0]?.msg === "string") {
+    return detail[0].msg;
+  }
+  return fallback;
+}
+
+/**
  * Whether the system still needs its first (admin) user created
  */
 export async function getSetupStatus(): Promise<{ needs_setup: boolean }> {
@@ -91,7 +106,7 @@ export async function setupAdmin(credentials: LoginRequest): Promise<LoginRespon
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.detail || "Setup failed");
+    throw new Error(extractErrorDetail(errorData, "Setup failed"));
   }
 
   const data: LoginResponse = await response.json();

@@ -2,7 +2,7 @@
  * Frontend API client for communicating with backend
  */
 
-import { API_BASE_URL, getAuthHeader } from "./auth";
+import { API_BASE_URL, extractErrorDetail, getAuthHeader } from "./auth";
 
 export interface ApiError {
   detail: string;
@@ -33,7 +33,7 @@ async function apiCall<T>(
       const errorData = await response.json().catch(() => ({}));
       throw {
         status_code: response.status,
-        detail: errorData.detail || `HTTP ${response.status}`,
+        detail: extractErrorDetail(errorData, `HTTP ${response.status}`),
       } as ApiError;
     }
 
