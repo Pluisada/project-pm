@@ -20,6 +20,12 @@ fi
 
 echo "✓ Docker is running"
 
+# Ensure the DB file exists before docker-compose bind-mounts it, otherwise
+# Docker creates a directory at that path instead of a file and SQLite fails.
+if [ ! -f pm.db ]; then
+  touch pm.db
+fi
+
 # Build the Docker image
 echo "Building Docker image..."
 docker-compose build

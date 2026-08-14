@@ -15,6 +15,7 @@ dependencies = [
     "python-jose[cryptography]==3.3.0",
     "pydantic==2.7.4",
     "httpx==0.28.1",
+    "bcrypt==4.2.1",
 ]
 
 [project.optional-dependencies]
@@ -23,3 +24,6 @@ dev = [
     "pytest-asyncio==0.24.0",
     "httpx==0.28.1",
 ]
+
+[tool.hatch.build.targets.wheel]
+include = ["*.py"]

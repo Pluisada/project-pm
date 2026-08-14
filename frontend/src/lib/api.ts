@@ -231,3 +231,28 @@ export async function sendAIMessage(
     body: JSON.stringify({ message }),
   });
 }
+
+// ============================================================================
+// USER MANAGEMENT API (admin-only)
+// ============================================================================
+
+export interface UserResponse {
+  id: number;
+  username: string;
+  role: "admin" | "member";
+  created_at: string;
+}
+
+export async function listUsers(): Promise<UserResponse[]> {
+  return apiCall<UserResponse[]>("/api/users");
+}
+
+export async function createUser(
+  username: string,
+  password: string
+): Promise<UserResponse> {
+  return apiCall<UserResponse>("/api/users", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}

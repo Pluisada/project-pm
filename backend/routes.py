@@ -2,8 +2,10 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from auth import hash_password
 from database import get_db
-from models import Board, Column, Card, User, ConversationMessage
+from deps import get_current_user, require_admin
+from models import Board, Column, Card, User, UserRole, ConversationMessage
 from schemas import (
     BoardCreate,
     BoardUpdate,
@@ -17,6 +19,8 @@ from schemas import (
     CardMove,
     CardResponse,
     ColumnWithCards,
+    UserCreate,
+    UserResponse,
 )
 from ai import test_ai_connectivity, AIError
 from ai_kanban import (
@@ -29,14 +33,6 @@ from ai_kanban import (
 router = APIRouter(prefix="/api", tags=["boards"])
 
 
-def get_current_user(db: Session = Depends(get_db)) -> User:
-    """Get current user (hardcoded for MVP)."""
-    user = db.query(User).filter(User.username == "user").first()
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-    return user
-
-
 # ============================================================================
 # BOARD ROUTES
 # ============================================================================
@@ -47,8 +43,8 @@ async def list_boards(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """List all boards for current user."""
-    boards = db.query(Board).filter(Board.user_id == current_user.id).all()
+    """List all boards. Boards are shared across all authenticated users."""
+    boards = db.query(Board).all()
     return boards
 
 
@@ -77,10 +73,7 @@ async def get_board(
     db: Session = Depends(get_db),
 ):
     """Get board with all columns and cards."""
-    board = db.query(Board).filter(
-        Board.id == board_id,
-        Board.user_id == current_user.id,
-    ).first()
+    board = db.query(Board).filter(Board.id == board_id).first()
 
     if not board:
         raise HTTPException(
@@ -112,10 +105,7 @@ async def update_board(
     db: Session = Depends(get_db),
 ):
     """Update board metadata."""
-    board = db.query(Board).filter(
-        Board.id == board_id,
-        Board.user_id == current_user.id,
-    ).first()
+    board = db.query(Board).filter(Board.id == board_id).first()
 
     if not board:
         raise HTTPException(
@@ -140,10 +130,7 @@ async def delete_board(
     db: Session = Depends(get_db),
 ):
     """Delete a board and all its data."""
-    board = db.query(Board).filter(
-        Board.id == board_id,
-        Board.user_id == current_user.id,
-    ).first()
+    board = db.query(Board).filter(Board.id == board_id).first()
 
     if not board:
         raise HTTPException(
@@ -168,10 +155,7 @@ async def create_column(
     db: Session = Depends(get_db),
 ):
     """Create a column in a board."""
-    board = db.query(Board).filter(
-        Board.id == board_id,
-        Board.user_id == current_user.id,
-    ).first()
+    board = db.query(Board).filter(Board.id == board_id).first()
 
     if not board:
         raise HTTPException(
@@ -200,10 +184,7 @@ async def update_column(
 ):
     """Update column."""
     # Verify board exists
-    board = db.query(Board).filter(
-        Board.id == board_id,
-        Board.user_id == current_user.id,
-    ).first()
+    board = db.query(Board).filter(Board.id == board_id).first()
 
     if not board:
         raise HTTPException(
@@ -240,10 +221,7 @@ async def delete_column(
     db: Session = Depends(get_db),
 ):
     """Delete column and all its cards."""
-    board = db.query(Board).filter(
-        Board.id == board_id,
-        Board.user_id == current_user.id,
-    ).first()
+    board = db.query(Board).filter(Board.id == board_id).first()
 
     if not board:
         raise HTTPException(
@@ -280,10 +258,7 @@ async def create_card(
 ):
     """Create a card in a column."""
     # Verify board exists
-    board = db.query(Board).filter(
-        Board.id == board_id,
-        Board.user_id == current_user.id,
-    ).first()
+    board = db.query(Board).filter(Board.id == board_id).first()
 
     if not board:
         raise HTTPException(
@@ -325,10 +300,7 @@ async def update_card(
 ):
     """Update card."""
     # Verify board exists
-    board = db.query(Board).filter(
-        Board.id == board_id,
-        Board.user_id == current_user.id,
-    ).first()
+    board = db.query(Board).filter(Board.id == board_id).first()
 
     if not board:
         raise HTTPException(
@@ -368,10 +340,7 @@ async def move_card(
 ):
     """Move card to another column."""
     # Verify board exists
-    board = db.query(Board).filter(
-        Board.id == board_id,
-        Board.user_id == current_user.id,
-    ).first()
+    board = db.query(Board).filter(Board.id == board_id).first()
 
     if not board:
         raise HTTPException(
@@ -420,10 +389,7 @@ async def delete_card(
 ):
     """Delete a card."""
     # Verify board exists
-    board = db.query(Board).filter(
-        Board.id == board_id,
-        Board.user_id == current_user.id,
-    ).first()
+    board = db.query(Board).filter(Board.id == board_id).first()
 
     if not board:
         raise HTTPException(
@@ -475,10 +441,7 @@ async def board_ai_chat(
 ):
     """AI chat endpoint for board management."""
     # Verify board exists and belongs to user
-    board = db.query(Board).filter(
-        Board.id == board_id,
-        Board.user_id == current_user.id,
-    ).first()
+    board = db.query(Board).filter(Board.id == board_id).first()
 
     if not board:
         raise HTTPException(
@@ -554,3 +517,41 @@ async def board_ai_chat(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e),
         )
+
+
+# ============================================================================
+# USER MANAGEMENT ROUTES (admin-only)
+# ============================================================================
+
+
+@router.get("/users", response_model=list[UserResponse])
+async def list_users(
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """List all users. Admin-only."""
+    return db.query(User).order_by(User.created_at).all()
+
+
+@router.post("/users", response_model=UserResponse, status_code=201)
+async def create_user(
+    payload: UserCreate,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Create a new user with the "member" role. Admin-only."""
+    if db.query(User).filter(User.username == payload.username).first():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Username already exists",
+        )
+
+    user = User(
+        username=payload.username,
+        password_hash=hash_password(payload.password),
+        role=UserRole.MEMBER.value,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user

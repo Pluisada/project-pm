@@ -1,10 +1,18 @@
 """SQLAlchemy ORM models for PM database."""
+import enum
 from datetime import datetime
 from sqlalchemy import Column as SQLColumn, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 
 Base = declarative_base()
+
+
+class UserRole(str, enum.Enum):
+    """User role. More profiles may be added in the future."""
+
+    ADMIN = "admin"
+    MEMBER = "member"
 
 
 class User(Base):
@@ -15,6 +23,7 @@ class User(Base):
     id = SQLColumn(Integer, primary_key=True, index=True)
     username = SQLColumn(String, unique=True, index=True, nullable=False)
     password_hash = SQLColumn(String, nullable=False)
+    role = SQLColumn(String, nullable=False, default=UserRole.MEMBER.value)
     email = SQLColumn(String, unique=True, index=True, nullable=True)
     full_name = SQLColumn(String, nullable=True)
     created_at = SQLColumn(DateTime, default=func.now(), nullable=False, index=True)

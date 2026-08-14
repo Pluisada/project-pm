@@ -597,3 +597,52 @@ Discovered through actual runtime testing, not code review — a reminder that "
 6. `KanbanBoardAPI.tsx` — column/card id collision inside dnd-kit's registry broke drag & drop (Part 7)
 
 None of these were caught by the existing test suite or `tsc`/build checks — all six required exercising the running app (curl or live browser) to surface.
+
+---
+
+## Part 11: Multi-User Authentication ✅ COMPLETE (2026-08-14)
+
+### Objective
+Replace the single hardcoded `user`/`password` login with real multi-user auth: the first user ever created becomes admin via a dedicated setup screen, and the admin can create further users (role "member") from a "Manage Users" screen. Boards move from (nominally) per-user to explicitly shared across all authenticated users.
+
+### Root cause fixed
+`backend/routes.py` had its own `get_current_user` that ignored the `Authorization` header entirely and always looked up the hardcoded `"user"` row — meaning no board/column/card/AI route ever actually validated a bearer token (already called out as a known gap in CLAUDE.md). This is now a single real dependency in `backend/deps.py` (`get_current_user`, `require_admin`), used by `main.py` and `routes.py` alike.
+
+### Backend changes
+- [x] `models.py` — `User.role` column (`UserRole` enum: `admin`/`member`, default `member`)
+- [x] `auth.py` — hardcoded `VALID_USERNAME`/`VALID_PASSWORD`/`verify_credentials` replaced with `bcrypt`-backed `hash_password`/`verify_password`; `LoginResponse` carries `role`
+- [x] `deps.py` (new) — single `get_current_user` (real JWT + DB lookup) and `require_admin`
+- [x] `main.py` — `POST /api/login` now checks the DB instead of hardcoded constants; new `GET /api/setup/status` and `POST /api/setup` (first user only, becomes admin, seeds the default board); `create_sample_data()`'s user-seeding half removed from startup
+- [x] `database.py` — `create_sample_data()` split into `seed_default_board(db, creator)`, called once from `/api/setup`, not at every startup
+- [x] `routes.py` — all `Board.user_id == current_user.id` filters removed (boards are shared, not owned); new admin-only `GET/POST /api/users`
+- [x] `schemas.py` — `SetupRequest`, `SetupStatusResponse`, `UserCreate`, `UserResponse`
+- [x] Role is re-read from the DB on every request (not embedded in the JWT), so a role change takes effect immediately
+
+### Frontend changes
+- [x] `lib/auth.ts` — role storage, `getSetupStatus`, `setupAdmin`, `isAdmin`
+- [x] `lib/api.ts` — `listUsers`, `createUser`
+- [x] `components/SetupPage.tsx` (new) — shown automatically when `needs_setup` is true
+- [x] `components/ManageUsersPage.tsx` (new) — admin-only, list + create-user form
+- [x] `components/LoginPage.tsx` — removed the hardcoded "Demo Credentials" box
+- [x] `components/ProtectedRoute.tsx` — setup-vs-login gate, admin-only "Manage Users" header action
+
+### Decisions made with the user
+1. Local `pm.db` reset from scratch rather than migrated in place (no Alembic in this project; `init_db()` is just `create_all`).
+2. Boards are shared across all users, not isolated per owner — `Board.user_id` is creator metadata only, never an access filter.
+3. First-run setup is a dedicated screen (`SetupPage`), not a toggle on the login form.
+4. User management is a dedicated admin-only screen (`ManageUsersPage`), not API-only.
+5. Architecture: "clean, simplified" — single `deps.py` auth dependency (fixes the duplicated `get_current_user` bug above), `role` as a Python enum, no `users.py` router split (kept in `routes.py`), no rename of `Board.user_id`.
+
+### Tests & Verification
+- [x] `backend/test_auth.py`, `backend/test_routes.py` rewritten for setup/login/roles/shared-board access; new `TestUserManagementRoutes`, `TestSharedBoardAccess`, `TestUnauthenticatedAccess` classes
+- [x] Fixed a pre-existing, unrelated bug surfaced while getting the suite green: in-memory SQLite fixtures need `StaticPool` + `check_same_thread=False`, or `TestClient` requests fail with a cross-thread `sqlite3.ProgrammingError` (confirmed via `git stash` that this predates this session's changes)
+- [x] Backend: 67/70 passing; the 3 failures (`test_ai.py` x2, `test_static_files.py` x1) are pre-existing and unrelated (unmocked network calls / no built static assets in dev), confirmed via `git stash` against the pre-change code
+- [x] Frontend: `npm run lint`, `npx tsc` (via `next build`), `npm run test:unit` all clean/passing
+- [x] `frontend/tests/auth.spec.ts` rewritten end-to-end for setup/login/logout/user-management; found and fixed a real bug in the process (duplicate "Back to Board" buttons — the header nav and `ManageUsersPage`'s own back button both rendered at once)
+- [x] `frontend/tests/kanban.spec.ts` / `integration.spec.ts` updated with a `loginAsAdmin` helper (`tests/helpers.ts`) so they can reach the now-gated board at all — previously they never logged in, so they were already 100% broken against the real `ProtectedRoute` flow (pre-existing gap, invisible until now because nothing forced them through the login gate)
+- [x] Full e2e suite on a clean DB: 25/28 passing. The 3 remaining failures are pre-existing, unrelated to auth: `kanban.spec.ts`'s "moves a card between columns" assumes a column id (`col-review`) that only ever existed in the old standalone `KanbanBoard.tsx` demo, never in the real API-backed board (numeric ids only); "deletes a card" and "displays initial cards" are order-dependent on other tests mutating the one shared board with no reset between them
+
+### Known gaps introduced/left by this part
+- No `PUT`/`DELETE /api/users/{id}` — a mistyped username during setup or user creation has no fix-up path yet.
+- No token revocation — logout doesn't invalidate the JWT (pre-existing gap, now more consequential since real admin accounts exist).
+- `frontend/tests/kanban.spec.ts` and `integration.spec.ts` still assume the old demo's slug-style ids and a pristine, single-owner board; they need a real rewrite (dynamic ids, isolated board state) independent of this auth work.
