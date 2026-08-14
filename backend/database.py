@@ -41,70 +41,57 @@ def init_db():
     Base.metadata.create_all(bind=engine)
 
 
-def create_sample_data():
-    """Create sample data for MVP (hardcoded user and board)."""
-    from models import User, Board, Column, Card
+def seed_default_board(db: Session, creator) -> None:
+    """Seed the shared default board with columns and sample cards.
 
-    db = SessionLocal()
-    try:
-        # Check if user already exists
-        user = db.query(User).filter(User.username == "user").first()
-        if user:
-            return  # Already initialized
+    Called once, from the admin setup endpoint, since that's the first point
+    a user (and therefore an owner for the board) is guaranteed to exist.
+    Idempotent: does nothing if a board already exists.
+    """
+    from models import Board, Column, Card
 
-        # Create hardcoded user for MVP
-        user = User(
-            username="user",
-            password_hash="password",  # Hardcoded for MVP
-            full_name="Demo User",
-            email="user@example.com"
+    if db.query(Board).first():
+        return  # Already initialized
+
+    board = Board(
+        user_id=creator.id,
+        title="My Board",
+        description="Shared team board"
+    )
+    db.add(board)
+    db.commit()
+
+    # Create default columns
+    column_titles = ["Backlog", "Discovery", "In Progress", "Review", "Done"]
+    columns = []
+    for i, title in enumerate(column_titles):
+        col = Column(
+            board_id=board.id,
+            title=title,
+            position=i
         )
-        db.add(user)
-        db.commit()
+        db.add(col)
+        columns.append(col)
+    db.commit()
 
-        # Create default board
-        board = Board(
-            user_id=user.id,
-            title="My Board",
-            description="Demo Kanban board"
+    # Create sample cards
+    sample_cards = [
+        ("Align roadmap themes", "Draft quarterly themes with impact statements and metrics.", 0),
+        ("Gather customer signals", "Review support tags, sales notes, and churn feedback.", 0),
+        ("Prototype analytics view", "Sketch initial dashboard layout and key drill-downs.", 1),
+        ("Refine status language", "Standardize column labels and tone across the board.", 2),
+        ("Design card layout", "Add hierarchy and spacing for scanning dense lists.", 2),
+        ("QA micro-interactions", "Verify hover, focus, and loading states.", 3),
+        ("Ship marketing page", "Final copy approved and asset pack delivered.", 4),
+        ("Close onboarding sprint", "Document release notes and share internally.", 4),
+    ]
+
+    for title, details, col_index in sample_cards:
+        card = Card(
+            column_id=columns[col_index].id,
+            title=title,
+            details=details,
+            position=0
         )
-        db.add(board)
-        db.commit()
-
-        # Create default columns
-        column_titles = ["Backlog", "Discovery", "In Progress", "Review", "Done"]
-        columns = []
-        for i, title in enumerate(column_titles):
-            col = Column(
-                board_id=board.id,
-                title=title,
-                position=i
-            )
-            db.add(col)
-            columns.append(col)
-        db.commit()
-
-        # Create sample cards
-        sample_cards = [
-            ("Align roadmap themes", "Draft quarterly themes with impact statements and metrics.", 0),
-            ("Gather customer signals", "Review support tags, sales notes, and churn feedback.", 0),
-            ("Prototype analytics view", "Sketch initial dashboard layout and key drill-downs.", 1),
-            ("Refine status language", "Standardize column labels and tone across the board.", 2),
-            ("Design card layout", "Add hierarchy and spacing for scanning dense lists.", 2),
-            ("QA micro-interactions", "Verify hover, focus, and loading states.", 3),
-            ("Ship marketing page", "Final copy approved and asset pack delivered.", 4),
-            ("Close onboarding sprint", "Document release notes and share internally.", 4),
-        ]
-
-        for title, details, col_index in sample_cards:
-            card = Card(
-                column_id=columns[col_index].id,
-                title=title,
-                details=details,
-                position=0
-            )
-            db.add(card)
-        db.commit()
-
-    finally:
-        db.close()
+        db.add(card)
+    db.commit()

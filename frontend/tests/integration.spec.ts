@@ -6,11 +6,16 @@
  */
 
 import { expect, test } from "@playwright/test";
+import { loginAsAdmin } from "./helpers";
 
 test.describe("Kanban Board Integration", () => {
+  test.beforeEach(async ({ page, request }) => {
+    await loginAsAdmin(page, request);
+  });
+
   test("loads the kanban board at root", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByRole("heading", { name: "Kanban Studio" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "My Board" })).toBeVisible();
   });
 
   test("displays all 5 columns", async ({ page }) => {
@@ -128,7 +133,7 @@ test.describe("Kanban Board Integration", () => {
     await page.goto("/");
 
     // Page should still load
-    await expect(page.getByRole("heading", { name: "Kanban Studio" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "My Board" })).toBeVisible();
 
     // Columns should be visible (may stack vertically)
     const columns = page.locator('[data-testid^="column-"]');
@@ -142,6 +147,6 @@ test.describe("Kanban Board Integration", () => {
     await page.goto("/");
 
     // Page should still load
-    await expect(page.getByRole("heading", { name: "Kanban Studio" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "My Board" })).toBeVisible();
   });
 });

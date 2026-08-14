@@ -4,8 +4,8 @@
 
 This document describes the database schema for the Project Management MVP application. The schema is designed to support:
 
-- **Multi-user architecture** (MVP uses 1 hardcoded user, future supports multiple)
-- **Multiple Kanban boards per user**
+- **Multi-user architecture** with admin/member roles; the first user created becomes admin, and only admins can create further users
+- **Shared Kanban boards**: boards are not owned/isolated per user - any authenticated user (admin or member) can see and edit them
 - **Persistent card data** with full CRUD operations
 - **AI conversation history** for chatbot context
 - **Audit trail** of all changes
@@ -42,17 +42,18 @@ This document describes the database schema for the Project Management MVP appli
 │                        USERS                             │
 │  • id (PK)                                               │
 │  • username (UNIQUE)                                     │
-│  • password_hash                                         │
+│  • password_hash (bcrypt)                                │
+│  • role ("admin" or "member")                            │
 │  • email, full_name                                      │
 │  • created_at, updated_at                                │
 └─────────────────────────────────────────────────────────┘
               │
-              │ (1:N)
+              │ (1:N, "created by" - not an access filter)
               ▼
 ┌─────────────────────────────────────────────────────────┐
 │                       BOARDS                             │
 │  • id (PK)                                               │
-│  • user_id (FK) → users                                  │
+│  • user_id (FK) → users (creator; boards are shared)     │
 │  • title, description                                    │
 │  • created_at, updated_at                                │
 └─────────────────────────────────────────────────────────┘
@@ -117,7 +118,8 @@ This document describes the database schema for the Project Management MVP appli
 |--------|------|-------------|---------|
 | id | INTEGER | PK, AUTOINCREMENT | Unique identifier |
 | username | TEXT | UNIQUE, NOT NULL | Login credential |
-| password_hash | TEXT | NOT NULL | Hashed password (bcrypt in prod) |
+| password_hash | TEXT | NOT NULL | Bcrypt password hash |
+| role | TEXT | NOT NULL, DEFAULT "member" | "admin" or "member" |
 | email | TEXT | UNIQUE | Contact email (optional for MVP) |
 | full_name | TEXT | - | Display name (optional) |
 | created_at | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Account creation |
@@ -128,27 +130,27 @@ This document describes the database schema for the Project Management MVP appli
 - `email (UNIQUE)` - Fast lookup by email
 - `created_at` - Query recent users
 
-**Current MVP:** Only 1 hardcoded user (id=1, username="user")  
-**Future:** Multiple users with password hashing
+**Current:** The first user ever created (via `POST /api/setup`) becomes `role="admin"`. Only an admin can create further users (`POST /api/users`), who are always created with `role="member"`. Role is re-read from this table on every request (not embedded in the JWT), so it can't go stale.
+**Future:** More granular profiles beyond admin/member (viewer, editor, etc.)
 
 ### boards
-**Purpose:** Kanban boards, one per user (MVP), multiple per user (future)
+**Purpose:** Kanban boards, shared across all authenticated users
 
 | Column | Type | Constraints | Purpose |
 |--------|------|-------------|---------|
 | id | INTEGER | PK, AUTOINCREMENT | Unique identifier |
-| user_id | INTEGER | FK → users, NOT NULL | Board owner |
+| user_id | INTEGER | FK → users, NOT NULL | Creator (metadata only) |
 | title | TEXT | NOT NULL | Board name |
 | description | TEXT | - | Board description |
 | created_at | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Creation time |
 | updated_at | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Last modified |
 
 **Indexes:**
-- `user_id` - Find all boards for a user
+- `user_id` - Attribute a board to its creator
 - `created_at` - List boards by date
 
-**Current MVP:** 1 board per user  
-**Future:** Multiple boards per user (project, team, etc.)
+**Current:** Boards are shared - `user_id` records who created a board but is never used to restrict who can view/edit it; every authenticated user (admin or member) has full access to every board.
+**Future:** Per-board membership/permissions if boards stop being globally shared.
 
 ### columns
 **Purpose:** Kanban board columns (Backlog, In Progress, Review, Done, etc.)
@@ -258,9 +260,15 @@ This ensures referential integrity while preserving audit history.
 
 ## Example Data Flows
 
-### User Login (Part 4)
+### User Login
 ```sql
-SELECT * FROM users WHERE username = 'user'
+SELECT * FROM users WHERE username = 'alice'
+```
+
+### First-run Admin Setup (`POST /api/setup`)
+```sql
+-- Only allowed while the users table is empty
+INSERT INTO users (username, password_hash, role) VALUES ('alice', '<bcrypt hash>', 'admin')
 ```
 
 ### Load Kanban Board (Part 6)
@@ -347,14 +355,14 @@ psql -U postgres -d pm_db < schema.sql
 
 ## Security Considerations
 
-### Current (MVP)
-- Credentials hardcoded (user/password)
-- Password stored as plain text
+### Current
+- Passwords hashed with bcrypt (no plaintext storage)
+- Binary role check (admin/member) gates user-management endpoints only; board/card routes just require authentication, not a specific role
+- No token revocation/blacklist - a logged-out token remains valid until it expires (up to 24h)
 
 ### Production
-- Hash passwords with bcrypt
 - Add password reset flow
-- Add role-based access control (RBAC)
+- Extend RBAC beyond the current binary admin/member split (e.g. viewer, editor)
 - Encrypt sensitive fields (email, etc.)
 - Implement row-level security (PostgreSQL)
 
@@ -369,8 +377,9 @@ psql -U postgres -d pm_db < schema.sql
 ## Future Enhancements
 
 ### Phase 2
-- [ ] User roles (admin, viewer, editor)
-- [ ] Board sharing and permissions
+- [x] Admin/member roles, admin-only user creation (first user = admin)
+- [ ] More granular user roles (viewer, editor)
+- [ ] Per-board membership/permissions (today, all boards are shared)
 - [ ] Activity feed (who did what)
 - [ ] Notifications system
 

@@ -2,7 +2,7 @@
  * Frontend API client for communicating with backend
  */
 
-import { API_BASE_URL, getAuthHeader } from "./auth";
+import { API_BASE_URL, extractErrorDetail, getAuthHeader } from "./auth";
 
 export interface ApiError {
   detail: string;
@@ -33,7 +33,7 @@ async function apiCall<T>(
       const errorData = await response.json().catch(() => ({}));
       throw {
         status_code: response.status,
-        detail: errorData.detail || `HTTP ${response.status}`,
+        detail: extractErrorDetail(errorData, `HTTP ${response.status}`),
       } as ApiError;
     }
 
@@ -229,5 +229,30 @@ export async function sendAIMessage(
   return apiCall<AIChatResponse>(`/api/boards/${boardId}/ai`, {
     method: "POST",
     body: JSON.stringify({ message }),
+  });
+}
+
+// ============================================================================
+// USER MANAGEMENT API (admin-only)
+// ============================================================================
+
+export interface UserResponse {
+  id: number;
+  username: string;
+  role: "admin" | "member";
+  created_at: string;
+}
+
+export async function listUsers(): Promise<UserResponse[]> {
+  return apiCall<UserResponse[]>("/api/users");
+}
+
+export async function createUser(
+  username: string,
+  password: string
+): Promise<UserResponse> {
+  return apiCall<UserResponse>("/api/users", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
   });
 }

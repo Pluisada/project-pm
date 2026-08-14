@@ -1,8 +1,11 @@
 """Authentication module for PM backend."""
+import base64
+import hashlib
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import bcrypt
 from jose import JWTError, jwt
 from pydantic import BaseModel
 
@@ -11,10 +14,6 @@ from pydantic import BaseModel
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 hours
-
-# Hardcoded credentials for MVP
-VALID_USERNAME = "user"
-VALID_PASSWORD = "password"
 
 
 class LoginRequest(BaseModel):
@@ -30,6 +29,7 @@ class LoginResponse(BaseModel):
     access_token: str
     token_type: str
     username: str
+    role: str
 
 
 class TokenData(BaseModel):
@@ -38,9 +38,30 @@ class TokenData(BaseModel):
     username: Optional[str] = None
 
 
-def verify_credentials(username: str, password: str) -> bool:
-    """Verify user credentials against hardcoded values."""
-    return username == VALID_USERNAME and password == VALID_PASSWORD
+def _prepare_password(password: str) -> bytes:
+    """Pre-hash with SHA-256 (base64-encoded) before handing off to bcrypt.
+
+    bcrypt only looks at the first 72 bytes of its input and silently
+    truncates anything past that - a long or unicode-heavy password would
+    otherwise be hashed on a prefix, quietly hashing less entropy than the
+    schema's max_length promises. Pre-hashing gives bcrypt a fixed 44-byte
+    input regardless of the original password's length/encoding.
+    """
+    return base64.b64encode(hashlib.sha256(password.encode()).digest())
+
+
+def hash_password(password: str) -> str:
+    """Hash a plaintext password for storage."""
+    return bcrypt.hashpw(_prepare_password(password), bcrypt.gensalt()).decode()
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    """Verify a plaintext password against a stored hash."""
+    try:
+        return bcrypt.checkpw(_prepare_password(password), password_hash.encode())
+    except ValueError:
+        # Malformed/non-bcrypt hash - treat as a failed login, not a crash.
+        return False
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:

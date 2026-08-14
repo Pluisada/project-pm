@@ -21,7 +21,13 @@
         "password_hash": {
           "type": "TEXT",
           "nullable": false,
-          "description": "Hashed password (future: currently hardcoded)"
+          "description": "Bcrypt password hash"
+        },
+        "role": {
+          "type": "TEXT",
+          "nullable": false,
+          "default": "member",
+          "description": "'admin' or 'member'. The first user ever created (POST /api/setup) becomes admin; only admins can create further users, who are always 'member'."
         },
         "email": {
           "type": "TEXT",
@@ -54,7 +60,7 @@
       ]
     },
     "boards": {
-      "description": "Kanban boards (one per user for MVP)",
+      "description": "Kanban boards, shared across all authenticated users (not isolated per user)",
       "columns": {
         "id": {
           "type": "INTEGER",
@@ -66,7 +72,7 @@
           "type": "INTEGER",
           "constraint": "FOREIGN KEY REFERENCES users(id) ON DELETE CASCADE",
           "nullable": false,
-          "description": "Owner of the board"
+          "description": "Creator of the board (metadata only - not used to restrict access; every authenticated user can view/edit every board)"
         },
         "title": {
           "type": "TEXT",
@@ -300,7 +306,7 @@
       "type": "one-to-many",
       "from": "users.id",
       "to": "boards.user_id",
-      "description": "One user can have multiple boards"
+      "description": "One user can create multiple boards; this is creator metadata, not an access-control relationship - boards are shared across all users"
     },
     "board_to_columns": {
       "type": "one-to-many",
@@ -340,7 +346,7 @@
     "timestamps": "All records have created_at and updated_at for audit trail"
   },
   "notes": {
-    "mvp": "Current MVP only uses 1 user (hardcoded), but schema supports multi-user",
+    "mvp": "Multi-user with two roles (admin/member). The first user created via POST /api/setup becomes admin; only admins can create further users via POST /api/users. Boards are shared, not isolated per user.",
     "future_scaling": "Schema designed for PostgreSQL production deployment",
     "json_fields": "metadata and changes fields store JSON for flexibility",
     "conversation_history": "Supports full AI conversation history for context",

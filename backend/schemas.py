@@ -3,6 +3,37 @@ from typing import List, Optional
 from datetime import datetime
 from pydantic import BaseModel, Field
 
+from models import UserRole
+
+
+# User / Setup Schemas
+class SetupRequest(BaseModel):
+    """Schema for bootstrapping the first (admin) user."""
+    username: str = Field(..., min_length=3, max_length=50)
+    password: str = Field(..., min_length=8, max_length=128)
+
+
+class SetupStatusResponse(BaseModel):
+    """Schema for whether the system still needs an admin account."""
+    needs_setup: bool
+
+
+class UserCreate(BaseModel):
+    """Schema for an admin creating a new (member) user."""
+    username: str = Field(..., min_length=3, max_length=50)
+    password: str = Field(..., min_length=8, max_length=128)
+
+
+class UserResponse(BaseModel):
+    """Schema for user response."""
+    id: int
+    username: str
+    role: UserRole
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
 
 # Board Schemas
 class BoardCreate(BaseModel):

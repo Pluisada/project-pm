@@ -1,8 +1,13 @@
 import { expect, test } from "@playwright/test";
+import { loginAsAdmin } from "./helpers";
+
+test.beforeEach(async ({ page, request }) => {
+  await loginAsAdmin(page, request);
+});
 
 test("loads the kanban board", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Kanban Studio" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "My Board" })).toBeVisible();
   await expect(page.locator('[data-testid^="column-"]')).toHaveCount(5);
 });
 

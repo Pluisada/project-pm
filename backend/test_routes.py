@@ -3,25 +3,32 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from auth import create_access_token, hash_password
 from main import app
 from database import get_db
-from models import Base, User, Board, Column, Card
+from models import Base, User, UserRole, Board, Column, Card
 
 
 @pytest.fixture(scope="function")
 def test_db():
     """Create test database."""
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     Base.metadata.create_all(engine)
     TestingSessionLocal = sessionmaker(bind=engine)
     session = TestingSessionLocal()
 
-    # Create test user
+    # Create test user (member is enough - board routes have no role gate)
     user = User(
         username="test_user",
-        password_hash="test_password",
-        full_name="Test User"
+        password_hash=hash_password("test_password"),
+        full_name="Test User",
+        role=UserRole.MEMBER.value,
     )
     session.add(user)
     session.commit()
@@ -33,12 +40,33 @@ def test_db():
 
 @pytest.fixture
 def client(test_db):
-    """Create test client with test database."""
+    """Create test client with test database, authenticated as test_user."""
     def override_get_db():
         yield test_db
 
     app.dependency_overrides[get_db] = override_get_db
-    return TestClient(app)
+    test_client = TestClient(app)
+    token = create_access_token(data={"sub": "test_user"})
+    test_client.headers.update({"Authorization": f"Bearer {token}"})
+    yield test_client
+    app.dependency_overrides.clear()
+
+
+class TestUnauthenticatedAccess:
+    """Board routes must reject requests without a valid token."""
+
+    def test_list_boards_requires_auth(self, test_db):
+        """Regression test: routes.py used to silently bypass the token check."""
+
+        def override_get_db():
+            yield test_db
+
+        app.dependency_overrides[get_db] = override_get_db
+        try:
+            response = TestClient(app).get("/api/boards")
+        finally:
+            app.dependency_overrides.clear()
+        assert response.status_code == 401
 
 
 class TestBoardRoutes:
@@ -248,3 +276,123 @@ class TestCardRoutes:
 
         response = client.delete(f"/api/boards/{board.id}/cards/{card.id}")
         assert response.status_code == 204
+
+
+class TestSharedBoardAccess:
+    """Boards are shared: any authenticated user can see/edit any board."""
+
+    def test_board_created_by_one_user_visible_to_another(self, test_db, client):
+        """A board isn't scoped to whoever created it."""
+        creator = test_db.query(User).filter(User.username == "test_user").first()
+        board = Board(user_id=creator.id, title="Shared Board")
+        test_db.add(board)
+        test_db.commit()
+
+        other = User(
+            username="other_user",
+            password_hash=hash_password("other_password"),
+            role=UserRole.MEMBER.value,
+        )
+        test_db.add(other)
+        test_db.commit()
+
+        other_token = create_access_token(data={"sub": "other_user"})
+        response = client.get(
+            f"/api/boards/{board.id}",
+            headers={"Authorization": f"Bearer {other_token}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["title"] == "Shared Board"
+
+    def test_list_boards_returns_all_boards(self, test_db, client):
+        """list_boards is not filtered by owner."""
+        test_db.add(Board(user_id=1, title="Board A"))
+        test_db.add(Board(user_id=1, title="Board B"))
+        test_db.commit()
+
+        response = client.get("/api/boards")
+        assert response.status_code == 200
+        assert len(response.json()) == 2
+
+
+class TestUserManagementRoutes:
+    """Test admin-only user management endpoints."""
+
+    @pytest.fixture
+    def admin_headers(self, test_db):
+        """Promote an admin user and return auth headers for them."""
+        admin = User(
+            username="admin_user",
+            password_hash=hash_password("adminpass123"),
+            role=UserRole.ADMIN.value,
+        )
+        test_db.add(admin)
+        test_db.commit()
+        token = create_access_token(data={"sub": "admin_user"})
+        return {"Authorization": f"Bearer {token}"}
+
+    def test_non_admin_cannot_list_users(self, client):
+        """A member (the default client fixture) gets 403."""
+        response = client.get("/api/users")
+        assert response.status_code == 403
+
+    def test_non_admin_cannot_create_user(self, client):
+        """A member cannot create new users."""
+        response = client.post(
+            "/api/users", json={"username": "new_member", "password": "password123"}
+        )
+        assert response.status_code == 403
+
+    def test_admin_can_list_users(self, client, admin_headers):
+        """An admin can list existing users."""
+        response = client.get("/api/users", headers=admin_headers)
+        assert response.status_code == 200
+        usernames = {u["username"] for u in response.json()}
+        assert "test_user" in usernames
+        assert "admin_user" in usernames
+
+    def test_admin_can_create_member_user(self, client, admin_headers):
+        """An admin creates a new user, who is always a member."""
+        response = client.post(
+            "/api/users",
+            json={"username": "new_member", "password": "password123"},
+            headers=admin_headers,
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["username"] == "new_member"
+        assert data["role"] == "member"
+        assert "password" not in data
+        assert "password_hash" not in data
+
+    def test_admin_cannot_create_duplicate_username(self, client, admin_headers):
+        """Creating a user with a taken username is rejected."""
+        response = client.post(
+            "/api/users",
+            json={"username": "test_user", "password": "password123"},
+            headers=admin_headers,
+        )
+        assert response.status_code == 409
+
+    def test_new_member_can_login_and_see_shared_board(self, test_db, client, admin_headers):
+        """A member created by the admin can log in and use the shared board."""
+        test_db.add(Board(user_id=1, title="Shared Board"))
+        test_db.commit()
+
+        client.post(
+            "/api/users",
+            json={"username": "new_member", "password": "password123"},
+            headers=admin_headers,
+        )
+
+        login_response = client.post(
+            "/api/login", json={"username": "new_member", "password": "password123"}
+        )
+        assert login_response.status_code == 200
+        token = login_response.json()["access_token"]
+
+        boards_response = client.get(
+            "/api/boards", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert boards_response.status_code == 200
+        assert len(boards_response.json()) == 1

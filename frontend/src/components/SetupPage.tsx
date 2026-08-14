@@ -1,29 +1,38 @@
 "use client";
 
 import { useState } from "react";
-import { login, UserRole } from "@/lib/auth";
+import { setupAdmin, UserRole } from "@/lib/auth";
 
-interface LoginPageProps {
-  onLoginSuccess: (username: string, role: UserRole) => void;
+interface SetupPageProps {
+  onSetupSuccess: (username: string, role: UserRole) => void;
 }
 
-export const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
+export const SetupPage = ({ onSetupSuccess }: SetupPageProps) => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setLoading(true);
 
+    if (password !== confirmPassword) {
+      setError("Passwords do not match");
+      return;
+    }
+
+    setLoading(true);
     try {
-      const result = await login({ username, password });
-      onLoginSuccess(result.username, result.role);
-    } catch {
-      setError("Invalid username or password");
-      setPassword(""); // Clear password on error
+      const result = await setupAdmin({ username, password });
+      onSetupSuccess(result.username, result.role);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not create the admin account. Please try again."
+      );
     } finally {
       setLoading(false);
     }
@@ -43,14 +52,15 @@ export const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
               Project Management MVP
             </p>
             <h1 className="mt-4 font-display text-4xl font-semibold text-[var(--navy-dark)]">
-              Sign In
+              Create Admin Account
             </h1>
             <p className="mt-3 text-sm text-[var(--gray-text)]">
-              Enter your credentials to access the Kanban board
+              You&apos;re the first person here. Set up the administrator account
+              to get started.
             </p>
           </div>
 
-          {/* Login Form */}
+          {/* Setup Form */}
           <form
             onSubmit={handleSubmit}
             className="rounded-[24px] border border-[var(--stroke)] bg-white/80 p-8 shadow-[var(--shadow)] backdrop-blur"
@@ -65,50 +75,76 @@ export const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
             {/* Username Field */}
             <div className="mb-6">
               <label
-                htmlFor="username"
+                htmlFor="setup-username"
                 className="block text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]"
               >
                 Username
               </label>
               <input
-                id="username"
+                id="setup-username"
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="Your username"
+                placeholder="Choose a username"
                 disabled={loading}
+                minLength={3}
+                maxLength={50}
                 className="mt-2 w-full rounded-lg border border-[var(--stroke)] bg-white px-4 py-3 text-sm outline-none transition placeholder:text-[var(--gray-text)] focus:border-[var(--primary-blue)] focus:ring-2 focus:ring-[var(--primary-blue)]/20 disabled:opacity-50"
                 autoComplete="username"
               />
             </div>
 
             {/* Password Field */}
-            <div className="mb-8">
+            <div className="mb-6">
               <label
-                htmlFor="password"
+                htmlFor="setup-password"
                 className="block text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]"
               >
                 Password
               </label>
               <input
-                id="password"
+                id="setup-password"
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Your password"
+                placeholder="At least 8 characters"
                 disabled={loading}
+                minLength={8}
+                maxLength={128}
                 className="mt-2 w-full rounded-lg border border-[var(--stroke)] bg-white px-4 py-3 text-sm outline-none transition placeholder:text-[var(--gray-text)] focus:border-[var(--primary-blue)] focus:ring-2 focus:ring-[var(--primary-blue)]/20 disabled:opacity-50"
-                autoComplete="current-password"
+                autoComplete="new-password"
+              />
+            </div>
+
+            {/* Confirm Password Field */}
+            <div className="mb-8">
+              <label
+                htmlFor="setup-confirm-password"
+                className="block text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]"
+              >
+                Confirm Password
+              </label>
+              <input
+                id="setup-confirm-password"
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="Repeat your password"
+                disabled={loading}
+                minLength={8}
+                maxLength={128}
+                className="mt-2 w-full rounded-lg border border-[var(--stroke)] bg-white px-4 py-3 text-sm outline-none transition placeholder:text-[var(--gray-text)] focus:border-[var(--primary-blue)] focus:ring-2 focus:ring-[var(--primary-blue)]/20 disabled:opacity-50"
+                autoComplete="new-password"
               />
             </div>
 
             {/* Submit Button */}
             <button
               type="submit"
-              disabled={loading || !username || !password}
+              disabled={loading || !username || !password || !confirmPassword}
               className="w-full rounded-lg bg-[var(--secondary-purple)] px-6 py-3 font-semibold text-white transition hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {loading ? "Signing in..." : "Sign In"}
+              {loading ? "Creating account..." : "Create Admin Account"}
             </button>
           </form>
         </div>
