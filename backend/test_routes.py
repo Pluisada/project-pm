@@ -23,7 +23,8 @@ def test_db():
     TestingSessionLocal = sessionmaker(bind=engine)
     session = TestingSessionLocal()
 
-    # Create test user (member is enough - board routes have no role gate)
+    # Create test user (a plain member; individual tests promote a second
+    # user to admin via the admin_headers fixture where they need one)
     user = User(
         username="test_user",
         password_hash=hash_password("test_password"),
@@ -50,6 +51,20 @@ def client(test_db):
     test_client.headers.update({"Authorization": f"Bearer {token}"})
     yield test_client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def admin_headers(test_db):
+    """Promote a second user to admin and return auth headers for them."""
+    admin = User(
+        username="admin_user",
+        password_hash=hash_password("adminpass123"),
+        role=UserRole.ADMIN.value,
+    )
+    test_db.add(admin)
+    test_db.commit()
+    token = create_access_token(data={"sub": "admin_user"})
+    return {"Authorization": f"Bearer {token}"}
 
 
 class TestUnauthenticatedAccess:
@@ -260,8 +275,8 @@ class TestCardRoutes:
         assert response.status_code == 200
         assert response.json()["column_id"] == col2.id
 
-    def test_delete_card(self, client, test_db):
-        """Test deleting a card."""
+    def test_delete_card(self, client, test_db, admin_headers):
+        """Test deleting a card (admin only - see TestCardPermissions)."""
         board = Board(user_id=1, title="Test")
         test_db.add(board)
         test_db.commit()
@@ -274,8 +289,163 @@ class TestCardRoutes:
         test_db.add(card)
         test_db.commit()
 
-        response = client.delete(f"/api/boards/{board.id}/cards/{card.id}")
+        response = client.delete(f"/api/boards/{board.id}/cards/{card.id}", headers=admin_headers)
         assert response.status_code == 204
+
+
+class TestCardPermissions:
+    """Members have restricted card permissions; admins are unrestricted."""
+
+    @pytest.fixture
+    def board_with_columns(self, test_db):
+        """A board with three columns at increasing positions (0, 1, 2)."""
+        board = Board(user_id=1, title="Test")
+        test_db.add(board)
+        test_db.commit()
+
+        columns = [
+            Column(board_id=board.id, title=title, position=i)
+            for i, title in enumerate(["To Do", "Doing", "Done"])
+        ]
+        test_db.add_all(columns)
+        test_db.commit()
+        return board, columns
+
+    def test_member_cannot_delete_card(self, client, test_db, board_with_columns):
+        """A member gets 403 trying to delete a card (the default client fixture)."""
+        board, columns = board_with_columns
+        card = Card(column_id=columns[0].id, title="Task", details="", position=0)
+        test_db.add(card)
+        test_db.commit()
+
+        response = client.delete(f"/api/boards/{board.id}/cards/{card.id}")
+        assert response.status_code == 403
+        assert test_db.query(Card).filter(Card.id == card.id).first() is not None
+
+    def test_member_can_move_card_forward(self, client, test_db, board_with_columns):
+        """Moving to a column further right is allowed for members."""
+        board, columns = board_with_columns
+        card = Card(column_id=columns[0].id, title="Task", details="", position=0)
+        test_db.add(card)
+        test_db.commit()
+
+        payload = {"column_id": columns[2].id, "position": 0}
+        response = client.put(f"/api/boards/{board.id}/cards/{card.id}/position", json=payload)
+        assert response.status_code == 200
+        assert response.json()["column_id"] == columns[2].id
+
+    def test_member_can_reorder_within_same_column(self, client, test_db, board_with_columns):
+        """Moving within the same column (no left/right change) is allowed."""
+        board, columns = board_with_columns
+        card = Card(column_id=columns[1].id, title="Task", details="", position=0)
+        test_db.add(card)
+        test_db.commit()
+
+        payload = {"column_id": columns[1].id, "position": 3}
+        response = client.put(f"/api/boards/{board.id}/cards/{card.id}/position", json=payload)
+        assert response.status_code == 200
+
+    def test_member_cannot_move_card_backward(self, client, test_db, board_with_columns):
+        """Moving to a column further left is rejected for members."""
+        board, columns = board_with_columns
+        card = Card(column_id=columns[2].id, title="Task", details="", position=0)
+        test_db.add(card)
+        test_db.commit()
+
+        payload = {"column_id": columns[0].id, "position": 0}
+        response = client.put(f"/api/boards/{board.id}/cards/{card.id}/position", json=payload)
+        assert response.status_code == 403
+        test_db.refresh(card)
+        assert card.column_id == columns[2].id
+
+    def test_admin_can_move_card_backward(self, client, test_db, board_with_columns, admin_headers):
+        """Admins are not restricted to moving forward."""
+        board, columns = board_with_columns
+        card = Card(column_id=columns[2].id, title="Task", details="", position=0)
+        test_db.add(card)
+        test_db.commit()
+
+        payload = {"column_id": columns[0].id, "position": 0}
+        response = client.put(
+            f"/api/boards/{board.id}/cards/{card.id}/position", json=payload, headers=admin_headers
+        )
+        assert response.status_code == 200
+        assert response.json()["column_id"] == columns[0].id
+
+
+class TestCardEditHistory:
+    """Member edits are tracked with a diff history; admin edits are not."""
+
+    @pytest.fixture
+    def board_and_card(self, test_db):
+        board = Board(user_id=1, title="Test")
+        test_db.add(board)
+        test_db.commit()
+
+        col = Column(board_id=board.id, title="To Do", position=0)
+        test_db.add(col)
+        test_db.commit()
+
+        card = Card(column_id=col.id, title="Original Title", details="Original details", position=0)
+        test_db.add(card)
+        test_db.commit()
+        return board, card
+
+    def test_member_edit_creates_history_and_sets_badge(self, client, board_and_card):
+        board, card = board_and_card
+        payload = {"title": "New Title", "details": "New details"}
+        response = client.put(f"/api/boards/{board.id}/cards/{card.id}", json=payload)
+        assert response.status_code == 200
+        assert response.json()["has_member_edits"] is True
+
+        history = client.get(f"/api/boards/{board.id}/cards/{card.id}/history")
+        assert history.status_code == 200
+        entries = history.json()
+        assert len(entries) == 1
+        assert entries[0]["edited_by"] == "test_user"
+        assert entries[0]["changes"] == {
+            "title": {"old": "Original Title", "new": "New Title"},
+            "details": {"old": "Original details", "new": "New details"},
+        }
+
+    def test_admin_edit_does_not_create_history(self, client, board_and_card, admin_headers):
+        board, card = board_and_card
+        payload = {"title": "Admin Renamed"}
+        response = client.put(
+            f"/api/boards/{board.id}/cards/{card.id}", json=payload, headers=admin_headers
+        )
+        assert response.status_code == 200
+        assert response.json()["has_member_edits"] is False
+
+        history = client.get(
+            f"/api/boards/{board.id}/cards/{card.id}/history", headers=admin_headers
+        )
+        assert history.json() == []
+
+    def test_no_op_update_does_not_create_history(self, client, board_and_card):
+        """Sending the same values back should not record a spurious edit."""
+        board, card = board_and_card
+        payload = {"title": card.title, "details": card.details}
+        response = client.put(f"/api/boards/{board.id}/cards/{card.id}", json=payload)
+        assert response.status_code == 200
+        assert response.json()["has_member_edits"] is False
+
+    def test_badge_stays_after_admin_edits_following_a_member_edit(
+        self, client, board_and_card, admin_headers
+    ):
+        """The badge is permanent - a later admin edit does not clear it."""
+        board, card = board_and_card
+        client.put(f"/api/boards/{board.id}/cards/{card.id}", json={"title": "Member Edit"})
+
+        response = client.put(
+            f"/api/boards/{board.id}/cards/{card.id}",
+            json={"title": "Admin Edit"},
+            headers=admin_headers,
+        )
+        assert response.json()["has_member_edits"] is True
+
+        history = client.get(f"/api/boards/{board.id}/cards/{card.id}/history")
+        assert len(history.json()) == 1
 
 
 class TestSharedBoardAccess:
@@ -317,19 +487,6 @@ class TestSharedBoardAccess:
 
 class TestUserManagementRoutes:
     """Test admin-only user management endpoints."""
-
-    @pytest.fixture
-    def admin_headers(self, test_db):
-        """Promote an admin user and return auth headers for them."""
-        admin = User(
-            username="admin_user",
-            password_hash=hash_password("adminpass123"),
-            role=UserRole.ADMIN.value,
-        )
-        test_db.add(admin)
-        test_db.commit()
-        token = create_access_token(data={"sub": "admin_user"})
-        return {"Authorization": f"Bearer {token}"}
 
     def test_non_admin_cannot_list_users(self, client):
         """A member (the default client fixture) gets 403."""

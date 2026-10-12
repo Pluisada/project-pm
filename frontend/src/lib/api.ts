@@ -10,6 +10,18 @@ export interface ApiError {
 }
 
 /**
+ * Narrow a caught (unknown-typed) error thrown by apiCall down to its detail
+ * message, falling back for anything that isn't a recognizable ApiError.
+ */
+export function getErrorMessage(error: unknown, fallback: string): string {
+  if (error && typeof error === "object" && "detail" in error) {
+    const detail = (error as Partial<ApiError>).detail;
+    if (typeof detail === "string") return detail;
+  }
+  return fallback;
+}
+
+/**
  * Make an API request with auth headers and error handling
  */
 async function apiCall<T>(
@@ -83,8 +95,16 @@ export interface CardResponse {
   title: string;
   details?: string;
   position: number;
+  has_member_edits: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface CardEditHistoryEntry {
+  id: number;
+  edited_by: string;
+  changes: Record<string, { old: string | null; new: string | null }>;
+  created_at: string;
 }
 
 export interface BoardDetail extends BoardResponse {
@@ -207,6 +227,13 @@ export async function deleteCard(boardId: number, cardId: number): Promise<void>
   return apiCall<void>(`/api/boards/${boardId}/cards/${cardId}`, {
     method: "DELETE",
   });
+}
+
+export async function getCardHistory(
+  boardId: number,
+  cardId: number
+): Promise<CardEditHistoryEntry[]> {
+  return apiCall<CardEditHistoryEntry[]>(`/api/boards/${boardId}/cards/${cardId}/history`);
 }
 
 // ============================================================================

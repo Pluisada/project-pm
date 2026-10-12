@@ -193,6 +193,7 @@ This document describes the database schema for the Project Management MVP appli
 **Notes:**
 - Position allows drag-and-drop reordering
 - Deleting a column cascades delete to all its cards
+- `has_member_edits` in the API response is not a stored column - it's derived from whether `card_edit_history` has any rows for this card
 
 ### conversation_messages
 **Purpose:** Store AI chatbot conversation history
@@ -217,6 +218,27 @@ This document describes the database schema for the Project Management MVP appli
 - Stores full conversation history for AI context
 - Part 9 will query this to provide context to LLM
 - Metadata stores OpenRouter usage info (tokens, cost, etc.)
+
+### card_edit_history
+**Purpose:** Audit trail of card content edits made by member users (backs the "M" badge and its history modal in the UI). Distinct from `card_actions` below, which is AI-only.
+
+| Column | Type | Constraints | Purpose |
+|--------|------|-------------|---------|
+| id | INTEGER | PK, AUTOINCREMENT | Unique identifier |
+| card_id | INTEGER | FK → cards, NOT NULL, ON DELETE CASCADE | Edited card |
+| user_id | INTEGER | FK → users (nullable), ON DELETE SET NULL | Member who made the edit |
+| changes | TEXT (JSON) | NOT NULL | `{"title": {"old", "new"}, "details": {"old", "new"}}` - only changed fields |
+| created_at | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Edit time |
+
+**Indexes:**
+- `card_id` - Get a card's edit history (newest first)
+- `user_id` - Get all edits by a user
+- `created_at` - Timeline of changes
+
+**Notes:**
+- Only written for edits made by `member` users - admin edits are not tracked here (`routes.update_card`)
+- A card's `has_member_edits` flag is `true` whenever it has at least one row here; it stays `true` permanently, even if an admin edits the card afterwards
+- `user_id` is `SET NULL` rather than cascading, so history survives if the editing user is later removed
 
 ### card_actions
 **Purpose:** Audit trail of AI-suggested card changes
@@ -248,10 +270,10 @@ This document describes the database schema for the Project Management MVP appli
 
 ### Cascade Rules
 
-- **DELETE user** → Cascade delete boards, messages, actions
+- **DELETE user** → Cascade delete boards, messages, actions; SET NULL on card_edit_history.user_id (preserve history)
 - **DELETE board** → Cascade delete columns, cards, messages, actions
 - **DELETE column** → Cascade delete cards
-- **DELETE card** → SET NULL on card_actions.card_id (preserve history)
+- **DELETE card** → Cascade delete card_edit_history; SET NULL on card_actions.card_id (preserve history)
 - **DELETE message** → SET NULL on card_actions.message_id (preserve history)
 
 This ensures referential integrity while preserving audit history.
@@ -357,7 +379,7 @@ psql -U postgres -d pm_db < schema.sql
 
 ### Current
 - Passwords hashed with bcrypt (no plaintext storage)
-- Binary role check (admin/member) gates user-management endpoints only; board/card routes just require authentication, not a specific role
+- Binary role check (admin/member) gates user-management endpoints, and within card routes: deleting a card and moving a card to an earlier column are admin-only; all other board/card routes just require authentication, not a specific role
 - No token revocation/blacklist - a logged-out token remains valid until it expires (up to 24h)
 
 ### Production
@@ -380,7 +402,7 @@ psql -U postgres -d pm_db < schema.sql
 - [x] Admin/member roles, admin-only user creation (first user = admin)
 - [ ] More granular user roles (viewer, editor)
 - [ ] Per-board membership/permissions (today, all boards are shared)
-- [ ] Activity feed (who did what)
+- [x] Activity feed, scoped to card edits (`card_edit_history` tracks member edits; a general feed across all action types is still open)
 - [ ] Notifications system
 
 ### Phase 3

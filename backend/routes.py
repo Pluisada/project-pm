@@ -1,8 +1,12 @@
 """API routes for boards, columns, and cards."""
+import json
+from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from auth import hash_password
+from card_rules import can_move_card, diff_card_changes, record_member_edit
 from database import get_db
 from deps import get_current_user, require_admin
 from models import Board, Column, Card, User, UserRole, ConversationMessage
@@ -18,6 +22,7 @@ from schemas import (
     CardUpdate,
     CardMove,
     CardResponse,
+    CardEditHistoryEntry,
     ColumnWithCards,
     UserCreate,
     UserResponse,
@@ -86,7 +91,15 @@ async def get_board(
 
     columns_data = []
     for column in columns:
-        cards = db.query(Card).filter(Card.column_id == column.id).order_by(Card.position).all()
+        # CardResponse.has_member_edits reads Card.edit_history - eager-load
+        # it here so serializing N cards doesn't cost N extra queries.
+        cards = (
+            db.query(Card)
+            .options(selectinload(Card.edit_history))
+            .filter(Card.column_id == column.id)
+            .order_by(Card.position)
+            .all()
+        )
         columns_data.append(ColumnWithCards(
             **{**column.__dict__, "cards": cards}
         ))
@@ -320,10 +333,16 @@ async def update_card(
             detail="Card not found",
         )
 
-    if card_update.title is not None:
+    # Members can edit content, but their edits must be tracked - capture a
+    # diff of only the fields that actually changed before mutating. Admin
+    # edits are intentionally not tracked (see CLAUDE.md / CardEditHistory).
+    changes = diff_card_changes(card, card_update.title, card_update.details)
+    if "title" in changes:
         card.title = card_update.title
-    if card_update.details is not None:
+    if "details" in changes:
         card.details = card_update.details
+
+    record_member_edit(db, card, current_user, changes)
 
     db.commit()
     db.refresh(card)
@@ -372,6 +391,15 @@ async def move_card(
             detail="Card not found",
         )
 
+    # Members may only advance cards (move to a column further right, or
+    # reorder within the same column) - never move them back to an earlier
+    # column. Admins are unrestricted.
+    if not can_move_card(current_user, card.column.position, target_column.position):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Members can only move cards forward, not back to an earlier column",
+        )
+
     card.column_id = move.column_id
     card.position = move.position
 
@@ -384,10 +412,10 @@ async def move_card(
 async def delete_card(
     board_id: int,
     card_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Delete a card."""
+    """Delete a card. Admin only."""
     # Verify board exists
     board = db.query(Board).filter(Board.id == board_id).first()
 
@@ -411,6 +439,36 @@ async def delete_card(
 
     db.delete(card)
     db.commit()
+
+
+@router.get("/boards/{board_id}/cards/{card_id}/history", response_model=List[CardEditHistoryEntry])
+async def get_card_history(
+    board_id: int,
+    card_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List a card's member-edit history, newest first."""
+    card = db.query(Card).join(Column).filter(
+        Card.id == card_id,
+        Column.board_id == board_id,
+    ).first()
+
+    if not card:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Card not found",
+        )
+
+    return [
+        CardEditHistoryEntry(
+            id=entry.id,
+            edited_by=entry.user.username if entry.user else "unknown",
+            changes=json.loads(entry.changes),
+            created_at=entry.created_at,
+        )
+        for entry in card.edit_history
+    ]
 
 
 # ============================================================================
@@ -483,7 +541,7 @@ async def board_ai_chat(
         # Apply actions if any
         actions_result = None
         if ai_result.get("actions"):
-            actions_result = await apply_board_actions(db, board_id, ai_result["actions"])
+            actions_result = await apply_board_actions(db, board_id, ai_result["actions"], current_user)
             if not actions_result.get("success"):
                 db.rollback()
                 raise HTTPException(

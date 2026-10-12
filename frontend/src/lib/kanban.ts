@@ -2,12 +2,16 @@ export type Card = {
   id: string;
   title: string;
   details: string;
+  // Set by the API-backed board only; unused by the local-state demo board.
+  hasMemberEdits?: boolean;
 };
 
 export type Column = {
   id: string;
   title: string;
   cardIds: string[];
+  // Set by the API-backed board only; used to enforce members-move-forward-only.
+  position?: number;
 };
 
 export type BoardData = {

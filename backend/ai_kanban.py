@@ -3,7 +3,8 @@ import json
 from typing import Optional
 from sqlalchemy.orm import Session
 
-from models import ConversationMessage, Card, BoardColumn as Column
+from card_rules import can_move_card, diff_card_changes, is_admin, record_member_edit
+from models import ConversationMessage, Card, BoardColumn as Column, User
 from schemas import BoardDetail
 from database import SessionLocal
 from ai import call_ai, AIError
@@ -152,9 +153,14 @@ Recent Conversation:
 
 
 async def apply_board_actions(
-    db: Session, board_id: int, actions: list[dict]
+    db: Session, board_id: int, actions: list[dict], current_user: User
 ) -> dict:
-    """Apply AI-suggested actions to the board."""
+    """Apply AI-suggested actions to the board.
+
+    Goes through the same member/admin rules as the REST card routes (see
+    card_rules.py) - the AI chat sidebar is another way to move/edit/delete
+    cards, not a bypass of those rules.
+    """
     from models import Board
 
     results = {
@@ -201,11 +207,15 @@ async def apply_board_actions(
                         )
                         continue
 
-                    if "title" in action:
+                    changes = diff_card_changes(
+                        card, action.get("title"), action.get("details")
+                    )
+                    if "title" in changes:
                         card.title = action["title"]
-                    if "details" in action:
+                    if "details" in changes:
                         card.details = action["details"]
 
+                    record_member_edit(db, card, current_user, changes)
                     results["successful"].append({"type": "update", "card_id": card_id})
 
                 elif action_type == "move":
@@ -221,6 +231,12 @@ async def apply_board_actions(
                         )
                         continue
 
+                    if not can_move_card(current_user, card.column.position, column.position):
+                        results["failed"].append(
+                            {"action": action, "reason": "Members can only move cards forward, not back to an earlier column"}
+                        )
+                        continue
+
                     card.column_id = column_id
                     card.position = action.get("position", 0)
                     results["successful"].append({"type": "move", "card_id": card_id})
@@ -231,6 +247,12 @@ async def apply_board_actions(
                     if not card:
                         results["failed"].append(
                             {"action": action, "reason": "Card not found"}
+                        )
+                        continue
+
+                    if not is_admin(current_user):
+                        results["failed"].append(
+                            {"action": action, "reason": "Only admins can delete cards"}
                         )
                         continue
 

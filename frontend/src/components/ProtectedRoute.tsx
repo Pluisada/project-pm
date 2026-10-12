@@ -64,6 +64,15 @@ export const ProtectedRoute = () => {
         }
       } catch (err) {
         console.error("Failed to load boards", err);
+        // A stored token that expired (or was issued for another DB) 401s here;
+        // drop it and fall back to login instead of spinning forever.
+        if ((err as { status_code?: number }).status_code === 401) {
+          await logout();
+          const status = await getSetupStatus();
+          setNeedsSetup(status.needs_setup);
+          setUsername(null);
+          setRole(null);
+        }
       }
     };
 
@@ -129,7 +138,7 @@ export const ProtectedRoute = () => {
         {view === "manage-users" ? (
           <ManageUsersPage onBack={() => setView("board")} />
         ) : (
-          <KanbanWithSidebar boardId={selectedBoardId} />
+          <KanbanWithSidebar boardId={selectedBoardId} role={role ?? "member"} />
         )}
       </div>
     </div>

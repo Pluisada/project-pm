@@ -248,6 +248,45 @@
         "created_at"
       ]
     },
+    "card_edit_history": {
+      "description": "Audit trail of card content edits made by member users (backs the 'M' badge / history modal). Distinct from card_actions, which is AI-only.",
+      "columns": {
+        "id": {
+          "type": "INTEGER",
+          "constraint": "PRIMARY KEY AUTOINCREMENT",
+          "nullable": false,
+          "description": "Unique history entry ID"
+        },
+        "card_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES cards(id) ON DELETE CASCADE",
+          "nullable": false,
+          "description": "Edited card"
+        },
+        "user_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES users(id) ON DELETE SET NULL",
+          "nullable": true,
+          "description": "Member who made the edit; SET NULL (not cascaded) so history survives user removal"
+        },
+        "changes": {
+          "type": "TEXT",
+          "nullable": false,
+          "description": "JSON: {\"title\": {\"old\", \"new\"}, \"details\": {\"old\", \"new\"}} - only the fields that changed"
+        },
+        "created_at": {
+          "type": "TIMESTAMP",
+          "default": "CURRENT_TIMESTAMP",
+          "nullable": false,
+          "description": "Edit timestamp"
+        }
+      },
+      "indexes": [
+        "card_id",
+        "user_id",
+        "created_at"
+      ]
+    },
     "card_actions": {
       "description": "AI-suggested card actions (for auditing and undo)",
       "columns": {
@@ -337,6 +376,12 @@
       "from": "boards.id",
       "to": "card_actions.board_id",
       "description": "One board has multiple card actions"
+    },
+    "card_to_edit_history": {
+      "type": "one-to-many",
+      "from": "cards.id",
+      "to": "card_edit_history.card_id",
+      "description": "One card can have multiple member-edit history entries"
     }
   },
   "constraints": {

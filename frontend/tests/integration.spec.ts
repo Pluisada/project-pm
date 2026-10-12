@@ -25,19 +25,29 @@ test.describe("Kanban Board Integration", () => {
 
   test("displays column titles", async ({ page }) => {
     await page.goto("/");
-    const expectedTitles = ["Backlog", "Discovery", "In Progress", "Review", "Done"];
-
-    for (const title of expectedTitles) {
-      await expect(page.getByText(title, { exact: true })).toBeVisible();
+    const titleInputs = page.locator('input[aria-label="Column title"]');
+    // evaluateAll doesn't auto-wait like `expect(locator)` matchers do, so
+    // it can read [] while the board is still loading.
+    await expect(titleInputs.first()).toBeVisible();
+    // Column titles live in an editable <input>'s value, not text content,
+    // so getByText can't see them.
+    const titles = await titleInputs.evaluateAll((inputs) =>
+      inputs.map((el) => (el as HTMLInputElement).value)
+    );
+    for (const title of ["Backlog", "Discovery", "In Progress", "Review", "Done"]) {
+      expect(titles).toContain(title);
     }
   });
 
   test("displays initial cards", async ({ page }) => {
     await page.goto("/");
-    // Should have at least 8 cards initially
     const cards = page.locator('[data-testid^="card-"]');
-    const count = await cards.count();
-    expect(count).toBeGreaterThanOrEqual(8);
+    // .count() doesn't auto-wait like `expect(locator)` matchers do, so it
+    // can read 0 while the board is still loading - wait for the first card
+    // to actually render before counting.
+    await expect(cards.first()).toBeVisible();
+    // Should have at least 8 cards initially
+    expect(await cards.count()).toBeGreaterThanOrEqual(8);
   });
 
   test("adds a card to a column", async ({ page }) => {
@@ -54,28 +64,36 @@ test.describe("Kanban Board Integration", () => {
     // Submit
     await firstColumn.getByRole("button", { name: /add card/i }).click();
 
-    // Verify card appears
-    await expect(firstColumn.getByText("Integration Test Card")).toBeVisible();
+    // Verify card appears - title lives in an <input>'s value, not text
+    // content, so this is matched via the card's data-title attribute.
+    await expect(
+      firstColumn.locator('[data-testid^="card-"][data-title="Integration Test Card"]')
+    ).toBeVisible();
   });
 
   test("deletes a card", async ({ page }) => {
     await page.goto("/");
     const firstColumn = page.locator('[data-testid^="column-"]').first();
 
+    // Unique per run - this DB persists across test runs, and a fixed title
+    // could otherwise collide with a leftover card from an earlier run.
+    const title = `Delete Me ${Date.now()}`;
+
     // Add a card first
     await firstColumn.getByRole("button", { name: /add a card/i }).click();
-    await firstColumn.getByPlaceholder("Card title").fill("Delete Me");
+    await firstColumn.getByPlaceholder("Card title").fill(title);
     await firstColumn.getByPlaceholder("Details").fill("Test");
     await firstColumn.getByRole("button", { name: /add card/i }).click();
 
-    // Verify card exists
-    await expect(firstColumn.getByText("Delete Me")).toBeVisible();
+    const card = firstColumn.locator(`[data-testid^="card-"][data-title="${title}"]`);
+    await expect(card).toBeVisible();
 
-    // Delete it
-    await firstColumn.getByRole("button", { name: /delete delete me/i }).click();
+    // Delete it. Anchored so it doesn't also match the drag handle, whose
+    // accessible name ("Drag Delete Me ...") contains the card's own title.
+    await card.getByRole("button", { name: /^delete/i }).click();
 
     // Verify it's gone
-    await expect(firstColumn.queryByText("Delete Me")).not.toBeVisible();
+    await expect(card).toHaveCount(0);
   });
 
   test("renames a column", async ({ page }) => {
@@ -118,9 +136,14 @@ test.describe("Kanban Board Integration", () => {
     const titleInput = firstColumn.locator('input[aria-label="Column title"]');
 
     // Measure interaction speed
+    const originalValue = await titleInput.inputValue();
     const startTime = Date.now();
     await titleInput.fill("Performance Test");
     const duration = Date.now() - startTime;
+
+    // Revert - this DB persists across test runs, and other tests
+    // (e.g. "displays column titles") expect the seeded column names.
+    await titleInput.fill(originalValue);
 
     // Should respond in less than 500ms
     expect(duration).toBeLessThan(500);

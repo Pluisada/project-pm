@@ -29,18 +29,22 @@ describe("KanbanBoard", () => {
 
     const titleInput = within(column).getByPlaceholderText(/card title/i);
     await userEvent.type(titleInput, "New card");
-    const detailsInput = within(column).getByPlaceholderText(/details/i);
+    // Exact match: a case-insensitive /details/i regex would also match
+    // existing cards' own (differently worded) detail textareas.
+    const detailsInput = within(column).getByPlaceholderText("Details");
     await userEvent.type(detailsInput, "Notes");
 
     await userEvent.click(within(column).getByRole("button", { name: /add card/i }));
 
-    expect(within(column).getByText("New card")).toBeInTheDocument();
+    expect(within(column).getByDisplayValue("New card")).toBeInTheDocument();
 
     const deleteButton = within(column).getByRole("button", {
       name: /delete new card/i,
     });
     await userEvent.click(deleteButton);
 
-    expect(within(column).queryByText("New card")).not.toBeInTheDocument();
+    // Title lives in an input's value, not text content - queryByText would
+    // find nothing regardless of whether the card was actually removed.
+    expect(within(column).queryByDisplayValue("New card")).not.toBeInTheDocument();
   });
 });

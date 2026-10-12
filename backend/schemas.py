@@ -115,11 +115,20 @@ class CardResponse(BaseModel):
     title: str
     details: Optional[str]
     position: int
+    has_member_edits: bool
     created_at: datetime
     updated_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class CardEditHistoryEntry(BaseModel):
+    """Schema for a single member-edit history entry on a card."""
+    id: int
+    edited_by: str
+    changes: dict
+    created_at: datetime
 
 
 # Board with nested data

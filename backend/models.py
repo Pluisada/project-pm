@@ -95,6 +95,22 @@ class Card(Base):
     # Relationships
     column = relationship("BoardColumn", back_populates="cards")
     actions = relationship("CardAction", back_populates="card", cascade="all, delete-orphan")
+    edit_history = relationship(
+        "CardEditHistory",
+        back_populates="card",
+        cascade="all, delete-orphan",
+        order_by="CardEditHistory.created_at.desc()",
+    )
+
+    @property
+    def has_member_edits(self) -> bool:
+        """Whether a member has ever edited this card's content.
+
+        Derived from the presence of history rows rather than a denormalized
+        flag, so there's a single source of truth: CardEditHistory rows are
+        only ever written for member edits (see routes.update_card).
+        """
+        return bool(self.edit_history)
 
     def __repr__(self):
         return f"<Card {self.title}>"
@@ -142,6 +158,31 @@ class CardAction(Base):
 
     def __repr__(self):
         return f"<CardAction {self.action_type}>"
+
+
+class CardEditHistory(Base):
+    """History of card content edits made by member users.
+
+    Only written for edits made by members (see routes.update_card) - admin
+    edits are not tracked here. This is what backs the "M" badge and its
+    detail modal in the UI, and is a distinct concern from CardAction (which
+    audits AI-driven changes).
+    """
+
+    __tablename__ = "card_edit_history"
+
+    id = SQLColumn(Integer, primary_key=True, index=True)
+    card_id = SQLColumn(Integer, ForeignKey("cards.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = SQLColumn(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    changes = SQLColumn(Text, nullable=False)  # JSON string: {"title": {"old", "new"}, "details": {"old", "new"}}
+    created_at = SQLColumn(DateTime, default=func.now(), nullable=False, index=True)
+
+    # Relationships
+    card = relationship("Card", back_populates="edit_history")
+    user = relationship("User")
+
+    def __repr__(self):
+        return f"<CardEditHistory card={self.card_id}>"
 
 
 # Alias para compatibilidade com código legado

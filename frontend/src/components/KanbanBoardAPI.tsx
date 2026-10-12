@@ -13,14 +13,20 @@ import {
 } from "@dnd-kit/core";
 import { KanbanColumn } from "@/components/KanbanColumn";
 import { KanbanCardPreview } from "@/components/KanbanCardPreview";
+import { CardHistoryModal } from "@/components/CardHistoryModal";
+import type { UserRole } from "@/lib/auth";
 import {
   getBoard,
   moveCard,
   updateColumn,
   createCard,
+  updateCard,
   deleteCard,
+  getCardHistory,
+  getErrorMessage,
   type BoardDetail,
   type CardResponse,
+  type CardEditHistoryEntry,
 } from "@/lib/api";
 
 // Columns and cards are separate DB tables, each with its own autoincrement
@@ -31,12 +37,22 @@ import {
 // id spaces distinct.
 const colDndId = (id: number) => `col-${id}`;
 const cardDndId = (id: number) => `card-${id}`;
+const cardIdFromDndId = (dndId: string) => Number(dndId.slice(5));
 
-export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
+export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserRole }) => {
+  const isAdminUser = role === "admin";
+
   const [board, setBoard] = useState<BoardDetail | null>(null);
   const [activeCardId, setActiveCardId] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // Transient error from a single action (move/delete/edit) - shown as a
+  // dismissible banner, never replaces the board like loadError does.
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const [historyCardId, setHistoryCardId] = useState<number | null>(null);
+  const [historyEntries, setHistoryEntries] = useState<CardEditHistoryEntry[] | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -48,12 +64,12 @@ export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
   useEffect(() => {
     const loadBoard = async () => {
       setIsLoading(true);
-      setError(null);
+      setLoadError(null);
       try {
         const data = await getBoard(boardId);
         setBoard(data);
-      } catch (err: any) {
-        setError(err.detail || "Failed to load board");
+      } catch (err: unknown) {
+        setLoadError(getErrorMessage(err, "Failed to load board"));
       } finally {
         setIsLoading(false);
       }
@@ -75,7 +91,7 @@ export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
 
   const handleDragStart = (event: DragStartEvent) => {
     const raw = event.active.id as string;
-    setActiveCardId(raw.startsWith("card-") ? Number(raw.slice(5)) : null);
+    setActiveCardId(raw.startsWith("card-") ? cardIdFromDndId(raw) : null);
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
@@ -88,7 +104,7 @@ export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
 
     const activeRaw = active.id as string;
     if (!activeRaw.startsWith("card-")) return;
-    const cardId = Number(activeRaw.slice(5));
+    const cardId = cardIdFromDndId(activeRaw);
     const card = cardsById[cardId];
     if (!card) return;
 
@@ -101,13 +117,25 @@ export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
       const overColumnId = Number(overRaw.slice(4));
       targetColumn = board.columns.find((col) => col.id === overColumnId);
     } else if (overRaw.startsWith("card-")) {
-      const overCardId = Number(overRaw.slice(5));
+      const overCardId = cardIdFromDndId(overRaw);
       targetColumn = board.columns.find((col) =>
         col.cards?.some((c) => c.id === overCardId)
       );
     }
 
     if (!targetColumn) return;
+
+    const sourceColumn = board.columns.find((col) => col.id === card.column_id);
+
+    // Members may only advance cards (move to a column further right, or
+    // reorder within the same column) — never move them back to an earlier
+    // column. The backend enforces this independently; this just avoids the
+    // jarring optimistic-update-then-revert for a move we already know will
+    // be rejected.
+    if (!isAdminUser && sourceColumn && targetColumn.position < sourceColumn.position) {
+      setActionError("Members can only move cards forward, not back to an earlier column.");
+      return;
+    }
 
     // Calculate new position
     const newPosition = targetColumn.cards?.length || 0;
@@ -131,10 +159,10 @@ export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
 
       // Make API call
       await moveCard(boardId, cardId, targetColumn.id, newPosition);
-    } catch (err: any) {
+    } catch (err: unknown) {
       // Revert on error
       setBoard(oldBoard);
-      setError(err.detail || "Failed to move card");
+      setActionError(getErrorMessage(err, "Failed to move card"));
     }
   };
 
@@ -155,9 +183,9 @@ export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
       });
 
       await updateColumn(boardId, columnId, title);
-    } catch (err: any) {
+    } catch (err: unknown) {
       setBoard(oldBoard);
-      setError(err.detail || "Failed to rename column");
+      setActionError(getErrorMessage(err, "Failed to rename column"));
     }
   };
 
@@ -180,8 +208,36 @@ export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
           ),
         };
       });
-    } catch (err: any) {
-      setError(err.detail || "Failed to create card");
+    } catch (err: unknown) {
+      setActionError(getErrorMessage(err, "Failed to create card"));
+    }
+  };
+
+  const handleUpdateCard = async (
+    columnId: number,
+    cardId: number,
+    title: string,
+    details: string
+  ): Promise<boolean> => {
+    if (!board) return false;
+
+    try {
+      const updated = await updateCard(boardId, cardId, title, details);
+      setBoard((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          columns: prev.columns.map((col) =>
+            col.id === columnId
+              ? { ...col, cards: col.cards?.map((c) => (c.id === cardId ? updated : c)) }
+              : col
+          ),
+        };
+      });
+      return true;
+    } catch (err: unknown) {
+      setActionError(getErrorMessage(err, "Failed to update card"));
+      return false;
     }
   };
 
@@ -206,10 +262,29 @@ export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
       });
 
       await deleteCard(boardId, cardId);
-    } catch (err: any) {
+    } catch (err: unknown) {
       setBoard(oldBoard);
-      setError(err.detail || "Failed to delete card");
+      setActionError(getErrorMessage(err, "Failed to delete card"));
     }
+  };
+
+  const handleOpenHistory = async (cardId: number) => {
+    setHistoryCardId(cardId);
+    setHistoryEntries(null);
+    setHistoryLoading(true);
+    try {
+      setHistoryEntries(await getCardHistory(boardId, cardId));
+    } catch (err: unknown) {
+      setActionError(getErrorMessage(err, "Failed to load card history"));
+      setHistoryCardId(null);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const handleCloseHistory = () => {
+    setHistoryCardId(null);
+    setHistoryEntries(null);
   };
 
   if (isLoading) {
@@ -225,11 +300,11 @@ export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
     );
   }
 
-  if (error || !board) {
+  if (loadError || !board) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <div className="text-center">
-          <p className="text-lg font-semibold text-red-600">{error || "Failed to load board"}</p>
+          <p className="text-lg font-semibold text-red-600">{loadError || "Failed to load board"}</p>
           <button
             onClick={() => window.location.reload()}
             className="mt-4 rounded bg-[var(--secondary-purple)] px-4 py-2 text-white"
@@ -242,6 +317,7 @@ export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
   }
 
   const activeCard = activeCardId ? cardsById[activeCardId] : null;
+  const historyCard = historyCardId ? cardsById[historyCardId] : null;
 
   return (
     <div className="relative overflow-hidden">
@@ -284,6 +360,20 @@ export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
           </div>
         </header>
 
+        {actionError && (
+          <div className="flex items-center justify-between gap-4 rounded-2xl border border-red-200 bg-red-50 px-5 py-3 text-sm font-medium text-red-700">
+            <span>{actionError}</span>
+            <button
+              type="button"
+              onClick={() => setActionError(null)}
+              className="shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold text-red-700 transition hover:bg-red-100"
+              aria-label="Dismiss"
+            >
+              X
+            </button>
+          </div>
+        )}
+
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -298,13 +388,24 @@ export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
                   id: colDndId(column.id),
                   title: column.title,
                   cardIds: column.cards?.map((c) => cardDndId(c.id)) || [],
+                  position: column.position,
                 }}
-                cards={column.cards?.map((c) => ({ ...c, id: cardDndId(c.id), details: c.details || "No details yet." })) || []}
+                cards={column.cards?.map((c) => ({
+                  ...c,
+                  id: cardDndId(c.id),
+                  details: c.details || "",
+                  hasMemberEdits: c.has_member_edits,
+                })) || []}
+                canDeleteCards={isAdminUser}
                 onRename={(_colId, title) => handleRenameColumn(column.id, title)}
                 onAddCard={(_colId, title, details) => handleAddCard(column.id, title, details)}
                 onDeleteCard={(_colId, cardDndIdValue) =>
-                  handleDeleteCard(column.id, Number(cardDndIdValue.slice(5)))
+                  handleDeleteCard(column.id, cardIdFromDndId(cardDndIdValue))
                 }
+                onUpdateCard={(_colId, cardDndIdValue, title, details) =>
+                  handleUpdateCard(column.id, cardIdFromDndId(cardDndIdValue), title, details)
+                }
+                onOpenCardHistory={(cardDndIdValue) => handleOpenHistory(cardIdFromDndId(cardDndIdValue))}
               />
             ))}
           </section>
@@ -317,6 +418,15 @@ export const KanbanBoardAPI = ({ boardId }: { boardId: number }) => {
           </DragOverlay>
         </DndContext>
       </main>
+
+      {historyCardId !== null && (
+        <CardHistoryModal
+          cardTitle={historyCard?.title ?? "Card"}
+          entries={historyEntries}
+          isLoading={historyLoading}
+          onClose={handleCloseHistory}
+        />
+      )}
     </div>
   );
 };
