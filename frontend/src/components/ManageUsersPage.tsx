@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
-import { createUser, listUsers, type UserResponse } from "@/lib/api";
-import type { ApiError } from "@/lib/api";
+import { createUser, getErrorMessage, listUsers, type UserResponse } from "@/lib/api";
 
 interface ManageUsersPageProps {
   onBack: () => void;
@@ -42,7 +41,7 @@ export const ManageUsersPage = ({ onBack }: ManageUsersPageProps) => {
       setUsers((prev) => [...prev, newUser]);
       setFormState(initialFormState);
     } catch (err) {
-      setError((err as ApiError).detail || "Failed to create user");
+      setError(getErrorMessage(err, "Failed to create user"));
     } finally {
       setSubmitting(false);
     }

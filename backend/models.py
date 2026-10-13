@@ -1,7 +1,7 @@
 """SQLAlchemy ORM models for PM database."""
 import enum
 from datetime import datetime
-from sqlalchemy import Column as SQLColumn, Date, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, Column as SQLColumn, Date, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 
@@ -202,6 +202,52 @@ class CardEditHistory(Base):
 
     def __repr__(self):
         return f"<CardEditHistory card={self.card_id}>"
+
+
+class CardStageEvent(Base):
+    """Append-only history of a card's stage: creation, moves, wins, losses,
+    reopenings and deletion. Written only by stage_history.py's flush
+    listener, in the same transaction as the change it records.
+
+    card_id, board_id and the column ids are deliberately plain integers, not
+    foreign keys, and Card has no relationship to this table: the history
+    must outlive deleted cards and columns (a card's last event is then
+    "deleted"). Stage kinds are copied at event time so the history stays
+    meaningful after a column is deleted. Titles are never stored.
+    """
+
+    __tablename__ = "card_stage_events"
+
+    id = SQLColumn(Integer, primary_key=True, index=True)
+    card_id = SQLColumn(Integer, nullable=False, index=True)
+    board_id = SQLColumn(Integer, nullable=False, index=True)
+    # created | moved | won | lost | reopened | deleted | baseline
+    event_type = SQLColumn(String, nullable=False)
+    from_column_id = SQLColumn(Integer, nullable=True)
+    from_stage_kind = SQLColumn(String, nullable=True)
+    to_column_id = SQLColumn(Integer, nullable=True)
+    to_stage_kind = SQLColumn(String, nullable=True)
+    user_id = SQLColumn(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # api | ai | undo | seed | migration | system
+    source = SQLColumn(String, nullable=False)
+    occurred_at = SQLColumn(DateTime, nullable=False, index=True)
+    # The card's deal value and currency at the moment of the event (Part 20),
+    # copied from the card in the same transaction. value_snapshot_taken says
+    # whether they were recorded at all: false for events written before
+    # snapshots existed, whose historical value is unknown (never back-filled).
+    # When true, null value/currency means the card genuinely had none.
+    # Float, like cards.deal_value: the snapshot is an exact copy of it.
+    deal_value_snapshot = SQLColumn(Float, nullable=True)
+    deal_currency_snapshot = SQLColumn(String(3), nullable=True)
+    value_snapshot_taken = SQLColumn(Boolean, nullable=False, default=False, server_default="0")
+
+    def __repr__(self):
+        return f"<CardStageEvent card={self.card_id} {self.event_type}>"
+
+
+# The value snapshot columns added to an existing card_stage_events by
+# migrate_stage_event_values.py (and checked at startup by database.py).
+STAGE_EVENT_VALUE_COLUMNS = ("deal_value_snapshot", "deal_currency_snapshot", "value_snapshot_taken")
 
 
 class UndoEntry(Base):

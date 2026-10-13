@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from auth import verify_token
 from database import get_db
 from models import User, UserRole
+from stage_history import SOURCE_API, set_stage_context
 
 
 def get_current_user(
@@ -49,6 +50,9 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Stage changes in this request are attributed to this user, as an API
+    # change unless the AI or undo path narrows the source.
+    set_stage_context(db, user, SOURCE_API)
     return user
 
 

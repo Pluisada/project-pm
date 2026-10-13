@@ -5,7 +5,7 @@ from datetime import date
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker, Session
-from models import Base
+from models import STAGE_EVENT_VALUE_COLUMNS, Base
 
 # Database URL from environment or default to SQLite
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./pm.db")
@@ -78,9 +78,55 @@ def get_db() -> Session:
 
 def init_db():
     """Initialize database - create tables if they don't exist."""
+    # Must run before create_all, which would otherwise silently create an
+    # empty card_stage_events table on an existing database.
+    require_stage_events_table(engine)
     Base.metadata.create_all(bind=engine)
     _add_missing_card_columns(engine)
     require_stage_kind_column(engine)
+    require_stage_event_value_columns(engine)
+
+
+class StageEventValuesMigrationRequired(RuntimeError):
+    """card_stage_events predates the value snapshot columns; the app refuses to start."""
+
+
+def require_stage_event_value_columns(bind) -> None:
+    """Refuse a card_stage_events table without the value snapshot columns.
+
+    create_all never adds columns to an existing table, and the stage-history
+    listener writes them on every event - so an unmigrated table would make
+    every card change fail. Migrate explicitly with migrate_stage_event_values.py.
+    """
+    existing = {col["name"] for col in inspect(bind).get_columns("card_stage_events")}
+    if not set(STAGE_EVENT_VALUE_COLUMNS) <= existing:
+        raise StageEventValuesMigrationRequired(
+            "card_stage_events has no value snapshot columns yet. Back the database up, then run "
+            "`uv run python migrate_stage_event_values.py --database <path>` (dry run) and add "
+            "`--apply` from backend/ - see docs/DATABASE.md."
+        )
+
+
+class StageEventsMigrationRequired(RuntimeError):
+    """An existing database predates card_stage_events; the app refuses to start."""
+
+
+def require_stage_events_table(bind) -> None:
+    """Refuse an existing database that has no card_stage_events table yet.
+
+    A brand-new database (no cards table) gets every table from create_all.
+    An existing one must be migrated explicitly with migrate_stage_events.py,
+    which also records each card's current stage as a "baseline" event -
+    letting create_all add an empty table would leave existing cards with no
+    starting point in their history.
+    """
+    tables = set(inspect(bind).get_table_names())
+    if "cards" in tables and "card_stage_events" not in tables:
+        raise StageEventsMigrationRequired(
+            "This database has no card_stage_events table yet. Back it up, then run "
+            "`uv run python migrate_stage_events.py --database <path>` (dry run) and "
+            "add `--apply` from backend/ - see docs/DATABASE.md."
+        )
 
 
 class StageKindMigrationRequired(RuntimeError):
@@ -197,3 +243,8 @@ def seed_default_board(db: Session, creator) -> None:
     db.commit()
 
     seed_pipeline(db, board, creator)
+
+
+# Registers the card stage-history flush listener (stage_history.py) for every
+# session, so no code path can change a card's stage without recording it.
+import stage_history  # noqa: E402,F401

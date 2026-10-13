@@ -8,6 +8,7 @@ from card_rules import InvalidCardUpdate, apply_card_updates, can_move_card, is_
 from lead_options import CURRENCIES, LEAD_SOURCES, PRODUCT_LINES
 from models import ConversationMessage, Card, BoardColumn as Column, User
 from schemas import BoardDetail, CardUpdate
+from stage_history import SOURCE_AI, set_stage_context
 from undo import record_undo, undo_create, undo_delete, undo_move, undo_update
 from database import SessionLocal
 from ai import call_ai, AIError
@@ -212,6 +213,7 @@ async def apply_board_actions(
     """
     from models import Board
 
+    set_stage_context(db, current_user, SOURCE_AI)
     results = {
         "successful": [],
         "failed": [],

@@ -95,20 +95,30 @@ export async function getSetupStatus(): Promise<{ needs_setup: boolean }> {
 /**
  * Create the first (admin) user. Only succeeds while no users exist yet.
  */
-export async function setupAdmin(credentials: LoginRequest): Promise<LoginResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/setup`, {
+/**
+ * POST JSON to an unauthenticated endpoint (setup, signup, password reset).
+ * Throws an Error carrying the backend's message (or `fallback`) when the
+ * response isn't ok; otherwise returns the response for the caller to read.
+ * Deliberately not apiCall: these send no auth header and throw plain Error.
+ */
+async function postJson(path: string, body: unknown, fallback: string): Promise<Response> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(credentials),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(extractErrorDetail(errorData, "Setup failed"));
+    throw new Error(extractErrorDetail(errorData, fallback));
   }
+  return response;
+}
 
+export async function setupAdmin(credentials: LoginRequest): Promise<LoginResponse> {
+  const response = await postJson("/api/setup", credentials, "Setup failed");
   const data: LoginResponse = await response.json();
   storeAuth(data);
   return data;
@@ -204,36 +214,14 @@ export function isAdmin(): boolean {
  * not the address is already registered.
  */
 export async function requestSignup(email: string): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/api/signup`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ email }),
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(extractErrorDetail(errorData, "Sign-up failed"));
-  }
+  await postJson("/api/signup", { email }, "Sign-up failed");
 }
 
 /**
  * Create the account for a signup link's token. Does not log in.
  */
 export async function completeSignup(token: string, password: string): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/api/signup/complete`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ token, password }),
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(extractErrorDetail(errorData, "Could not create account"));
-  }
+  await postJson("/api/signup/complete", { token, password }, "Could not create account");
 }
 
 /**
@@ -242,19 +230,7 @@ export async function completeSignup(token: string, password: string): Promise<v
  * sent to.
  */
 export async function requestPasswordReset(identifier: string): Promise<{ email: string }> {
-  const response = await fetch(`${API_BASE_URL}/api/password/forgot`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ identifier }),
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(extractErrorDetail(errorData, "Could not send reset link"));
-  }
-
+  const response = await postJson("/api/password/forgot", { identifier }, "Could not send reset link");
   return response.json();
 }
 
@@ -262,16 +238,5 @@ export async function requestPasswordReset(identifier: string): Promise<{ email:
  * Set a new password from a reset link's token. Does not log in.
  */
 export async function resetPassword(token: string, password: string): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/api/password/reset`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ token, password }),
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(extractErrorDetail(errorData, "Could not reset password"));
-  }
+  await postJson("/api/password/reset", { token, password }, "Could not reset password");
 }

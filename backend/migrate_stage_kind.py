@@ -56,6 +56,29 @@ def sqlite_path_from_url(url: str) -> str:
     return os.path.abspath(path)
 
 
+def resolve_database_path(argument) -> str:
+    """The --database argument, else DATABASE_URL, else ./pm.db - as an
+    absolute path to an existing file. Shared by every migration script."""
+    path = os.path.abspath(argument) if argument else sqlite_path_from_url(
+        os.getenv("DATABASE_URL", "sqlite:///./pm.db")
+    )
+    if not os.path.isfile(path):
+        raise MigrationError(f"No database file at {path}")
+    return path
+
+
+def backup_database(conn, path: str, tag: str, now=datetime.now) -> str:
+    """Copy the open database next to itself as <name>-pre-<tag>-<time>.db.bak
+    (the suffix .gitignore ignores) and return the copy's path."""
+    base, _ = os.path.splitext(path)
+    backup_path = f"{base}-pre-{tag}-{now():%Y%m%d%H%M%S}.db.bak"
+    backup = sqlite3.connect(backup_path)
+    with backup:
+        conn.backup(backup)
+    backup.close()
+    return backup_path
+
+
 def has_stage_kind(conn) -> bool:
     return any(row[1] == "stage_kind" for row in conn.execute("PRAGMA table_info(columns)"))
 
@@ -135,12 +158,7 @@ def apply(path: str, overrides: dict | None = None, now=datetime.now) -> tuple[d
         if result["errors"]:
             raise MigrationError("Unresolved problems:\n  " + "\n  ".join(result["errors"]))
 
-        base, _ = os.path.splitext(path)
-        backup_path = f"{base}-pre-stage-kind-{now():%Y%m%d%H%M%S}.db.bak"
-        backup = sqlite3.connect(backup_path)
-        with backup:
-            conn.backup(backup)
-        backup.close()
+        backup_path = backup_database(conn, path, "stage-kind", now)
 
         before = _snapshot(conn)
         conn.execute("BEGIN IMMEDIATE")
@@ -189,11 +207,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        path = os.path.abspath(args.database) if args.database else sqlite_path_from_url(
-            os.getenv("DATABASE_URL", "sqlite:///./pm.db")
-        )
-        if not os.path.isfile(path):
-            raise MigrationError(f"No database file at {path}")
+        path = resolve_database_path(args.database)
         overrides = _parse_overrides(args.set)
 
         if args.apply:

@@ -204,7 +204,7 @@ uv run python migrate_stage_kind.py --apply      # backup + migrate in one trans
 
 **Recovery.** Stop the app and copy the automatic backup (`<name>-pre-stage-kind-<time>.db.bak`, ignored by git) back over `pm.db`. The previous code version runs on it unchanged.
 
-**Development database dry run (2026-10-13).** Board 1 has one exact `Award` (column 5) and one exact `Lost` (column 6), with no duplicates and no look-alikes. The migration would classify them `won` and `lost`, and the 4 other stages `open`. It has not been applied.
+**Development database dry run (2026-10-13).** Board 1 has one exact `Award` (column 5) and one exact `Lost` (column 6), with no duplicates and no look-alikes. The migration would classify them `won` and `lost`, and the 4 other stages `open`. Applied by the operator on 2026-10-13.
 
 ### cards
 **Purpose:** Sales leads - one card per lead; the card's column is its sales stage
@@ -284,6 +284,108 @@ uv run python migrate_stage_kind.py --apply      # backup + migrate in one trans
 - Only written for edits made by `member` users - admin edits are not tracked here (`routes.update_card`)
 - A card's `has_member_edits` flag is `true` whenever it has at least one row here; it stays `true` permanently, even if an admin edits the card afterwards
 - `user_id` is `SET NULL` rather than cascading, so history survives if the editing user is later removed
+
+### card_stage_events
+**Purpose:** Append-only history of each card's stage (Part 18), read by the KPI engine (`backend/kpis.py`, Part 19).
+
+| Column | Type | Constraints | Purpose |
+|--------|------|-------------|---------|
+| id | INTEGER | PK | Unique, also the tie-break for events in the same instant |
+| card_id | INTEGER | NOT NULL, indexed, **no FK** | The card; survives the card's deletion |
+| board_id | INTEGER | NOT NULL, indexed, no FK | Board the card was on |
+| event_type | VARCHAR | NOT NULL | `created`, `moved`, `won`, `lost`, `reopened`, `deleted` or `baseline` |
+| from_column_id / from_stage_kind | INTEGER / VARCHAR | nullable | Stage before (empty for `created`/`baseline`) |
+| to_column_id / to_stage_kind | INTEGER / VARCHAR | nullable | Stage after (empty for `deleted`) |
+| user_id | INTEGER | FK → users, ON DELETE SET NULL, nullable | Who acted (empty for `system`/`migration`) |
+| source | VARCHAR | NOT NULL | `api` (REST: UI or API client), `ai`, `undo`, `seed`, `migration`, `system` |
+| occurred_at | DATETIME | NOT NULL, indexed | When (UTC) |
+| deal_value_snapshot | FLOAT | nullable | Card's `deal_value` at the event (Part 20); an exact copy of `cards.deal_value`, which is also FLOAT |
+| deal_currency_snapshot | VARCHAR(3) | nullable | Card's `currency` at the event |
+| value_snapshot_taken | BOOLEAN | NOT NULL, DEFAULT 0 | 1 = recorded at event time (a null value means the card had none); 0 = event predates snapshots, value unknown |
+
+**Event semantics.** The type is decided by `stage_kind`, never by titles:
+- `won`: the card enters the won stage from any other stage.
+- `lost`: the card enters the lost stage from any other stage. This includes won → lost.
+- `reopened`: the card goes from won or lost back to an open stage.
+- `moved`: open → open.
+- `created`: a card is inserted.
+- `deleted`: a card is removed.
+- `baseline`: written only by the migration (see below).
+
+A reorder within the same column, or an edit of title, details or lead fields, records **nothing**.
+
+**How it's written.** Only `backend/stage_history.py` writes this table, through a SQLAlchemy `after_flush` listener. It inserts the events on the same connection, in the same transaction as the card change: either both commit or both roll back. Every path goes through it with no per-route code, so a change can't be missed or recorded twice:
+- REST create, move and delete;
+- AI actions;
+- undo;
+- column and board deletion cascading to their cards;
+- seeding.
+
+Entry points only set who acted and the source (`set_stage_context`). REST routes get it from `deps.get_current_user`.
+
+**Card ids are never reused.** `cards` has no `AUTOINCREMENT`, so SQLite would hand a deleted top card's id to the next new card. A `before_flush` listener therefore allocates new ids above both `max(cards.id)` and `max(card_stage_events.card_id)`.
+
+**Deletion.** Card deletion is unchanged: it is still a hard delete. History stays readable through `card_id` and ends with a `deleted` event, which is why `card_id`, `board_id` and the column ids are not foreign keys, and why `Card` has no relationship to this table. Stage kinds are copied at event time, so the history keeps its meaning after a column is deleted.
+
+**Undo.** Undo never edits or removes events; it adds compensating ones:
+- an undone move is a new event with `source` = `undo`;
+- undoing a create records `deleted`;
+- undoing a delete records `created` for the re-created card, which has a new id;
+- undoing an edit records nothing.
+
+**Value snapshots (Part 20).** Every event, of every type, copies the card's value and currency in the same transaction, with `value_snapshot_taken` = 1. Historical money (won/lost KPIs) comes only from these snapshots, never from the card's current value. Events written before Part 20 keep `value_snapshot_taken` = 0 and no value: their historical value is unknown and is never back-filled. The Part 18 migration, when run on a new database, writes its baselines with a snapshot, because their timestamp is the migration instant.
+
+**Query.** `stage_history.card_stage_history(db, card_id)` returns a card's events ordered by `occurred_at`, then `id`. There is no API endpoint or UI for it yet.
+
+#### Migrating an existing database to `card_stage_events`
+
+Databases created before Part 18 have no `card_stage_events` table. It is **not** created implicitly: `init_db()` checks for it before `create_all`, and refuses to start with `StageEventsMigrationRequired`. A brand-new database gets every table normally. The `stage_kind` migration (Part 17) must be applied first.
+
+From `backend/`, with the app stopped:
+```bash
+cp pm.db "pm-manual-$(date +%Y%m%d%H%M%S).db.bak"                    # optional extra backup
+uv run python migrate_stage_events.py --database "$PWD/pm.db"           # dry run, read-only
+uv run python migrate_stage_events.py --database "$PWD/pm.db" --apply   # backup + migrate
+```
+
+**What `--apply` does, in one transaction:**
+1. Creates the table and indexes. The DDL is generated from `models.CardStageEvent`, so it can't drift from the app.
+2. Writes one `baseline` event per existing card, with:
+   - the card's current column and `stage_kind`;
+   - `source` = `migration`;
+   - no user;
+   - `occurred_at` = the migration time.
+3. Checks that users, boards, columns, cards and card→column links are unchanged, and that every card got exactly one baseline. Otherwise it rolls everything back.
+
+**No invented history.** A `baseline` is a reference point, not an observed move. Nothing is back-filled: no `created`, `won` or `lost` events for the past, and no historical dates. Cards whose column is missing get no baseline and are reported.
+
+**Safety and recovery.**
+- Refuses to run twice, and refuses before the `stage_kind` migration.
+- Takes a backup first: `<name>-pre-stage-events-<time>.db.bak`, ignored by git.
+- To recover, stop the app and copy the backup over `pm.db`. The current code will then refuse the database again until it's re-migrated; the code from before Part 18 runs on it unchanged.
+
+**Development database dry run (2026-10-13).** 7 cards would get 7 baselines (5 open, 1 won, 1 lost). Applied by the operator on 2026-10-13.
+
+#### Adding value snapshots to an existing `card_stage_events` (Part 20)
+
+Databases migrated with Part 18 before Part 20 have the table without the three value columns. The app refuses to start (`StageEventValuesMigrationRequired`) until they are added explicitly. From `backend/`, with the app stopped:
+```bash
+cp pm.db "pm-manual-$(date +%Y%m%d%H%M%S).db.bak"                             # optional extra backup
+uv run python migrate_stage_event_values.py --database "$PWD/pm.db"            # dry run, read-only
+uv run python migrate_stage_event_values.py --database "$PWD/pm.db" --apply    # backup + migrate
+```
+
+**What `--apply` does, in one transaction:**
+1. Adds the 3 columns. The types are generated from the model: `FLOAT`, `VARCHAR(3)`, and `BOOLEAN NOT NULL DEFAULT 0`.
+2. Leaves every existing event at `value_snapshot_taken` = 0 with null values. What those events were worth is unknown, so nothing is back-filled, and the current value is not used.
+3. Checks that row counts of users, boards, columns, cards and events are unchanged, that every existing event row is identical, and that no event claims a snapshot. Otherwise it rolls back.
+
+**Safety and recovery.**
+- Refuses to run twice, and refuses before the Part 18 table exists.
+- Takes a backup first: `<name>-pre-stage-event-values-<time>.db.bak`, ignored by git.
+- To recover, stop the app and copy the backup over `pm.db`.
+
+**Development database dry run (2026-10-13).** 7 existing events (7 baselines) would be marked "value unknown". Applied by the operator on 2026-10-13. The same apply on a temporary copy preserved all 7 events, 7 cards and 15 users, with no value invented.
 
 ### undo_entries
 **Purpose:** Each user's single level of undo - the inverse of their last board change

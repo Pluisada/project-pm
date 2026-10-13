@@ -25,6 +25,7 @@ from auth import (
 )
 from database import E2E_MODE, get_db, init_db, seed_default_board
 from deps import get_current_user
+from stage_history import SOURCE_SEED, set_stage_context
 from mailer import send_email
 from models import User, UserRole
 from routes import router as api_router
@@ -141,6 +142,7 @@ async def setup(request: SetupRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
 
+    set_stage_context(db, user, SOURCE_SEED)
     seed_default_board(db, user)
 
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)

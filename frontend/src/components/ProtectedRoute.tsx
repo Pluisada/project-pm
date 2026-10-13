@@ -17,18 +17,9 @@ import { SignupPage } from "@/components/SignupPage";
 import { SetPasswordPage } from "@/components/SetPasswordPage";
 import { ForgotPasswordPage } from "@/components/ForgotPasswordPage";
 import { ManageUsersPage } from "@/components/ManageUsersPage";
+import { LoadingScreen } from "@/components/LoadingScreen";
 import { ReportsPage } from "@/components/ReportsPage";
-
-const LoadingScreen = ({ message }: { message: string }) => (
-  <div className="flex min-h-screen items-center justify-center">
-    <div className="text-center">
-      <div className="inline-block">
-        <div className="h-12 w-12 animate-spin rounded-full border-4 border-[var(--primary-blue)] border-t-transparent"></div>
-      </div>
-      <p className="mt-4 text-sm text-[var(--gray-text)]">{message}</p>
-    </div>
-  </div>
-);
+import { DashboardPage } from "@/components/DashboardPage";
 
 export const ProtectedRoute = () => {
   const [username, setUsername] = useState<string | null>(null);
@@ -36,7 +27,7 @@ export const ProtectedRoute = () => {
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedBoardId, setSelectedBoardId] = useState<number | null>(null);
-  const [view, setView] = useState<"board" | "manage-users" | "reports">("board");
+  const [view, setView] = useState<"board" | "manage-users" | "reports" | "dashboard">("board");
   const [authView, setAuthView] = useState<
     "login" | "signup" | "complete-signup" | "forgot-password" | "reset-password"
   >("login");
@@ -200,6 +191,14 @@ export const ProtectedRoute = () => {
         </span>
         {view === "board" && (
           <button
+            onClick={() => setView("dashboard")}
+            className="rounded-lg border border-[var(--stroke)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--navy-dark)] transition hover:border-[var(--primary-blue)]"
+          >
+            Dashboard
+          </button>
+        )}
+        {view === "board" && (
+          <button
             onClick={() => setView("reports")}
             className="rounded-lg border border-[var(--stroke)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--navy-dark)] transition hover:border-[var(--primary-blue)]"
           >
@@ -228,6 +227,8 @@ export const ProtectedRoute = () => {
           <ManageUsersPage onBack={() => setView("board")} />
         ) : view === "reports" ? (
           <ReportsPage boardId={selectedBoardId} onBack={() => setView("board")} />
+        ) : view === "dashboard" ? (
+          <DashboardPage boardId={selectedBoardId} onBack={() => setView("board")} />
         ) : (
           <KanbanWithSidebar boardId={selectedBoardId} role={role ?? "member"} />
         )}

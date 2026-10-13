@@ -428,6 +428,90 @@
         "user_id (UNIQUE)",
         "board_id"
       ]
+    },
+    "card_stage_events": {
+      "description": "Append-only card stage history (Part 18), written only by stage_history.py's flush listener in the same transaction as the change. card_id/board_id/column ids are not FKs so history survives deletions.",
+      "columns": {
+        "id": {
+          "type": "INTEGER",
+          "constraint": "PRIMARY KEY",
+          "nullable": false,
+          "description": "Unique ID; tie-break within the same instant"
+        },
+        "card_id": {
+          "type": "INTEGER",
+          "nullable": false,
+          "description": "Card (no FK: kept after the card is deleted)"
+        },
+        "board_id": {
+          "type": "INTEGER",
+          "nullable": false,
+          "description": "Board the card was on (no FK)"
+        },
+        "event_type": {
+          "type": "VARCHAR",
+          "nullable": false,
+          "description": "created | moved | won | lost | reopened | deleted | baseline"
+        },
+        "from_column_id": {
+          "type": "INTEGER",
+          "nullable": true,
+          "description": "Column before (null for created/baseline)"
+        },
+        "from_stage_kind": {
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": "stage_kind before, copied at event time"
+        },
+        "to_column_id": {
+          "type": "INTEGER",
+          "nullable": true,
+          "description": "Column after (null for deleted)"
+        },
+        "to_stage_kind": {
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": "stage_kind after, copied at event time"
+        },
+        "user_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES users(id) ON DELETE SET NULL",
+          "nullable": true,
+          "description": "Who acted"
+        },
+        "source": {
+          "type": "VARCHAR",
+          "nullable": false,
+          "description": "api | ai | undo | seed | migration | system"
+        },
+        "occurred_at": {
+          "type": "DATETIME",
+          "nullable": false,
+          "description": "When (UTC)"
+        },
+        "deal_value_snapshot": {
+          "type": "FLOAT",
+          "nullable": true,
+          "description": "Card deal_value at event time (Part 20)"
+        },
+        "deal_currency_snapshot": {
+          "type": "VARCHAR(3)",
+          "nullable": true,
+          "description": "Card currency at event time"
+        },
+        "value_snapshot_taken": {
+          "type": "BOOLEAN",
+          "default": "0",
+          "nullable": false,
+          "description": "1 = recorded at event time (null value = card had none); 0 = event predates snapshots, value unknown"
+        }
+      },
+      "indexes": [
+        "id",
+        "card_id",
+        "board_id",
+        "occurred_at"
+      ]
     }
   },
   "relationships": {

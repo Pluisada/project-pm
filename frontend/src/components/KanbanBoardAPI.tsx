@@ -17,6 +17,7 @@ import { KanbanColumn } from "@/components/KanbanColumn";
 import { KanbanCardPreview } from "@/components/KanbanCardPreview";
 import { CardHistoryModal } from "@/components/CardHistoryModal";
 import { LeadEditModal } from "@/components/LeadEditModal";
+import { LoadingScreen } from "@/components/LoadingScreen";
 import { todayIso } from "@/lib/format";
 import type { UserRole } from "@/lib/auth";
 import {
@@ -33,6 +34,7 @@ import {
   undoLastChange,
   type BoardDetail,
   type CardResponse,
+  type ColumnResponse,
   type CardEditHistoryEntry,
   type CardUpdatePayload,
   type LeadOptions,
@@ -153,6 +155,11 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
     }
   };
 
+  // Apply a per-column change to the board in state (a no-op before it loads).
+  const updateColumns = (update: (column: ColumnResponse) => ColumnResponse) => {
+    setBoard((prev) => (prev ? { ...prev, columns: prev.columns.map(update) } : prev));
+  };
+
   const handleDragStart = (event: DragStartEvent) => {
     const raw = event.active.id as string;
     setActiveCardId(raw.startsWith("card-") ? cardIdFromDndId(raw) : null);
@@ -208,18 +215,12 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
     const oldBoard = board;
     try {
       // Update UI immediately
-      setBoard((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          columns: prev.columns.map((col) => ({
-            ...col,
-            cards: col.id === targetColumn.id
-              ? [...(col.cards || []).filter((c) => c.id !== cardId), { ...card, column_id: targetColumn.id, position: newPosition }]
-              : col.cards?.filter((c) => c.id !== cardId),
-          })),
-        };
-      });
+      updateColumns((col) => ({
+        ...col,
+        cards: col.id === targetColumn.id
+          ? [...(col.cards || []).filter((c) => c.id !== cardId), { ...card, column_id: targetColumn.id, position: newPosition }]
+          : col.cards?.filter((c) => c.id !== cardId),
+      }));
 
       // Make API call
       await moveCard(boardId, cardId, targetColumn.id, newPosition);
@@ -237,15 +238,7 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
   const handleRenameColumn = async (columnId: number, title: string): Promise<boolean> => {
     try {
       const updated = await updateColumn(boardId, columnId, title);
-      setBoard((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          columns: prev.columns.map((col) =>
-            col.id === columnId ? { ...col, title: updated.title } : col
-          ),
-        };
-      });
+      updateColumns((col) => (col.id === columnId ? { ...col, title: updated.title } : col));
       return true;
     } catch (err: unknown) {
       setActionError(getErrorMessage(err, "Failed to rename column"));
@@ -259,37 +252,18 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
     try {
       const newCard = await createCard(boardId, columnId, title, details);
       refreshUndo();
-      setBoard((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          columns: prev.columns.map((col) =>
-            col.id === columnId
-              ? {
-                  ...col,
-                  cards: [...(col.cards || []), newCard],
-                }
-              : col
-          ),
-        };
-      });
+      updateColumns((col) => (col.id === columnId ? { ...col, cards: [...(col.cards || []), newCard] } : col));
     } catch (err: unknown) {
       setActionError(getErrorMessage(err, "Failed to create card"));
     }
   };
 
   const replaceCard = (updated: CardResponse) => {
-    setBoard((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        columns: prev.columns.map((col) =>
-          col.id === updated.column_id
-            ? { ...col, cards: col.cards?.map((c) => (c.id === updated.id ? updated : c)) }
-            : col
-        ),
-      };
-    });
+    updateColumns((col) =>
+      col.id === updated.column_id
+        ? { ...col, cards: col.cards?.map((c) => (c.id === updated.id ? updated : c)) }
+        : col
+    );
   };
 
   // Errors propagate so the modal can show them and stay open.
@@ -321,20 +295,9 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
 
     const oldBoard = board;
     try {
-      setBoard((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          columns: prev.columns.map((col) =>
-            col.id === columnId
-              ? {
-                  ...col,
-                  cards: col.cards?.filter((c) => c.id !== cardId),
-                }
-              : col
-          ),
-        };
-      });
+      updateColumns((col) =>
+        col.id === columnId ? { ...col, cards: col.cards?.filter((c) => c.id !== cardId) } : col
+      );
 
       await deleteCard(boardId, cardId);
       refreshUndo();
@@ -364,16 +327,7 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
   };
 
   if (isLoading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="text-center">
-          <div className="inline-block">
-            <div className="h-12 w-12 animate-spin rounded-full border-4 border-[var(--primary-blue)] border-t-transparent"></div>
-          </div>
-          <p className="mt-4 text-sm text-[var(--gray-text)]">Loading board...</p>
-        </div>
-      </div>
-    );
+    return <LoadingScreen message="Loading board..." />;
   }
 
   if (loadError || !board) {

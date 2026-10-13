@@ -4,6 +4,41 @@ User-facing changes, newest first. For design decisions, test results and known 
 
 ## 2026-10-13
 
+### Executive Dashboard (PLAN Part 21)
+- New **Dashboard** screen for all users, with the following sections:
+  - **Filters:** last 30 days, last 90 days, year to date or a custom range, with optional comparison to the previous period.
+  - **Headline numbers:** won, lost, win rate, sales cycle, new opportunities and open deals.
+  - **Closing values by outcome:** the value recorded at closing, deals whose value is unavailable, and today's value for comparison, shown separately.
+  - **Conversion.**
+  - **Time in stage.**
+  - **Open pipeline by stage.**
+  - **Aging.**
+  - **Data quality.**
+- Partial or missing history is labelled as such ("partial history", "not tracked", "at least"), never shown as zero. Values stay per currency.
+
+### Closing values in stage history (PLAN Part 20)
+- Every stage change now records the deal value and currency at that moment. Won/lost value KPIs use the value at closing, so later edits (or deleting the card) no longer change past results. Today's value is shown separately.
+- Older events have no recorded value. They are reported as "value unavailable", never filled in with today's value.
+- **Action needed for existing databases:** run `backend/migrate_stage_event_values.py` once (dry run first, `--apply` backs up then migrates). The app refuses to start until this is done. See `docs/DATABASE.md`.
+
+### KPI engine and API (PLAN Part 19)
+- New read-only endpoints at `/api/boards/{id}/kpis/`:
+  - `summary`: won/lost deals and values, win rates, the creation cohort and the sales cycle, optionally compared with the previous period;
+  - `conversion`;
+  - `stage-time`;
+  - `aging`;
+  - `pipeline`.
+
+  There is no screen for them yet; the dashboard comes next.
+- Built only on recorded stage history. Cards that were already in a stage when tracking started are never counted as wins or losses, and their time in that stage is shown as "at least", never estimated. Values stay per currency.
+- Every formula is defined in `docs/KPIS.md`.
+
+### Card stage history (PLAN Part 18)
+- Every stage change of a card is now recorded with who did it and how (UI/API, AI assistant, undo): creation, moves, wins, losses, reopenings and deletion. Groundwork for future pipeline reports; nothing new is shown on screen yet.
+- Undo adds a new, compensating entry instead of rewriting history; deleting a card keeps its history.
+- Card ids are no longer reused after a deletion.
+- **Action needed for existing databases:** run `backend/migrate_stage_events.py` once (dry run first, `--apply` backs up then migrates). Existing cards get a "baseline" entry for their current stage - no past moves are invented. The app refuses to start until this is done. See `docs/DATABASE.md`.
+
 ### Stable stage identity and isolated E2E tests (PLAN Part 17)
 - Each stage now has a fixed type: open, won or lost. Reports count won and lost deals by that type, so renaming a column (e.g. "Award") no longer changes any number. Won and Lost columns show a small badge.
 - Only admins can rename columns. The new title is saved when you leave the field, not on every keystroke. Members see the title as plain text.

@@ -808,3 +808,99 @@ Remove two structural risks: (1) reports classified won/lost by column title, so
 - No admin UI to change a column's `stage_kind` (API only).
 - E2E is serial on one shared throwaway board; parallel workers need per-test boards.
 - Docker E2E needs a test profile (`PM_E2E=1`, temp DB) before `playwright.docker.config.ts` can run.
+
+## Part 18: Card Stage History ✅ COMPLETE (2026-10-13)
+
+### Objective
+Record every commercial stage transition reliably, as the base for future executive KPIs (no dashboard, reports or UI in this part).
+
+### Design decisions
+- **Single writer:** an SQLAlchemy `after_flush` listener (`stage_history.py`) records events on the same connection/transaction as the card change. Probed first: `after_flush` sees new cards with ids, `column_id` history and cards deleted by ORM cascades (column/board deletion), so one listener covers REST, AI, undo, cascades and seeding with no per-route code - no path can be missed or double-recorded.
+- **Attribution:** `set_stage_context(db, user, source)` - `api` from `deps.get_current_user`, `ai` in `apply_board_actions`, `undo` in `apply_undo`, `seed` at setup, `system` otherwise. UI and direct API calls are indistinguishable server-side, hence `api`.
+- **Types from stage_kind:** created, moved (open->open), won, lost, reopened (won/lost->open), deleted, baseline (migration only). Reorders and field edits record nothing.
+- **Deletion policy:** hard delete unchanged; history kept via plain-integer `card_id`/`board_id`/column ids (no FKs, no Card relationship), ending in a `deleted` event; stage kinds copied at event time. Soft delete was rejected as an unrequested behavior change.
+- **Card id reuse (found by the tests):** SQLite reused a just-deleted top card's id for the next card, which would splice histories (and could make a stale undo step hit the wrong card). A `before_flush` allocator assigns ids above `max(cards.id, card_stage_events.card_id)` - no table rebuild needed.
+- **Migration:** `migrate_stage_events.py`, Part 17 pattern (read-only dry run; `--apply` with backup, one transaction, integrity check, refuses twice, requires stage_kind). Existing cards get one `baseline` event at migration time; nothing is back-filled. `init_db()` refuses an existing DB without the table *before* `create_all` (which would otherwise create it empty). Not applied to the dev database; its dry run: 7 cards -> 7 baselines (5 open, 1 won, 1 lost).
+
+### Tests & Verification
+- [x] `backend/test_stage_history.py` (35): seed/creation events; open->open move; won; lost; won->lost; admin reopen; lead edit and same-column reorder record nothing; invalid requests (404, member backward 403, 401, member delete 403, 422) record nothing and leave the card; event write failure rolls back move and create; exactly one event per move; AI create/move (source ai, user) and refused AI backward move; undo of move (original kept + compensating), of edit (nothing), of create (deleted), of delete (created, new id), after another user's later move (from actual column); card/column/board deletion keep history ending in `deleted`; no reused ids; chronological query with id tie-break; migration (app refusal, fresh DB accepted, dry run byte-identical, apply baselines + data preserved + backup identical, migrated DB records new events, refuses twice, requires stage_kind, orphan card reported not invented, mid-transaction failure rollback, backup restore)
+- [x] Backend suite: 247 passed, only the 3 known pre-existing failures
+- [x] Playwright (isolated): 47/47; dev `backend/pm.db` byte-identical throughout
+
+### Known gaps
+- Dev database not migrated; the dev backend refuses to start until `migrate_stage_events.py --apply`.
+- No endpoint/UI for history; no KPIs built on it yet.
+- Baselines carry no past information (by design); KPIs must treat them as "already in stage at tracking start".
+- Several moves of the same card within one flush collapse into one net event (only possible inside a single AI request).
+
+## Part 19: Commercial KPI Engine + Read-only API ✅ COMPLETE (2026-10-13)
+
+### Objective
+Reliable, tested commercial KPIs over `card_stage_events`, exposed by a read-only API. No dashboard yet.
+
+### Design
+- Definitions written first in `docs/KPIS.md` (the contract): flow vs stock, half-open UTC periods, previous-period rule, per-currency money (current card value; deleted cards' values unknown), baseline semantics, stays (complete / partial / current), and one denominator per rate.
+- `backend/kpis.py`: service layer independent of HTTP; `load_board_history` = 3 queries, then pure functions (no N+1, deterministic via `(occurred_at, id)` ordering).
+- KPIs: won/lost/reopened (events vs distinct opportunities vs `still_in_outcome`), `win_rate_closed` (last outcome in period), creation cohort (size, first outcome, `win_rate`, `closed_win_rate`, `reached` per stage), advancement per open stage, time in stage (complete/partial/current, deletions excluded), velocity (created -> first won/lost; baseline cards excluded and counted), aging (open stock; baseline ages are lower bounds), pipeline (stock per stage and currency). Classic value-weighted "pipeline velocity" deliberately not provided (would mix currencies).
+- API: `GET /api/boards/{id}/kpis/{summary,conversion,stage-time,aging,pipeline}`, any authenticated user (same as `/report`), 422 on invalid periods, no user data returned. Existing `/report` unchanged.
+
+### Tests & Verification
+- [x] `backend/test_kpis.py` (48): created->won, created->lost, win date vs creation date, reopen after won and after lost, multi-cycle won/lost/reopen (events 2 vs opportunities 1, value once, last vs first outcome), baseline in won stage not a win, open card aging, baseline+move (partial, not in cohort, not an advancement entry), baseline aging lower bound, baseline win excluded from velocity, coverage partial/complete/no_history, multi-stage durations and advancement, advancement categories, deleted card (counted, value unknown, stay ended by deletion, not aging), deleted before outcome in cohort, period boundaries (start included, end excluded), custom end inclusive + previous period, presets, invalid periods, empty period / zero denominators, equal timestamps by id, out-of-order inserts, determinism, currencies (0.1+0.2=0.3 per currency, no mixing, without_value), pipeline distribution, API = service (summary with compare, conversion, stage-time, aging, pipeline), pipeline counts = existing report, invalid filters 422, 401 on all five, 404, reads never write, no user data exposed
+- [x] Backend suite: 295 passed, only the 3 known pre-existing failures
+- [x] Playwright (isolated): 47/47
+- [x] Read-only run against the dev DB (`mode=ro`): coverage partial, no flows, rates null with reasons, 5 open opportunities aged "since tracking start"; file byte-identical
+
+### Known gaps
+- Dev history = 7 baselines from 2026-10-13: flow KPIs empty until real moves accumulate.
+- Values are current values, not values at win/loss time; no salesperson/product filters on KPIs yet.
+- No UI.
+
+## Part 20: Value Snapshots on Stage Events ✅ COMPLETE (2026-10-13)
+
+### Problem
+Won/lost money KPIs (Part 19) used each card's *current* value, so editing a value after closing (or deleting the card) rewrote history.
+
+### Decision
+- Snapshot the card's value on **every** event type (not only won/lost): one uniform rule in the single writer (`stage_history.py` after_flush), same transaction as the stage change, negligible cost, and `deleted` events now keep the value of a card that is about to disappear.
+- Three columns: `deal_value_snapshot` (FLOAT, an exact copy of `cards.deal_value`; money sums stay `Decimal` in `kpis.py`), `deal_currency_snapshot`, `value_snapshot_taken` (distinguishes "recorded, no value" from "unknown").
+- KPIs: won/lost `values` = snapshot of each distinct card's **last** won/lost event in the period (reopen + reprice + re-win -> latest price, once); `without_value` (recorded, none) vs `value_unavailable` (no snapshot - never substituted); `current_values` reported separately. Pipeline/aging (stock) keep current values. Event semantics unchanged.
+- Part 18 migration (future runs) snapshots baselines, since its baseline timestamp is the migration instant itself.
+- Migration `migrate_stage_event_values.py`: Part 17/18 pattern; existing events stay `value_snapshot_taken = 0`; `init_db()` refuses an unmigrated table (`StageEventValuesMigrationRequired`) so the listener never fails mid-operation. Guard added before the model change.
+
+### Tests & Verification
+- [x] `backend/test_stage_values.py` (20): won/lost snapshots; later edit keeps closing snapshot (history vs current); each transition records the value of its moment; value edit alone adds no event; deleted event keeps value (won value survives deletion); AI and undo snapshots; one event per transition; currencies separate (0.1+0.2=0.3); no-snapshot events -> `value_unavailable`, not current value; recorded-without-value vs unavailable; reopen+reprice+re-win -> latest value once; API returns historical and current values; migration (app refusal, dry run byte-identical, apply preserves every row/count + invents nothing + backup identical, refuses twice, rollback + restore, requires events table); Part 18 baselines snapshot their own instant
+- [x] `test_kpis.py` helper now records snapshots like the app (48/48 unchanged expectations)
+- [x] Backend suite: 315 passed, only the 3 known pre-existing failures
+- [x] Playwright (isolated): 47/47
+- [x] Dev DB: read-only dry run (7 baselines -> value unknown); full apply on a temp copy (7 events, 7 cards, 15 users preserved, 0 values invented); dev file byte-identical
+
+### Known gaps
+- Dev database not migrated: the dev backend refuses to start until `migrate_stage_event_values.py --apply`.
+- The 7 dev baselines (2026-10-13) will never have a historical value.
+
+## Part 21: Executive Dashboard ✅ COMPLETE (2026-10-13)
+
+### Scope
+A dashboard page over the Part 19/20 KPI API. No KPI is computed on the client; no backend change.
+
+### Implementation
+- `lib/api.ts`: types mirroring `schemas.py` (`MoneyTotals`, `KpiRate`, `KpiDuration`, `KpiCoverage` with literal statuses, `OutcomeFlow`, `PeriodKpis`, `KpiSummary`, `KpiConversion`, `KpiStageTime`, `KpiAging`, `KpiPipeline`) plus `getKpi*` functions sharing one query builder.
+- `lib/format.ts`: `moneyTotalsToNumbers` (reuses `formatTotals`), `formatRate`, `formatDays`, `formatPeriodDates`, `formatDateTime`.
+- `components/ReportBlocks.tsx`: `StatTile` (now with an optional `note`), `Section`, `Totals`, `StageBars` and table classes, moved from `ReportsPage` (which now imports them) because the dashboard reuses them.
+- `components/DashboardPage.tsx`: filters, coverage banner, headline tiles, closing values table, conversion, time in stage, open pipeline (open stages), aging, data quality. Flow data is fetched per filter change (summary/conversion/stage-time in parallel), stock data (pipeline/aging) once.
+- `ProtectedRoute.tsx`: "Dashboard" header button and view, all roles (same access as the KPI API).
+
+### Defects found while validating (fixed)
+- Period bounds were printed in local time while labelled UTC; now UTC calendar dates, end inclusive.
+- A previous period entirely before tracking start was shown as "0"; now "not tracked".
+- After changing filters, the previous period's numbers stayed on screen until the new response arrived (caught by the E2E test); responses now carry the filter key they belong to and are shown only when it matches.
+
+### Tests & Verification
+- [x] `frontend/tests/dashboard.spec.ts` (3, isolated backend): a real win through the board shows at its closing value; editing the card's value afterwards leaves the closing value and shows today's value separately; coverage banner, data quality and aging render; previous period "not tracked"; custom range re-queries, hides numbers while incomplete, shows "-" (not 0) for an empty period and the API's unavailable reason; an invalid range shows the API's 422 message and no numbers
+- [x] `frontend/src/lib/format.test.ts` (4): money adapter, rate "-" vs 0%, lower-bound days, UTC period dates
+- [x] Backend 315 passed / 3 pre-existing failures (unchanged); tsc 17 pre-existing errors in the two legacy test files, 0 elsewhere; lint clean; Vitest 10/10 (6 before); Playwright 50/50 (47 before)
+- [x] Screenshots reviewed at 1440px and 390px
+
+### Known gaps
+- The five KPI requests are independent (`as_of` may differ by milliseconds between sections).
+- No salesperson/product filters (the KPI API has none yet); no export.

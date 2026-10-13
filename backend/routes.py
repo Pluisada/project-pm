@@ -1,5 +1,7 @@
 """API routes for boards, columns, and cards."""
 import json
+from collections import defaultdict
+from datetime import date
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,6 +13,7 @@ from database import get_db
 from deps import get_current_user, require_admin
 from lead_options import CURRENCIES, LEAD_SOURCES, PRODUCT_LINES, STAGE_OPEN
 from models import Board, Column, Card, User, UserRole, ConversationMessage, UndoEntry
+import kpis
 from reports import build_board_report
 from undo import (
     UndoError,
@@ -38,6 +41,11 @@ from schemas import (
     ColumnWithCards,
     BoardReport,
     LeadOptionsResponse,
+    KpiAgingResponse,
+    KpiConversionResponse,
+    KpiPipelineResponse,
+    KpiStageTimeResponse,
+    KpiSummaryResponse,
     UndoStatus,
     UserCreate,
     UserResponse,
@@ -108,20 +116,24 @@ async def get_board(
     # Load columns with cards, ordered by position
     columns = db.query(Column).filter(Column.board_id == board_id).order_by(Column.position).all()
 
-    columns_data = []
-    for column in columns:
-        # CardResponse.has_member_edits reads Card.edit_history - eager-load
-        # it here so serializing N cards doesn't cost N extra queries.
-        cards = (
-            db.query(Card)
-            .options(selectinload(Card.edit_history), selectinload(Card.salesperson))
-            .filter(Card.column_id == column.id)
-            .order_by(Card.position)
-            .all()
-        )
-        columns_data.append(ColumnWithCards(
-            **{**column.__dict__, "cards": cards}
-        ))
+    # One query for every card on the board (not one per column), grouped
+    # below. has_member_edits and salesperson_name read edit_history and
+    # salesperson - eager-load them so serializing doesn't cost a query per card.
+    cards_by_column = defaultdict(list)
+    for card in (
+        db.query(Card)
+        .join(Column)
+        .options(selectinload(Card.edit_history), selectinload(Card.salesperson))
+        .filter(Column.board_id == board_id)
+        .order_by(Card.column_id, Card.position)
+        .all()
+    ):
+        cards_by_column[card.column_id].append(card)
+
+    columns_data = [
+        ColumnWithCards(**{**column.__dict__, "cards": cards_by_column[column.id]})
+        for column in columns
+    ]
 
     return BoardDetail(
         **board.__dict__,
@@ -715,6 +727,116 @@ async def get_board_report(
             detail="Board not found",
         )
     return build_board_report(db, board_id, salesperson_id, product_line)
+
+
+# ============================================================================
+# KPIs (Part 19) - read-only views over card_stage_events. Definitions and
+# limitations: docs/KPIS.md. Same access as the existing report: any
+# authenticated user. These routes never write.
+# ============================================================================
+
+
+def _kpi_history(db: Session, board_id: int):
+    if not db.query(Board.id).filter(Board.id == board_id).first():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+    return kpis.load_board_history(db, board_id, kpis.utcnow())
+
+
+def _kpi_period(history, period: str, start: Optional[date], end: Optional[date]):
+    try:
+        return kpis.resolve_period(period, start, end, history.as_of.date())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.get("/boards/{board_id}/kpis/summary", response_model=KpiSummaryResponse)
+async def get_kpi_summary(
+    board_id: int,
+    period: str = "last_30_days",
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+    compare: bool = False,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Won/lost flow, win rates, creation cohort and sales cycle for a period;
+    with compare=true also for the same-length period just before it."""
+    history = _kpi_history(db, board_id)
+    current = _kpi_period(history, period, start, end)
+    return {
+        "as_of": history.as_of,
+        "current": kpis.period_kpis(history, current),
+        "previous": kpis.period_kpis(history, current.previous()) if compare else None,
+    }
+
+
+@router.get("/boards/{board_id}/kpis/conversion", response_model=KpiConversionResponse)
+async def get_kpi_conversion(
+    board_id: int,
+    period: str = "last_30_days",
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Stage advancement, cohort reach and win rates for a period."""
+    history = _kpi_history(db, board_id)
+    current = _kpi_period(history, period, start, end)
+    return {
+        "as_of": history.as_of,
+        "period": current.as_dict(),
+        "coverage": kpis.coverage(history, current),
+        "win_rate_closed": kpis.win_rate_closed(history, current),
+        "cohort": kpis.cohort(history, current),
+        "advancement": kpis.advancement(history, current),
+    }
+
+
+@router.get("/boards/{board_id}/kpis/stage-time", response_model=KpiStageTimeResponse)
+async def get_kpi_stage_time(
+    board_id: int,
+    period: str = "last_30_days",
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Observed time per stage: complete and partial (baseline) durations of
+    stays exited in the period, plus stays still open."""
+    history = _kpi_history(db, board_id)
+    current = _kpi_period(history, period, start, end)
+    return {
+        "as_of": history.as_of,
+        "period": current.as_dict(),
+        "coverage": kpis.coverage(history, current),
+        "stages": kpis.stage_time(history, current),
+    }
+
+
+@router.get("/boards/{board_id}/kpis/aging", response_model=KpiAgingResponse)
+async def get_kpi_aging(
+    board_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Open opportunities and how long they've been in their current stage."""
+    history = _kpi_history(db, board_id)
+    return {
+        "as_of": history.as_of,
+        "tracking_started_at": history.tracking_started_at,
+        "opportunities": kpis.aging(history),
+    }
+
+
+@router.get("/boards/{board_id}/kpis/pipeline", response_model=KpiPipelineResponse)
+async def get_kpi_pipeline(
+    board_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Current cards per stage and per currency."""
+    history = _kpi_history(db, board_id)
+    return {"as_of": history.as_of, "stages": kpis.pipeline(history)}
 
 
 # ============================================================================

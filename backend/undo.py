@@ -16,6 +16,7 @@ import json
 from datetime import date
 
 from card_rules import apply_card_updates
+from stage_history import SOURCE_UNDO, set_stage_context
 from models import BoardColumn as Column, Card, UndoEntry, User
 from schemas import CardUpdate
 
@@ -97,6 +98,9 @@ def apply_undo(db, user: User, board_id: int) -> str:
     entry = get_undo(db, user, board_id)
     if entry is None:
         raise UndoError("Nothing to undo")
+    # Moves, deletions and re-creations made by the undo are new, compensating
+    # stage events; the events of the change being undone are kept.
+    set_stage_context(db, user, SOURCE_UNDO)
     steps = list(reversed(json.loads(entry.steps)))
     db.delete(entry)
 

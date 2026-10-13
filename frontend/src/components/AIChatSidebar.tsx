@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { sendAIMessage, type ApiError } from "@/lib/api";
+import { getErrorMessage, sendAIMessage } from "@/lib/api";
 
 interface Message {
   role: "user" | "assistant";
@@ -55,7 +55,7 @@ export const AIChatSidebar = ({ boardId, onBoardChange }: AIChatSidebarProps) =>
         onBoardChange?.();
       }
     } catch (err) {
-      const detail = (err as ApiError).detail || "Failed to get AI response";
+      const detail = getErrorMessage(err, "Failed to get AI response");
       setError(detail);
       addMessage("assistant", `Error: ${detail}. Please try again.`);
     } finally {
