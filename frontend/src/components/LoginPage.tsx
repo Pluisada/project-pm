@@ -5,9 +5,12 @@ import { login, UserRole } from "@/lib/auth";
 
 interface LoginPageProps {
   onLoginSuccess: (username: string, role: UserRole) => void;
+  onSignUp: () => void;
+  onForgotPassword: () => void;
+  notice?: string | null;
 }
 
-export const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
+export const LoginPage = ({ onLoginSuccess, onSignUp, onForgotPassword, notice }: LoginPageProps) => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -55,6 +58,13 @@ export const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
             onSubmit={handleSubmit}
             className="rounded-[24px] border border-[var(--stroke)] bg-white/80 p-8 shadow-[var(--shadow)] backdrop-blur"
           >
+            {/* Notice (e.g. after finishing sign-up) */}
+            {notice && !error && (
+              <div className="mb-6 rounded-lg border border-green-300 bg-green-50 p-3">
+                <p className="text-sm font-medium text-green-800">{notice}</p>
+              </div>
+            )}
+
             {/* Error Message */}
             {error && (
               <div className="mb-6 rounded-lg border border-red-300 bg-red-50 p-3">
@@ -68,14 +78,14 @@ export const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
                 htmlFor="username"
                 className="block text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]"
               >
-                Username
+                Username or email
               </label>
               <input
                 id="username"
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="Your username"
+                placeholder="Your username or email"
                 disabled={loading}
                 className="mt-2 w-full rounded-lg border border-[var(--stroke)] bg-white px-4 py-3 text-sm outline-none transition placeholder:text-[var(--gray-text)] focus:border-[var(--primary-blue)] focus:ring-2 focus:ring-[var(--primary-blue)]/20 disabled:opacity-50"
                 autoComplete="username"
@@ -100,6 +110,15 @@ export const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
                 className="mt-2 w-full rounded-lg border border-[var(--stroke)] bg-white px-4 py-3 text-sm outline-none transition placeholder:text-[var(--gray-text)] focus:border-[var(--primary-blue)] focus:ring-2 focus:ring-[var(--primary-blue)]/20 disabled:opacity-50"
                 autoComplete="current-password"
               />
+              <div className="mt-2 text-right">
+                <button
+                  type="button"
+                  onClick={onForgotPassword}
+                  className="text-xs font-semibold text-[var(--primary-blue)] hover:underline"
+                >
+                  Forgot my password?
+                </button>
+              </div>
             </div>
 
             {/* Submit Button */}
@@ -111,6 +130,17 @@ export const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
               {loading ? "Signing in..." : "Sign In"}
             </button>
           </form>
+
+          <p className="mt-6 text-center text-sm text-[var(--gray-text)]">
+            Don&apos;t have an account?{" "}
+            <button
+              type="button"
+              onClick={onSignUp}
+              className="font-semibold text-[var(--primary-blue)] hover:underline"
+            >
+              Sign up
+            </button>
+          </p>
         </div>
       </main>
     </div>

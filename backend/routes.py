@@ -1,15 +1,27 @@
 """API routes for boards, columns, and cards."""
 import json
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session, selectinload
 
 from auth import hash_password
-from card_rules import can_move_card, diff_card_changes, record_member_edit
+from card_rules import InvalidCardUpdate, apply_card_updates, can_move_card
 from database import get_db
 from deps import get_current_user, require_admin
-from models import Board, Column, Card, User, UserRole, ConversationMessage
+from lead_options import CURRENCIES, LEAD_SOURCES, LOST_STAGE, PRODUCT_LINES, WON_STAGE
+from models import Board, Column, Card, User, UserRole, ConversationMessage, UndoEntry
+from reports import build_board_report
+from undo import (
+    UndoError,
+    apply_undo,
+    get_undo,
+    record_undo,
+    undo_create,
+    undo_delete,
+    undo_move,
+    undo_update,
+)
 from schemas import (
     BoardCreate,
     BoardUpdate,
@@ -24,6 +36,9 @@ from schemas import (
     CardResponse,
     CardEditHistoryEntry,
     ColumnWithCards,
+    BoardReport,
+    LeadOptionsResponse,
+    UndoStatus,
     UserCreate,
     UserResponse,
 )
@@ -95,7 +110,7 @@ async def get_board(
         # it here so serializing N cards doesn't cost N extra queries.
         cards = (
             db.query(Card)
-            .options(selectinload(Card.edit_history))
+            .options(selectinload(Card.edit_history), selectinload(Card.salesperson))
             .filter(Card.column_id == column.id)
             .order_by(Card.position)
             .all()
@@ -298,6 +313,8 @@ async def create_card(
         position=card.position,
     )
     db.add(db_card)
+    db.flush()
+    record_undo(db, current_user, board_id, f'Remove new card "{db_card.title}"', [undo_create(db_card)])
     db.commit()
     db.refresh(db_card)
     return db_card
@@ -336,13 +353,14 @@ async def update_card(
     # Members can edit content, but their edits must be tracked - capture a
     # diff of only the fields that actually changed before mutating. Admin
     # edits are intentionally not tracked (see CLAUDE.md / CardEditHistory).
-    changes = diff_card_changes(card, card_update.title, card_update.details)
-    if "title" in changes:
-        card.title = card_update.title
-    if "details" in changes:
-        card.details = card_update.details
-
-    record_member_edit(db, card, current_user, changes)
+    updates = card_update.model_dump(exclude_unset=True)
+    undo_step = undo_update(card, updates)
+    undo_description = f'Undo edit to "{card.title}"'
+    try:
+        apply_card_updates(db, card, updates, current_user)
+    except InvalidCardUpdate as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    record_undo(db, current_user, board_id, undo_description, [undo_step])
 
     db.commit()
     db.refresh(card)
@@ -400,6 +418,14 @@ async def move_card(
             detail="Members can only move cards forward, not back to an earlier column",
         )
 
+    if (card.column_id, card.position) != (move.column_id, move.position):
+        record_undo(
+            db,
+            current_user,
+            board_id,
+            f'Move "{card.title}" back to {card.column.title}',
+            [undo_move(card)],
+        )
     card.column_id = move.column_id
     card.position = move.position
 
@@ -437,8 +463,44 @@ async def delete_card(
             detail="Card not found",
         )
 
+    record_undo(db, current_user, board_id, f'Restore deleted card "{card.title}"', [undo_delete(card)])
     db.delete(card)
     db.commit()
+
+
+@router.get("/boards/{board_id}/undo", response_model=UndoStatus)
+async def get_undo_status(
+    board_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """The current user's undoable last change on this board, if any."""
+    entry = get_undo(db, current_user, board_id)
+    return UndoStatus(available=entry is not None, description=entry.description if entry else None)
+
+
+@router.post("/boards/{board_id}/undo", response_model=UndoStatus)
+async def undo_last_change(
+    board_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Reverse the current user's last change on this board (single level).
+
+    Returns the new status - always unavailable, since the entry is used up.
+    """
+    try:
+        description = apply_undo(db, current_user, board_id)
+        db.commit()
+    except (UndoError, ValueError) as exc:
+        # Drop anything half-applied, but still use the entry up: a change
+        # that can't be undone now won't become undoable later.
+        db.rollback()
+        db.query(UndoEntry).filter(UndoEntry.user_id == current_user.id).delete()
+        db.commit()
+        code = status.HTTP_404_NOT_FOUND if str(exc) == "Nothing to undo" else status.HTTP_409_CONFLICT
+        raise HTTPException(status_code=code, detail=str(exc))
+    return UndoStatus(available=False, description=None, undone=description)
 
 
 @router.get("/boards/{board_id}/cards/{card_id}/history", response_model=List[CardEditHistoryEntry])
@@ -575,6 +637,46 @@ async def board_ai_chat(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e),
         )
+
+
+# ============================================================================
+# SALES LEADS
+# ============================================================================
+
+
+@router.get("/lead-options", response_model=LeadOptionsResponse)
+async def get_lead_options(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Allowed lead field values. Open to members, who also assign salespeople
+    (unlike GET /users, which is admin-only)."""
+    users = db.query(User).order_by(User.username).all()
+    return LeadOptionsResponse(
+        currencies=CURRENCIES,
+        lead_sources=LEAD_SOURCES,
+        product_lines=PRODUCT_LINES,
+        salespeople=[{"id": u.id, "username": u.username} for u in users],
+        won_stage=WON_STAGE,
+        lost_stage=LOST_STAGE,
+    )
+
+
+@router.get("/boards/{board_id}/report", response_model=BoardReport)
+async def get_board_report(
+    board_id: int,
+    salesperson_id: Optional[int] = None,
+    product_line: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Sales report over the board's leads, optionally filtered."""
+    if not db.query(Board).filter(Board.id == board_id).first():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Board not found",
+        )
+    return build_board_report(db, board_id, salesperson_id, product_line)
 
 
 # ============================================================================

@@ -14,6 +14,7 @@ type KanbanColumnProps = {
   onDeleteCard: (columnId: string, cardId: string) => void;
   onUpdateCard: (columnId: string, cardId: string, title: string, details: string) => Promise<boolean>;
   onOpenCardHistory: (cardId: string) => void;
+  onEditLead?: (cardId: string) => void;
 };
 
 export const KanbanColumn = ({
@@ -25,6 +26,7 @@ export const KanbanColumn = ({
   onDeleteCard,
   onUpdateCard,
   onOpenCardHistory,
+  onEditLead,
 }: KanbanColumnProps) => {
   const { setNodeRef, isOver } = useDroppable({ id: column.id });
 
@@ -63,6 +65,7 @@ export const KanbanColumn = ({
               onDelete={(cardId) => onDeleteCard(column.id, cardId)}
               onUpdate={(cardId, title, details) => onUpdateCard(column.id, cardId, title, details)}
               onOpenHistory={onOpenCardHistory}
+              onEditLead={onEditLead}
             />
           ))}
         </SortableContext>

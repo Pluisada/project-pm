@@ -7,8 +7,8 @@ test.beforeEach(async ({ page, request }) => {
 
 test("loads the kanban board", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "My Board" })).toBeVisible();
-  await expect(page.locator('[data-testid^="column-"]')).toHaveCount(5);
+  await expect(page.getByRole("heading", { name: "Salcomp Sales Pipeline" })).toBeVisible();
+  await expect(page.locator('[data-testid^="column-"]')).toHaveCount(6);
 });
 
 test("adds a card to a column", async ({ page }) => {

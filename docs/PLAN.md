@@ -646,3 +646,110 @@ Replace the single hardcoded `user`/`password` login with real multi-user auth: 
 - No `PUT`/`DELETE /api/users/{id}` — a mistyped username during setup or user creation has no fix-up path yet.
 - No token revocation — logout doesn't invalidate the JWT (pre-existing gap, now more consequential since real admin accounts exist).
 - `frontend/tests/kanban.spec.ts` and `integration.spec.ts` still assume the old demo's slug-style ids and a pristine, single-owner board; they need a real rewrite (dynamic ids, isolated board state) independent of this auth work.
+
+## Part 12: Email Self-Signup ✅ COMPLETE (2026-10-13)
+
+### Objective
+Let anyone create a member account from the sign-in screen: enter an email, receive a link, set and confirm a password, land on the login screen.
+
+### Decisions made with the user
+1. Email over SMTP (stdlib `smtplib`, `SMTP_*` env vars); with `SMTP_HOST` unset the link is logged to the backend console instead.
+2. The email is the username (login also matches `User.email` case-insensitively).
+3. Open registration; new accounts are always `member`.
+
+### Design
+- No new table/migration: the link carries a stateless JWT (`purpose: "signup"`, 24h). The user row is created only when the password is set, so reusing a link returns 409.
+- `POST /api/signup` returns the same 202 whether or not the email is registered (no account enumeration); 409 before first-run setup; 502 if SMTP fails.
+- `verify_token` now rejects tokens with a `purpose` claim, so a signup token can't be used as an access token.
+
+### Tests & Verification
+- [x] `backend/test_signup.py` (11 tests): full flow, single-use, tampered/expired/access token rejected, existing email sends nothing, pre-setup 409, validation, SMTP failure 502, signup token rejected as bearer
+- [x] Backend suite: same 3 pre-existing failures as before (`test_ai.py` x2, `test_static_files.py` x1), confirmed via `git stash`
+- [x] `frontend/tests/signup.spec.ts` (3 tests, signup endpoints stubbed via `page.route`) plus `auth.spec.ts` all passing; lint clean
+- [x] Live server via curl: signup, link logged, complete (201), reuse (409), login with mixed-case email (200, member), signup token as bearer (401)
+- [ ] Not verified: delivery through a real SMTP server
+
+### Known gaps
+- No "forgot password" flow (it could reuse the same token mechanism with a different `purpose`).
+- No rate limiting on `/api/signup`.
+
+## Part 13: Forgot / Reset Password ✅ COMPLETE (2026-10-13)
+
+### Objective
+A "Forgot my password?" button on the login screen. The app says whether the account exists and, if it does, emails a reset link that leads to a set-password page and back to login.
+
+### Design
+- `POST /api/password/forgot` takes a username or email (same lookup as login, now shared as `_find_user`): 404 if no account, 400 if the account has no email (setup/admin-created users), else sends the link and returns the address.
+- **Deliberate tradeoff (requested):** this reveals which usernames/emails are registered, unlike `/api/signup`.
+- Reset token: stateless JWT, `purpose: "reset"`, 1h, with `pwh` = a fingerprint of the current password hash. A successful reset changes the hash, so every earlier link dies; no token table needed.
+- `auth.py` signup helpers generalized into `create_purpose_token`/`decode_purpose_token`; frontend `CompleteSignupPage` generalized into `SetPasswordPage`, used by both flows.
+
+### Tests & Verification
+- [x] `backend/test_password_reset.py` (16 tests): lookup by email/username/case/whitespace, 404/400 send nothing, full reset (new password works, old fails), single-use, tampered/expired/wrong-purpose/stale/unknown-user tokens, access token can't reset, reset token can't authenticate, validation, SMTP 502
+- [x] `test_signup.py` unchanged and passing after the helper refactor; full suite only the 3 known pre-existing failures
+- [x] `frontend/tests/password-reset.spec.ts` (3 tests, stubbed) plus `signup.spec.ts`/`auth.spec.ts` passing; lint clean
+
+### Known gaps
+- Existing sessions aren't revoked after a reset (no token revocation anywhere yet).
+- No rate limiting on `/api/password/forgot`.
+- Setup/admin-created accounts have no email, so they can't use this; there's no UI to add an email to an existing account.
+
+## Part 14: Sales Lead Tracking + First Report ✅ COMPLETE (2026-10-13)
+
+### Objective
+Turn the board into a Salcomp sales lead tracker: each card is a lead with structured fields, columns are sales stages, and a Reports screen summarizes the pipeline.
+
+### Decisions made with the user
+1. Stages: 1st Contact, F2F Meeting, RFI, Proposal, Award (won), Lost.
+2. Lead fields: company, contact, deal value + currency, expected close date, lead source, product line (Chargers / Power supplies), assigned salesperson.
+3. Cards show a compact lead summary; all fields are edited in an "Edit lead" modal.
+4. Salesperson is picked from registered users (a `users` FK), not free text.
+5. Report totals are per currency, never converted.
+6. The existing `pm.db` board was replaced with the stages + sample leads (users kept; backup in `backend/pm.db.bak`).
+
+### Design
+- New nullable `cards` columns, added to existing databases by `database._add_missing_card_columns()` on startup.
+- Allowed values in `backend/lead_options.py`, validated as `Literal` types in `CardUpdate`; partial updates via `model_dump(exclude_unset=True)` (omitted = unchanged, null = cleared).
+- `card_rules.apply_card_updates()` is the single write path for REST and AI; member edits to any lead field are logged to `card_edit_history` (salesperson recorded by username).
+- `GET /api/lead-options` (any user) and `GET /api/boards/{id}/report` (`backend/reports.py`, filters: salesperson, product line).
+- Frontend: `LeadEditModal`, `ReportsPage` (plain CSS bars, no chart library), board columns scroll horizontally.
+
+### Bug found and fixed
+- Drag-and-drop silently failed into short columns once one column grew long: `closestCenter` compares centers, and grid-stretched columns put the target's center thousands of pixels away. Switched to `pointerWithin` with a `closestCenter` fallback.
+
+### Tests & Verification
+- [x] `backend/test_leads.py` (18 tests): round-trip, validation, clear vs omit, member history, lead options for members, report math (per-currency totals, win rate, filters, closing soon), AI lead actions, column migration
+- [x] Backend suite: only the 3 known pre-existing failures
+- [x] `frontend/tests/leads.spec.ts` (3 tests, real backend); full e2e suite 41/41 with `--workers=1`
+- [x] Live: conversion script run on `pm.db`; report API returns the expected stages and KPIs
+
+### Known gaps
+- Time-in-stage and stage-to-stage conversion reports need card-move history, which isn't recorded yet (`CardAction` is still never written) - the natural next step.
+- E2E tests share one live database: in parallel (default workers) drag tests can flake when another worker changes the board mid-drag; run with `--workers=1` for a reliable result. Every run also adds test cards to the real board.
+- No report export (Excel/PDF) yet.
+
+## Part 15: Undo ✅ COMPLETE (2026-10-13)
+
+### Objective
+An Undo button at the top of the board to reverse an unwanted change.
+
+### Decisions made with the user
+1. Undoable: card move, card/lead edit, card create, card delete (admin).
+2. A member can undo their own change, including putting back a card they moved forward (normally a forbidden backward move). Nobody can undo someone else's change.
+3. AI assistant changes are undoable; one AI request = one undo.
+4. Single level: the last change only.
+
+### Design
+- Server-side `undo_entries` table, one row per user, holding the inverse steps of their last change (`backend/undo.py`). Recorded by every card route and by `ai_kanban.apply_board_actions`; no-op edits/moves don't replace the entry.
+- `POST /api/boards/{id}/undo` checks every step first (409 if the card was deleted since, nothing applied) and uses the entry up either way. Edits are reverted through `apply_card_updates`, so a member's undo of an edit is logged like any edit.
+- Frontend: sticky Undo bar at the top of `KanbanBoardAPI`, with the entry's description beside it and an "Undone: ..." notice; the board reloads after an undo.
+
+### Tests & Verification
+- [x] `backend/test_undo.py` (11 tests): nothing-to-undo, move, member undoing own forward move, lead edit (logged), no-op edit keeps entry, create, delete (fields restored), single level, per-user isolation, conflict after deletion, AI batch in one step
+- [x] Backend suite: only the 3 known pre-existing failures
+- [x] `frontend/tests/leads.spec.ts` undo test; full e2e 42/42 with `--workers=1`
+
+### Known gaps
+- Single level only; column renames aren't undoable.
+- Undo restores the user's last state even if someone else changed the same card since (last-writer-wins), except when the card was deleted.
+- Undoing a delete recreates the card with a new id; its member-edit history is lost.

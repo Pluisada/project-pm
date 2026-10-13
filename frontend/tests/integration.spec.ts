@@ -15,12 +15,12 @@ test.describe("Kanban Board Integration", () => {
 
   test("loads the kanban board at root", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByRole("heading", { name: "My Board" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Salcomp Sales Pipeline" })).toBeVisible();
   });
 
-  test("displays all 5 columns", async ({ page }) => {
+  test("displays all 6 stages", async ({ page }) => {
     await page.goto("/");
-    await expect(page.locator('[data-testid^="column-"]')).toHaveCount(5);
+    await expect(page.locator('[data-testid^="column-"]')).toHaveCount(6);
   });
 
   test("displays column titles", async ({ page }) => {
@@ -34,7 +34,7 @@ test.describe("Kanban Board Integration", () => {
     const titles = await titleInputs.evaluateAll((inputs) =>
       inputs.map((el) => (el as HTMLInputElement).value)
     );
-    for (const title of ["Backlog", "Discovery", "In Progress", "Review", "Done"]) {
+    for (const title of ["1st Contact", "F2F Meeting", "RFI", "Proposal", "Award", "Lost"]) {
       expect(titles).toContain(title);
     }
   });
@@ -57,8 +57,9 @@ test.describe("Kanban Board Integration", () => {
     // Click add button
     await firstColumn.getByRole("button", { name: /add a card/i }).click();
 
-    // Fill form
-    await firstColumn.getByPlaceholder("Card title").fill("Integration Test Card");
+    // Unique per run: cards persist in the shared database between runs.
+    const title = `Integration Test Card ${Date.now()}`;
+    await firstColumn.getByPlaceholder("Card title").fill(title);
     await firstColumn.getByPlaceholder("Details").fill("This is an integration test.");
 
     // Submit
@@ -67,7 +68,7 @@ test.describe("Kanban Board Integration", () => {
     // Verify card appears - title lives in an <input>'s value, not text
     // content, so this is matched via the card's data-title attribute.
     await expect(
-      firstColumn.locator('[data-testid^="card-"][data-title="Integration Test Card"]')
+      firstColumn.locator(`[data-testid^="card-"][data-title="${title}"]`)
     ).toBeVisible();
   });
 
@@ -156,7 +157,7 @@ test.describe("Kanban Board Integration", () => {
     await page.goto("/");
 
     // Page should still load
-    await expect(page.getByRole("heading", { name: "My Board" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Salcomp Sales Pipeline" })).toBeVisible();
 
     // Columns should be visible (may stack vertically)
     const columns = page.locator('[data-testid^="column-"]');
@@ -170,6 +171,6 @@ test.describe("Kanban Board Integration", () => {
     await page.goto("/");
 
     // Page should still load
-    await expect(page.getByRole("heading", { name: "My Board" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Salcomp Sales Pipeline" })).toBeVisible();
   });
 });

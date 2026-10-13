@@ -173,7 +173,7 @@ This document describes the database schema for the Project Management MVP appli
 - Typically 3-5 columns per board (Backlog, Discovery, In Progress, Review, Done)
 
 ### cards
-**Purpose:** Individual Kanban cards (tasks, items)
+**Purpose:** Sales leads - one card per lead; the card's column is its sales stage
 
 | Column | Type | Constraints | Purpose |
 |--------|------|-------------|---------|
@@ -182,6 +182,14 @@ This document describes the database schema for the Project Management MVP appli
 | title | TEXT | NOT NULL | Card title/task name |
 | details | TEXT | - | Description/notes |
 | position | INTEGER | NOT NULL, DEFAULT 0 | Order within column |
+| company | TEXT | - | Lead's company |
+| contact | TEXT | - | Contact person |
+| deal_value | REAL | - | Deal value (>= 0), in `currency` |
+| currency | VARCHAR(3) | - | EUR, USD, CNY, INR, BRL or VND |
+| expected_close_date | DATE | - | Expected close date |
+| lead_source | TEXT | - | Website, Referral, Trade show, Cold outreach, Existing customer, Other |
+| product_line | TEXT | - | Chargers or Power supplies |
+| salesperson_id | INTEGER | FK → users, ON DELETE SET NULL | Assigned salesperson |
 | created_at | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Creation time |
 | updated_at | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Last modified |
 
@@ -193,6 +201,9 @@ This document describes the database schema for the Project Management MVP appli
 **Notes:**
 - Position allows drag-and-drop reordering
 - Deleting a column cascades delete to all its cards
+- Allowed lead values and the stages (1st Contact, F2F Meeting, RFI, Proposal, Award, Lost) live in `backend/lead_options.py`; they're validated by the API, not the database. "Award" = won, "Lost" = lost, everything else open.
+- The lead columns were added after the first release: `database._add_missing_card_columns()` adds them with `ALTER TABLE` on startup to older databases (`create_all` never alters existing tables).
+- Report totals are per currency - values are never converted or summed across currencies.
 - `has_member_edits` in the API response is not a stored column - it's derived from whether `card_edit_history` has any rows for this card
 
 ### conversation_messages
@@ -239,6 +250,21 @@ This document describes the database schema for the Project Management MVP appli
 - Only written for edits made by `member` users - admin edits are not tracked here (`routes.update_card`)
 - A card's `has_member_edits` flag is `true` whenever it has at least one row here; it stays `true` permanently, even if an admin edits the card afterwards
 - `user_id` is `SET NULL` rather than cascading, so history survives if the editing user is later removed
+
+### undo_entries
+**Purpose:** Each user's single level of undo - the inverse of their last board change
+
+| Column | Type | Constraints | Purpose |
+|--------|------|-------------|---------|
+| id | INTEGER | PK, AUTOINCREMENT | Unique identifier |
+| user_id | INTEGER | FK → users, NOT NULL, UNIQUE, ON DELETE CASCADE | Owner (one row per user) |
+| board_id | INTEGER | FK → boards, NOT NULL, ON DELETE CASCADE | Board the change was made on |
+| description | TEXT | NOT NULL | Shown next to the Undo button, e.g. `Move "X" back to RFI` |
+| steps | TEXT | NOT NULL | JSON list of inverse operations (`move`/`update`/`delete`/`create`, see `backend/undo.py`), applied in reverse |
+| created_at | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | When the change was made |
+
+**Notes:**
+- Replaced by the user's next change; deleted once undone (or once found impossible to undo).
 
 ### card_actions
 **Purpose:** Audit trail of AI-suggested card changes

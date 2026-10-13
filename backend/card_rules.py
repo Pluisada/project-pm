@@ -6,6 +6,7 @@ trail can't drift between the two entry points - a member must be bound by
 the same rules whether they act through the UI or ask the AI to do it.
 """
 import json
+from datetime import date
 
 from models import Card, CardEditHistory, User, UserRole
 
@@ -20,13 +21,50 @@ def can_move_card(user: User, from_position: int, to_position: int) -> bool:
     return is_admin(user) or to_position >= from_position
 
 
-def diff_card_changes(card: Card, title: str = None, details: str = None) -> dict:
-    """Build a {field: {old, new}} diff of only the fields that actually change."""
+class InvalidCardUpdate(ValueError):
+    """An update that passed schema validation but references bad data."""
+
+
+def _history_value(value):
+    return value.isoformat() if isinstance(value, date) else value
+
+
+def diff_card_changes(db, card: Card, updates: dict) -> dict:
+    """Build a {field: {old, new}} diff of only the fields that actually change.
+
+    `updates` is a CardUpdate dumped with exclude_unset=True. The salesperson
+    is recorded by username (under "salesperson") so history reads well.
+    """
     changes = {}
-    if title is not None and title != card.title:
-        changes["title"] = {"old": card.title, "new": title}
-    if details is not None and details != card.details:
-        changes["details"] = {"old": card.details, "new": details}
+    for field, new in updates.items():
+        old = getattr(card, field)
+        if new == old:
+            continue
+        if field == "salesperson_id":
+            new_user = db.get(User, new) if new is not None else None
+            changes["salesperson"] = {
+                "old": card.salesperson_name,
+                "new": new_user.username if new_user else None,
+            }
+        else:
+            changes[field] = {"old": _history_value(old), "new": _history_value(new)}
+    return changes
+
+
+def apply_card_updates(db, card: Card, updates: dict, user: User) -> dict:
+    """Apply a validated partial update to a card, logging member edits.
+
+    The single update path for both the REST route and the AI sidebar.
+    Raises InvalidCardUpdate for a salesperson_id that isn't a user.
+    """
+    salesperson_id = updates.get("salesperson_id")
+    if salesperson_id is not None and db.get(User, salesperson_id) is None:
+        raise InvalidCardUpdate("Salesperson not found")
+
+    changes = diff_card_changes(db, card, updates)
+    for field, value in updates.items():
+        setattr(card, field, value)
+    record_member_edit(db, card, user, changes)
     return changes
 
 

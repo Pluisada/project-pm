@@ -98,8 +98,15 @@ export async function loginAsMember(page: Page, request: APIRequestContext): Pro
  * between the cursor and the item's own center throughout the drag - so the
  * mouse target has to be shifted by that same offset, or the item's actual
  * (not the cursor's) center overshoots into the next column.
+ *
+ * Lead cards are tall, so a newly added card can sit below the viewport;
+ * it's scrolled into view first, and the drag moves horizontally at the
+ * card's own height (columns share one grid row, so that height is inside
+ * the target column too) rather than to a fixed offset from the column top,
+ * which may then be scrolled out of view.
  */
 export async function dragCardToColumn(page: Page, card: Locator, targetColumn: Locator): Promise<void> {
+  await card.scrollIntoViewIfNeeded();
   const cardBox = await card.boundingBox();
   const handleBox = await card.getByRole("button", { name: /^drag /i }).boundingBox();
   const columnBox = await targetColumn.boundingBox();
@@ -110,13 +117,12 @@ export async function dragCardToColumn(page: Page, card: Locator, targetColumn: 
   const startX = handleBox.x + handleBox.width / 2;
   const startY = handleBox.y + handleBox.height / 2;
   const offsetX = startX - (cardBox.x + cardBox.width / 2);
-  const offsetY = startY - (cardBox.y + cardBox.height / 2);
 
   await page.mouse.move(startX, startY);
   await page.mouse.down();
   await page.mouse.move(
     columnBox.x + columnBox.width / 2 + offsetX,
-    columnBox.y + 120 + offsetY,
+    startY,
     { steps: 12 }
   );
   await page.mouse.up();

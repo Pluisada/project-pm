@@ -89,21 +89,37 @@ export interface ColumnResponse {
   cards?: CardResponse[];
 }
 
-export interface CardResponse {
+/** Sales lead fields on a card; every one is optional (null when unset). */
+export interface LeadFields {
+  company: string | null;
+  contact: string | null;
+  deal_value: number | null;
+  currency: string | null;
+  expected_close_date: string | null; // YYYY-MM-DD
+  lead_source: string | null;
+  product_line: string | null;
+  salesperson_id: number | null;
+}
+
+export interface CardResponse extends LeadFields {
   id: number;
   column_id: number;
   title: string;
   details?: string;
   position: number;
   has_member_edits: boolean;
+  salesperson_name: string | null;
   created_at: string;
   updated_at: string;
 }
 
+/** Partial card update: omitted fields are unchanged, null clears a lead field. */
+export type CardUpdatePayload = Partial<LeadFields> & { title?: string; details?: string };
+
 export interface CardEditHistoryEntry {
   id: number;
   edited_by: string;
-  changes: Record<string, { old: string | null; new: string | null }>;
+  changes: Record<string, { old: string | number | null; new: string | number | null }>;
   created_at: string;
 }
 
@@ -202,12 +218,11 @@ export async function createCard(
 export async function updateCard(
   boardId: number,
   cardId: number,
-  title?: string,
-  details?: string
+  updates: CardUpdatePayload
 ): Promise<CardResponse> {
   return apiCall<CardResponse>(`/api/boards/${boardId}/cards/${cardId}`, {
     method: "PUT",
-    body: JSON.stringify({ title, details }),
+    body: JSON.stringify(updates),
   });
 }
 
@@ -234,6 +249,95 @@ export async function getCardHistory(
   cardId: number
 ): Promise<CardEditHistoryEntry[]> {
   return apiCall<CardEditHistoryEntry[]>(`/api/boards/${boardId}/cards/${cardId}/history`);
+}
+
+// ============================================================================
+// UNDO API
+// ============================================================================
+
+/** The current user's single undoable change on a board. */
+export interface UndoStatus {
+  available: boolean;
+  description: string | null;
+  undone?: string | null; // set by undoLastChange: what was reversed
+}
+
+export async function getUndoStatus(boardId: number): Promise<UndoStatus> {
+  return apiCall<UndoStatus>(`/api/boards/${boardId}/undo`);
+}
+
+export async function undoLastChange(boardId: number): Promise<UndoStatus> {
+  return apiCall<UndoStatus>(`/api/boards/${boardId}/undo`, { method: "POST" });
+}
+
+// ============================================================================
+// SALES LEADS API
+// ============================================================================
+
+export interface LeadOptions {
+  currencies: string[];
+  lead_sources: string[];
+  product_lines: string[];
+  salespeople: { id: number; username: string }[];
+  won_stage: string;
+  lost_stage: string;
+}
+
+export async function getLeadOptions(): Promise<LeadOptions> {
+  return apiCall<LeadOptions>("/api/lead-options");
+}
+
+/** Money totals keyed by currency code - never summed across currencies. */
+export type CurrencyTotals = Record<string, number>;
+
+export interface ReportGroup {
+  key: string;
+  open_count: number;
+  open_totals: CurrencyTotals;
+  won_count: number;
+  won_totals: CurrencyTotals;
+}
+
+export interface BoardReport {
+  kpis: {
+    open_count: number;
+    open_totals: CurrencyTotals;
+    won_count: number;
+    won_totals: CurrencyTotals;
+    lost_count: number;
+    win_rate: number | null;
+  };
+  stages: { column_id: number; title: string; count: number; totals: CurrencyTotals }[];
+  by_salesperson: ReportGroup[];
+  by_product_line: ReportGroup[];
+  by_source: ReportGroup[];
+  closing_soon: {
+    card_id: number;
+    title: string;
+    company: string | null;
+    stage: string;
+    salesperson_name: string | null;
+    deal_value: number | null;
+    currency: string | null;
+    expected_close_date: string;
+    overdue: boolean;
+  }[];
+}
+
+export interface ReportFilters {
+  salespersonId?: number;
+  productLine?: string;
+}
+
+export async function getBoardReport(
+  boardId: number,
+  filters: ReportFilters = {}
+): Promise<BoardReport> {
+  const params = new URLSearchParams();
+  if (filters.salespersonId !== undefined) params.set("salesperson_id", String(filters.salespersonId));
+  if (filters.productLine) params.set("product_line", filters.productLine);
+  const query = params.toString();
+  return apiCall<BoardReport>(`/api/boards/${boardId}/report${query ? `?${query}` : ""}`);
 }
 
 // ============================================================================

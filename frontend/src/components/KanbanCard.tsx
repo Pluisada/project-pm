@@ -3,6 +3,7 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import clsx from "clsx";
 import type { Card } from "@/lib/kanban";
+import { formatDate, formatMoney } from "@/lib/format";
 
 type KanbanCardProps = {
   card: Card;
@@ -13,9 +14,19 @@ type KanbanCardProps = {
   // invalid value.
   onUpdate: (cardId: string, title: string, details: string) => Promise<boolean>;
   onOpenHistory: (cardId: string) => void;
+  // API-backed board only: opens the lead fields editor.
+  onEditLead?: (cardId: string) => void;
 };
 
-export const KanbanCard = ({ card, canDelete, onDelete, onUpdate, onOpenHistory }: KanbanCardProps) => {
+export const KanbanCard = ({
+  card,
+  canDelete,
+  onDelete,
+  onUpdate,
+  onOpenHistory,
+  onEditLead,
+}: KanbanCardProps) => {
+  const lead = card.lead;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: card.id });
 
@@ -116,6 +127,44 @@ export const KanbanCard = ({ card, canDelete, onDelete, onUpdate, onOpenHistory 
         className="mt-2 w-full resize-none bg-transparent text-sm leading-6 text-[var(--gray-text)] outline-none"
         aria-label="Card details"
       />
+      {onEditLead && (
+        <div className="mt-2 border-t border-[var(--stroke)] pt-2 text-xs leading-5 text-[var(--gray-text)]">
+          {(lead?.company || lead?.contact) && (
+            <p className="font-semibold text-[var(--navy-dark)]">
+              {[lead.company, lead.contact].filter(Boolean).join(" - ")}
+            </p>
+          )}
+          {lead?.dealValue != null && lead.currency && (
+            <p className="text-sm font-semibold text-[var(--navy-dark)]">
+              {formatMoney(lead.dealValue, lead.currency)}
+            </p>
+          )}
+          {lead?.expectedCloseDate && (
+            <p className={clsx(lead.overdue && "font-semibold text-red-700")}>
+              Close {formatDate(lead.expectedCloseDate)}
+              {lead.overdue && " (overdue)"}
+            </p>
+          )}
+          {lead?.salespersonName && <p>{lead.salespersonName}</p>}
+          <div className="mt-2 flex items-center justify-between gap-2">
+            {lead?.productLine ? (
+              <span className="whitespace-nowrap rounded-full bg-[var(--surface)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--secondary-purple)]">
+                {lead.productLine}
+              </span>
+            ) : (
+              <span />
+            )}
+            <button
+              type="button"
+              onClick={() => onEditLead(card.id)}
+              className="shrink-0 whitespace-nowrap rounded-full border border-[var(--stroke)] px-3 py-0.5 text-[11px] font-semibold text-[var(--primary-blue)] transition hover:border-[var(--primary-blue)]"
+              aria-label={`Edit lead ${card.title}`}
+            >
+              Edit lead
+            </button>
+          </div>
+        </div>
+      )}
     </article>
   );
 };

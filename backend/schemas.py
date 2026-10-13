@@ -1,8 +1,9 @@
 """Pydantic schemas for request/response validation."""
-from typing import List, Optional
-from datetime import datetime
-from pydantic import BaseModel, Field
+from typing import Dict, List, Optional
+from datetime import date, datetime
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from lead_options import Currency, LeadSource, ProductLine
 from models import UserRole
 
 
@@ -10,6 +11,28 @@ from models import UserRole
 class SetupRequest(BaseModel):
     """Schema for bootstrapping the first (admin) user."""
     username: str = Field(..., min_length=3, max_length=50)
+    password: str = Field(..., min_length=8, max_length=128)
+
+
+class SignupRequest(BaseModel):
+    """Schema for requesting a signup link by email."""
+    email: EmailStr
+
+
+class SignupCompleteRequest(BaseModel):
+    """Schema for finishing signup from the emailed link."""
+    token: str
+    password: str = Field(..., min_length=8, max_length=128)
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Schema for requesting a password reset link."""
+    identifier: str = Field(..., min_length=1, max_length=255)
+
+
+class ResetPasswordRequest(BaseModel):
+    """Schema for setting a new password from a reset link."""
+    token: str
     password: str = Field(..., min_length=8, max_length=128)
 
 
@@ -97,9 +120,28 @@ class CardCreate(BaseModel):
 
 
 class CardUpdate(BaseModel):
-    """Schema for updating a card."""
+    """Schema for updating a card's content and lead fields.
+
+    Callers use model_dump(exclude_unset=True): a field left out is
+    unchanged, a field sent as null is cleared (title can't be cleared).
+    """
     title: Optional[str] = Field(None, min_length=1, max_length=255)
     details: Optional[str] = Field(None, max_length=5000)
+    company: Optional[str] = Field(None, max_length=255)
+    contact: Optional[str] = Field(None, max_length=255)
+    deal_value: Optional[float] = Field(None, ge=0)
+    currency: Optional[Currency] = None
+    expected_close_date: Optional[date] = None
+    lead_source: Optional[LeadSource] = None
+    product_line: Optional[ProductLine] = None
+    salesperson_id: Optional[int] = None
+
+    @field_validator("title")
+    @classmethod
+    def title_not_null(cls, value):
+        if value is None:
+            raise ValueError("title cannot be cleared")
+        return value
 
 
 class CardMove(BaseModel):
@@ -116,6 +158,15 @@ class CardResponse(BaseModel):
     details: Optional[str]
     position: int
     has_member_edits: bool
+    company: Optional[str] = None
+    contact: Optional[str] = None
+    deal_value: Optional[float] = None
+    currency: Optional[str] = None
+    expected_close_date: Optional[date] = None
+    lead_source: Optional[str] = None
+    product_line: Optional[str] = None
+    salesperson_id: Optional[int] = None
+    salesperson_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -129,6 +180,75 @@ class CardEditHistoryEntry(BaseModel):
     edited_by: str
     changes: dict
     created_at: datetime
+
+
+class SalespersonOption(BaseModel):
+    id: int
+    username: str
+
+
+class LeadOptionsResponse(BaseModel):
+    """Allowed values for the lead fields, for the edit form's selects."""
+    currencies: List[str]
+    lead_sources: List[str]
+    product_lines: List[str]
+    salespeople: List[SalespersonOption]
+    won_stage: str
+    lost_stage: str
+
+
+class ReportGroup(BaseModel):
+    """One row of a breakdown (by salesperson, product line or source)."""
+    key: str
+    open_count: int
+    open_totals: Dict[str, float]
+    won_count: int
+    won_totals: Dict[str, float]
+
+
+class ReportStage(BaseModel):
+    column_id: int
+    title: str
+    count: int
+    totals: Dict[str, float]
+
+
+class ReportKpis(BaseModel):
+    open_count: int
+    open_totals: Dict[str, float]
+    won_count: int
+    won_totals: Dict[str, float]
+    lost_count: int
+    win_rate: Optional[float]
+
+
+class ClosingSoonLead(BaseModel):
+    card_id: int
+    title: str
+    company: Optional[str]
+    stage: str
+    salesperson_name: Optional[str]
+    deal_value: Optional[float]
+    currency: Optional[str]
+    expected_close_date: date
+    overdue: bool
+
+
+class BoardReport(BaseModel):
+    """Sales report over a board's leads. Money totals are per currency."""
+    kpis: ReportKpis
+    stages: List[ReportStage]
+    by_salesperson: List[ReportGroup]
+    by_product_line: List[ReportGroup]
+    by_source: List[ReportGroup]
+    closing_soon: List[ClosingSoonLead]
+
+
+class UndoStatus(BaseModel):
+    """Whether the current user has a change to undo, and what it is."""
+    available: bool
+    description: Optional[str] = None
+    undone: Optional[str] = None  # set by POST /undo: what was just reversed
 
 
 # Board with nested data

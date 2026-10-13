@@ -4,6 +4,20 @@ export type Card = {
   details: string;
   // Set by the API-backed board only; unused by the local-state demo board.
   hasMemberEdits?: boolean;
+  lead?: LeadSummary;
+};
+
+/** What a card shows of its sales lead (API-backed board only). */
+export type LeadSummary = {
+  company: string | null;
+  contact: string | null;
+  dealValue: number | null;
+  currency: string | null;
+  expectedCloseDate: string | null; // YYYY-MM-DD
+  productLine: string | null;
+  salespersonName: string | null;
+  // Close date has passed while the lead is still open (not won/lost)
+  overdue: boolean;
 };
 
 export type Column = {

@@ -35,8 +35,9 @@ test.describe("Setup flow", () => {
     await page.getByLabel("Confirm Password").fill(E2E_ADMIN_PASSWORD);
     await page.getByRole("button", { name: /create admin account/i }).click();
 
-    await expect(page.getByText(/welcome/i)).toBeVisible();
-    await expect(page.getByText(E2E_ADMIN_USERNAME)).toBeVisible();
+    // Scoped to the header: the username also appears on cards it's the
+    // salesperson for.
+    await expect(page.getByText(/welcome/i)).toContainText(E2E_ADMIN_USERNAME);
   });
 });
 
@@ -72,8 +73,7 @@ test.describe("Login flow", () => {
     await page.getByLabel("Password").fill(E2E_ADMIN_PASSWORD);
     await page.getByRole("button", { name: /sign in/i }).click();
 
-    await expect(page.getByText(/welcome/i)).toBeVisible();
-    await expect(page.getByText(E2E_ADMIN_USERNAME)).toBeVisible();
+    await expect(page.getByText(/welcome/i)).toContainText(E2E_ADMIN_USERNAME);
   });
 
   test("shows error with invalid credentials", async ({ page }) => {

@@ -6,7 +6,19 @@ import type { CardEditHistoryEntry } from "@/lib/api";
 const FIELD_LABELS: Record<string, string> = {
   title: "Title",
   details: "Details",
+  company: "Company",
+  contact: "Contact",
+  deal_value: "Deal value",
+  currency: "Currency",
+  expected_close_date: "Expected close date",
+  lead_source: "Lead source",
+  product_line: "Product line",
+  salesperson: "Salesperson",
 };
+
+// 0 is a real deal value, so only null/blank count as empty.
+const showValue = (value: string | number | null) =>
+  value === null || value === "" ? "(empty)" : value;
 
 const formatTimestamp = (isoString: string) =>
   new Date(isoString).toLocaleString(undefined, {
@@ -87,9 +99,9 @@ export const CardHistoryModal = ({ cardTitle, entries, isLoading, onClose }: Car
                           {FIELD_LABELS[field] || field}
                         </dt>
                         <dd className="mt-1 text-sm leading-6 text-[var(--navy-dark)]">
-                          <span className="text-[var(--gray-text)] line-through">{old || "(empty)"}</span>
+                          <span className="text-[var(--gray-text)] line-through">{showValue(old)}</span>
                           {" -> "}
-                          {newValue || "(empty)"}
+                          {showValue(newValue)}
                         </dd>
                       </div>
                     ))}

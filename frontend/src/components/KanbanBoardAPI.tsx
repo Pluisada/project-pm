@@ -8,12 +8,16 @@ import {
   useSensor,
   useSensors,
   closestCenter,
+  pointerWithin,
+  type CollisionDetection,
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
 import { KanbanColumn } from "@/components/KanbanColumn";
 import { KanbanCardPreview } from "@/components/KanbanCardPreview";
 import { CardHistoryModal } from "@/components/CardHistoryModal";
+import { LeadEditModal } from "@/components/LeadEditModal";
+import { todayIso } from "@/lib/format";
 import type { UserRole } from "@/lib/auth";
 import {
   getBoard,
@@ -24,9 +28,15 @@ import {
   deleteCard,
   getCardHistory,
   getErrorMessage,
+  getLeadOptions,
+  getUndoStatus,
+  undoLastChange,
   type BoardDetail,
   type CardResponse,
   type CardEditHistoryEntry,
+  type CardUpdatePayload,
+  type LeadOptions,
+  type UndoStatus,
 } from "@/lib/api";
 
 // Columns and cards are separate DB tables, each with its own autoincrement
@@ -38,6 +48,17 @@ import {
 const colDndId = (id: number) => `col-${id}`;
 const cardDndId = (id: number) => `card-${id}`;
 const cardIdFromDndId = (dndId: string) => Number(dndId.slice(5));
+
+// Drop on whatever is under the pointer; fall back to the nearest center only
+// when the pointer is over no droppable (e.g. between columns). Plain
+// closestCenter misfires once a long column stretches every column in the
+// row: a drop into the empty lower part of a short column is measured against
+// that column's far-away center, so the card snaps back to the nearest card in
+// another column instead.
+const pointerFirst: CollisionDetection = (args) => {
+  const underPointer = pointerWithin(args);
+  return underPointer.length > 0 ? underPointer : closestCenter(args);
+};
 
 export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserRole }) => {
   const isAdminUser = role === "admin";
@@ -54,6 +75,13 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
   const [historyEntries, setHistoryEntries] = useState<CardEditHistoryEntry[] | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
 
+  const [leadOptions, setLeadOptions] = useState<LeadOptions | null>(null);
+  const [leadCardId, setLeadCardId] = useState<number | null>(null);
+
+  const [undoStatus, setUndoStatus] = useState<UndoStatus | null>(null);
+  const [undoing, setUndoing] = useState(false);
+  const [undoNotice, setUndoNotice] = useState<string | null>(null);
+
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 6 },
@@ -66,8 +94,14 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
       setIsLoading(true);
       setLoadError(null);
       try {
-        const data = await getBoard(boardId);
+        const [data, options, undo] = await Promise.all([
+          getBoard(boardId),
+          getLeadOptions(),
+          getUndoStatus(boardId),
+        ]);
         setBoard(data);
+        setLeadOptions(options);
+        setUndoStatus(undo);
       } catch (err: unknown) {
         setLoadError(getErrorMessage(err, "Failed to load board"));
       } finally {
@@ -88,6 +122,36 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
     });
     return acc;
   }, [board]);
+
+  // Every successful change replaces the user's undo entry on the server, so
+  // re-read it after each one. Failures here only leave the button stale.
+  const refreshUndo = () => {
+    setUndoNotice(null);
+    getUndoStatus(boardId).then(setUndoStatus).catch(() => {});
+  };
+
+  const handleUndo = async () => {
+    setUndoing(true);
+    setActionError(null);
+    try {
+      const result = await undoLastChange(boardId);
+      setUndoNotice(result.undone ? `Undone: ${result.undone}` : "Undone");
+    } catch (err: unknown) {
+      setUndoNotice(null);
+      setActionError(getErrorMessage(err, "Failed to undo"));
+    } finally {
+      // Undo can touch any card (and an AI request several), so reload the
+      // whole board rather than patching it. The entry is used up either way.
+      try {
+        const [data, status] = await Promise.all([getBoard(boardId), getUndoStatus(boardId)]);
+        setBoard(data);
+        setUndoStatus(status);
+      } catch (err: unknown) {
+        setActionError(getErrorMessage(err, "Failed to reload board"));
+      }
+      setUndoing(false);
+    }
+  };
 
   const handleDragStart = (event: DragStartEvent) => {
     const raw = event.active.id as string;
@@ -159,6 +223,7 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
 
       // Make API call
       await moveCard(boardId, cardId, targetColumn.id, newPosition);
+      refreshUndo();
     } catch (err: unknown) {
       // Revert on error
       setBoard(oldBoard);
@@ -194,6 +259,7 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
 
     try {
       const newCard = await createCard(boardId, columnId, title, details);
+      refreshUndo();
       setBoard((prev) => {
         if (!prev) return prev;
         return {
@@ -213,6 +279,26 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
     }
   };
 
+  const replaceCard = (updated: CardResponse) => {
+    setBoard((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        columns: prev.columns.map((col) =>
+          col.id === updated.column_id
+            ? { ...col, cards: col.cards?.map((c) => (c.id === updated.id ? updated : c)) }
+            : col
+        ),
+      };
+    });
+  };
+
+  // Errors propagate so the modal can show them and stay open.
+  const handleSaveLead = async (cardId: number, updates: CardUpdatePayload) => {
+    replaceCard(await updateCard(boardId, cardId, updates));
+    refreshUndo();
+  };
+
   const handleUpdateCard = async (
     columnId: number,
     cardId: number,
@@ -222,18 +308,8 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
     if (!board) return false;
 
     try {
-      const updated = await updateCard(boardId, cardId, title, details);
-      setBoard((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          columns: prev.columns.map((col) =>
-            col.id === columnId
-              ? { ...col, cards: col.cards?.map((c) => (c.id === cardId ? updated : c)) }
-              : col
-          ),
-        };
-      });
+      replaceCard(await updateCard(boardId, cardId, { title, details }));
+      refreshUndo();
       return true;
     } catch (err: unknown) {
       setActionError(getErrorMessage(err, "Failed to update card"));
@@ -262,6 +338,7 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
       });
 
       await deleteCard(boardId, cardId);
+      refreshUndo();
     } catch (err: unknown) {
       setBoard(oldBoard);
       setActionError(getErrorMessage(err, "Failed to delete card"));
@@ -317,25 +394,52 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
   }
 
   const activeCard = activeCardId ? cardsById[activeCardId] : null;
+  const today = todayIso();
   const historyCard = historyCardId ? cardsById[historyCardId] : null;
 
   return (
-    <div className="relative overflow-hidden">
+    // overflow-clip, not overflow-hidden: both clip the decorative gradients,
+    // but overflow-hidden would make this div the scroll container and stop
+    // the Undo bar below from sticking.
+    <div className="relative overflow-clip">
       <div className="pointer-events-none absolute left-0 top-0 h-[420px] w-[420px] -translate-x-1/3 -translate-y-1/3 rounded-full bg-[radial-gradient(circle,_rgba(32,157,215,0.25)_0%,_rgba(32,157,215,0.05)_55%,_transparent_70%)]" />
       <div className="pointer-events-none absolute bottom-0 right-0 h-[520px] w-[520px] translate-x-1/4 translate-y-1/4 rounded-full bg-[radial-gradient(circle,_rgba(117,57,145,0.18)_0%,_rgba(117,57,145,0.05)_55%,_transparent_75%)]" />
+
+      {/* Stays at the top of the scrolling board area so it's always reachable. */}
+      <div className="sticky top-0 z-20 flex items-center justify-end gap-3 border-b border-[var(--stroke)] bg-white/90 px-6 py-2 backdrop-blur">
+        {undoNotice && (
+          <span className="text-xs font-medium text-green-700" role="status">
+            {undoNotice}
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={handleUndo}
+          disabled={!undoStatus?.available || undoing}
+          title={undoStatus?.description ?? "Nothing to undo"}
+          className="rounded-lg border border-[var(--stroke)] bg-white px-4 py-1.5 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--navy-dark)] transition hover:border-[var(--primary-blue)] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {undoing ? "Undoing..." : "Undo"}
+        </button>
+        {undoStatus?.description && !undoing && (
+          <span className="hidden max-w-[360px] truncate text-xs text-[var(--gray-text)] sm:inline">
+            {undoStatus.description}
+          </span>
+        )}
+      </div>
 
       <main className="relative mx-auto flex min-h-screen max-w-[1500px] flex-col gap-10 px-6 pb-16 pt-12">
         <header className="flex flex-col gap-6 rounded-[32px] border border-[var(--stroke)] bg-white/80 p-8 shadow-[var(--shadow)] backdrop-blur">
           <div className="flex flex-wrap items-start justify-between gap-6">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
-                Single Board Kanban
+                Salcomp Sales Pipeline
               </p>
               <h1 className="mt-3 font-display text-4xl font-semibold text-[var(--navy-dark)]">
                 {board.title}
               </h1>
               <p className="mt-3 max-w-xl text-sm leading-6 text-[var(--gray-text)]">
-                {board.description || "Keep momentum visible. Rename columns, drag cards between stages, and capture quick notes without getting buried in settings."}
+                {board.description || "Each card is a lead. Drag it forward as the deal progresses, and open Edit lead to record company, value, close date and owner."}
               </p>
             </div>
             <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--surface)] px-5 py-4">
@@ -343,7 +447,7 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
                 Focus
               </p>
               <p className="mt-2 text-lg font-semibold text-[var(--primary-blue)]">
-                {board.columns.length} columns. Zero clutter.
+                {board.columns.length} stages. {Object.keys(cardsById).length} leads.
               </p>
             </div>
           </div>
@@ -376,11 +480,13 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
 
         <DndContext
           sensors={sensors}
-          collisionDetection={closestCenter}
+          collisionDetection={pointerFirst}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
         >
-          <section className="grid gap-6 lg:grid-cols-5">
+          {/* Six stages don't fit side by side at a readable width next to
+              the AI sidebar, so the row scrolls horizontally instead. */}
+          <section className="grid auto-cols-[minmax(240px,1fr)] grid-flow-col gap-6 overflow-x-auto pb-2">
             {board.columns.map((column) => (
               <KanbanColumn
                 key={column.id}
@@ -395,6 +501,20 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
                   id: cardDndId(c.id),
                   details: c.details || "",
                   hasMemberEdits: c.has_member_edits,
+                  lead: {
+                    company: c.company,
+                    contact: c.contact,
+                    dealValue: c.deal_value,
+                    currency: c.currency,
+                    expectedCloseDate: c.expected_close_date,
+                    productLine: c.product_line,
+                    salespersonName: c.salesperson_name,
+                    overdue:
+                      !!c.expected_close_date &&
+                      c.expected_close_date < today &&
+                      column.title !== leadOptions?.won_stage &&
+                      column.title !== leadOptions?.lost_stage,
+                  },
                 })) || []}
                 canDeleteCards={isAdminUser}
                 onRename={(_colId, title) => handleRenameColumn(column.id, title)}
@@ -406,6 +526,11 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
                   handleUpdateCard(column.id, cardIdFromDndId(cardDndIdValue), title, details)
                 }
                 onOpenCardHistory={(cardDndIdValue) => handleOpenHistory(cardIdFromDndId(cardDndIdValue))}
+                onEditLead={
+                  leadOptions
+                    ? (cardDndIdValue) => setLeadCardId(cardIdFromDndId(cardDndIdValue))
+                    : undefined
+                }
               />
             ))}
           </section>
@@ -418,6 +543,15 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
           </DragOverlay>
         </DndContext>
       </main>
+
+      {leadCardId !== null && cardsById[leadCardId] && leadOptions && (
+        <LeadEditModal
+          card={cardsById[leadCardId]}
+          options={leadOptions}
+          onSave={(updates) => handleSaveLead(leadCardId, updates)}
+          onClose={() => setLeadCardId(null)}
+        />
+      )}
 
       {historyCardId !== null && (
         <CardHistoryModal

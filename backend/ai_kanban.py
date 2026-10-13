@@ -1,17 +1,22 @@
 """AI-powered Kanban board updates with structured outputs."""
 import json
 from typing import Optional
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from card_rules import can_move_card, diff_card_changes, is_admin, record_member_edit
+from card_rules import InvalidCardUpdate, apply_card_updates, can_move_card, is_admin
+from lead_options import CURRENCIES, LEAD_SOURCES, LOST_STAGE, PRODUCT_LINES, STAGES, WON_STAGE
 from models import ConversationMessage, Card, BoardColumn as Column, User
-from schemas import BoardDetail
+from schemas import BoardDetail, CardUpdate
+from undo import record_undo, undo_create, undo_delete, undo_move, undo_update
 from database import SessionLocal
 from ai import call_ai, AIError
 
 
 # System prompt for AI
-SYSTEM_PROMPT = """You are a helpful AI assistant for a Kanban board project management tool.
+SYSTEM_PROMPT = f"""You are a helpful AI assistant for Salcomp's sales lead tracking board.
+Each card is a sales lead; columns are the sales stages, in order: {", ".join(STAGES)}.
+"{WON_STAGE}" means the deal was won and "{LOST_STAGE}" that it was lost.
 
 The user will provide:
 1. Current board state (columns and cards)
@@ -24,16 +29,24 @@ Your job is to:
 3. Provide a helpful response
 
 You MUST respond with valid JSON in this exact format:
-{
+{{
   "response": "Your helpful message to the user",
   "actions": [
-    {"type": "create", "column_id": 1, "title": "Card title", "details": "Card details"},
-    {"type": "update", "card_id": 1, "title": "New title", "details": "New details"},
-    {"type": "move", "card_id": 1, "column_id": 2, "position": 0},
-    {"type": "delete", "card_id": 1}
+    {{"type": "create", "column_id": 1, "title": "Card title", "details": "Card details", "company": "Acme"}},
+    {{"type": "update", "card_id": 1, "title": "New title", "deal_value": 50000, "currency": "EUR"}},
+    {{"type": "move", "card_id": 1, "column_id": 2, "position": 0}},
+    {{"type": "delete", "card_id": 1}}
   ],
   "confidence": 0.95
-}
+}}
+
+Lead fields (all optional, on create and update; send null to clear one):
+- company, contact: text
+- deal_value: number >= 0, with currency one of: {", ".join(CURRENCIES)}
+- expected_close_date: "YYYY-MM-DD"
+- lead_source: one of: {", ".join(LEAD_SOURCES)}
+- product_line: one of: {", ".join(PRODUCT_LINES)}
+- salesperson_id: a user id from the "salespeople" list in the board state
 
 Rules:
 - Only suggest actions that make sense for the user's request
@@ -54,6 +67,10 @@ async def get_board_context(db: Session, board_id: int) -> dict:
     return {
         "board_id": board.id,
         "title": board.title,
+        "salespeople": [
+            {"id": u.id, "username": u.username}
+            for u in db.query(User).order_by(User.username).all()
+        ],
         "columns": [
             {
                 "id": col.id,
@@ -65,6 +82,17 @@ async def get_board_context(db: Session, board_id: int) -> dict:
                         "title": c.title,
                         "details": c.details,
                         "position": c.position,
+                        "company": c.company,
+                        "contact": c.contact,
+                        "deal_value": c.deal_value,
+                        "currency": c.currency,
+                        "expected_close_date": (
+                            c.expected_close_date.isoformat() if c.expected_close_date else None
+                        ),
+                        "lead_source": c.lead_source,
+                        "product_line": c.product_line,
+                        "salesperson_id": c.salesperson_id,
+                        "salesperson_name": c.salesperson_name,
                     }
                     for c in (col.cards or [])
                 ],
@@ -152,6 +180,25 @@ Recent Conversation:
         }
 
 
+def _validated_card_fields(db: Session, action: dict) -> dict:
+    """Pick an action's card fields and validate them like the REST route does.
+
+    Raises ValueError (ValidationError and InvalidCardUpdate both are) with a
+    readable reason for the action's "failed" entry.
+    """
+    raw = {k: v for k, v in action.items() if k in CardUpdate.model_fields}
+    try:
+        fields = CardUpdate(**raw).model_dump(exclude_unset=True)
+    except ValidationError as e:
+        raise ValueError(
+            "; ".join(f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors())
+        )
+    salesperson_id = fields.get("salesperson_id")
+    if salesperson_id is not None and db.get(User, salesperson_id) is None:
+        raise InvalidCardUpdate("Salesperson not found")
+    return fields
+
+
 async def apply_board_actions(
     db: Session, board_id: int, actions: list[dict], current_user: User
 ) -> dict:
@@ -167,6 +214,9 @@ async def apply_board_actions(
         "successful": [],
         "failed": [],
     }
+    # Inverse steps of every applied action, recorded as one undo entry so a
+    # single Undo click reverses the whole AI request.
+    undo_steps = []
 
     try:
         board = db.query(Board).filter(Board.id == board_id).first()
@@ -186,14 +236,21 @@ async def apply_board_actions(
                         )
                         continue
 
-                    card = Card(
-                        column_id=column_id,
-                        title=action.get("title", "Untitled"),
-                        details=action.get("details", ""),
-                        position=action.get("position", 0),
-                    )
+                    try:
+                        fields = _validated_card_fields(
+                            db, {"title": "Untitled", "details": "", **action}
+                        )
+                    except ValueError as e:
+                        results["failed"].append({"action": action, "reason": str(e)})
+                        continue
+
+                    # Set directly rather than via apply_card_updates: filling
+                    # in a brand-new card isn't an edit to log in its history
+                    # (same as the REST create route).
+                    card = Card(column_id=column_id, position=action.get("position", 0), **fields)
                     db.add(card)
                     db.flush()
+                    undo_steps.append(undo_create(card))
                     results["successful"].append(
                         {"type": "create", "card_id": card.id}
                     )
@@ -207,15 +264,14 @@ async def apply_board_actions(
                         )
                         continue
 
-                    changes = diff_card_changes(
-                        card, action.get("title"), action.get("details")
-                    )
-                    if "title" in changes:
-                        card.title = action["title"]
-                    if "details" in changes:
-                        card.details = action["details"]
-
-                    record_member_edit(db, card, current_user, changes)
+                    try:
+                        fields = _validated_card_fields(db, action)
+                        undo_step = undo_update(card, fields)
+                        apply_card_updates(db, card, fields, current_user)
+                        undo_steps.append(undo_step)
+                    except ValueError as e:
+                        results["failed"].append({"action": action, "reason": str(e)})
+                        continue
                     results["successful"].append({"type": "update", "card_id": card_id})
 
                 elif action_type == "move":
@@ -237,6 +293,7 @@ async def apply_board_actions(
                         )
                         continue
 
+                    undo_steps.append(undo_move(card))
                     card.column_id = column_id
                     card.position = action.get("position", 0)
                     results["successful"].append({"type": "move", "card_id": card_id})
@@ -256,6 +313,7 @@ async def apply_board_actions(
                         )
                         continue
 
+                    undo_steps.append(undo_delete(card))
                     db.delete(card)
                     results["successful"].append({"type": "delete", "card_id": card_id})
 
@@ -264,6 +322,14 @@ async def apply_board_actions(
                     {"action": action, "reason": str(e)}
                 )
 
+        count = len(results["successful"])
+        record_undo(
+            db,
+            current_user,
+            board_id,
+            f"Undo AI assistant changes ({count} change{'s' if count != 1 else ''})",
+            undo_steps,
+        )
         db.commit()
         return {"success": True, **results}
 

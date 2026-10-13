@@ -1,7 +1,7 @@
 """SQLAlchemy ORM models for PM database."""
 import enum
 from datetime import datetime
-from sqlalchemy import Column as SQLColumn, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Column as SQLColumn, Date, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 
@@ -89,11 +89,22 @@ class Card(Base):
     title = SQLColumn(String, nullable=False)
     details = SQLColumn(Text, nullable=True)
     position = SQLColumn(Integer, nullable=False, default=0)
+    # Sales lead fields - all optional; allowed values live in lead_options.py.
+    # Existing databases get these via database._add_missing_card_columns.
+    company = SQLColumn(String, nullable=True)
+    contact = SQLColumn(String, nullable=True)
+    deal_value = SQLColumn(Float, nullable=True)
+    currency = SQLColumn(String(3), nullable=True)
+    expected_close_date = SQLColumn(Date, nullable=True)
+    lead_source = SQLColumn(String, nullable=True)
+    product_line = SQLColumn(String, nullable=True)
+    salesperson_id = SQLColumn(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = SQLColumn(DateTime, default=func.now(), nullable=False, index=True)
     updated_at = SQLColumn(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
     # Relationships
     column = relationship("BoardColumn", back_populates="cards")
+    salesperson = relationship("User")
     actions = relationship("CardAction", back_populates="card", cascade="all, delete-orphan")
     edit_history = relationship(
         "CardEditHistory",
@@ -111,6 +122,10 @@ class Card(Base):
         only ever written for member edits (see routes.update_card).
         """
         return bool(self.edit_history)
+
+    @property
+    def salesperson_name(self):
+        return self.salesperson.username if self.salesperson else None
 
     def __repr__(self):
         return f"<Card {self.title}>"
@@ -183,6 +198,24 @@ class CardEditHistory(Base):
 
     def __repr__(self):
         return f"<CardEditHistory card={self.card_id}>"
+
+
+class UndoEntry(Base):
+    """A user's single level of undo: the inverse of their last board change.
+
+    One row per user, replaced by each new change and removed once used.
+    `steps` is a JSON list of inverse operations (see undo.py), applied in
+    reverse order - several for one AI request, one for a UI action.
+    """
+
+    __tablename__ = "undo_entries"
+
+    id = SQLColumn(Integer, primary_key=True, index=True)
+    user_id = SQLColumn(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
+    board_id = SQLColumn(Integer, ForeignKey("boards.id", ondelete="CASCADE"), nullable=False, index=True)
+    description = SQLColumn(String, nullable=False)
+    steps = SQLColumn(Text, nullable=False)  # JSON list
+    created_at = SQLColumn(DateTime, default=func.now(), nullable=False)
 
 
 # Alias para compatibilidade com código legado

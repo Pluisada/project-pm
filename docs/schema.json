@@ -148,7 +148,7 @@
       ]
     },
     "cards": {
-      "description": "Kanban cards (tasks/items)",
+      "description": "Sales leads - one card per lead; its column is the sales stage",
       "columns": {
         "id": {
           "type": "INTEGER",
@@ -177,6 +177,47 @@
           "nullable": false,
           "default": 0,
           "description": "Card order within column"
+        },
+        "company": {
+          "type": "TEXT",
+          "nullable": true,
+          "description": "Lead's company"
+        },
+        "contact": {
+          "type": "TEXT",
+          "nullable": true,
+          "description": "Contact person"
+        },
+        "deal_value": {
+          "type": "REAL",
+          "nullable": true,
+          "description": "Deal value (>= 0), in `currency`"
+        },
+        "currency": {
+          "type": "VARCHAR(3)",
+          "nullable": true,
+          "description": "One of EUR, USD, CNY, INR, BRL, VND (backend/lead_options.py)"
+        },
+        "expected_close_date": {
+          "type": "DATE",
+          "nullable": true,
+          "description": "Expected close date"
+        },
+        "lead_source": {
+          "type": "TEXT",
+          "nullable": true,
+          "description": "One of Website, Referral, Trade show, Cold outreach, Existing customer, Other"
+        },
+        "product_line": {
+          "type": "TEXT",
+          "nullable": true,
+          "description": "Chargers or Power supplies"
+        },
+        "salesperson_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES users(id) ON DELETE SET NULL",
+          "nullable": true,
+          "description": "Assigned salesperson"
         },
         "created_at": {
           "type": "TIMESTAMP",
@@ -337,6 +378,49 @@
         "message_id",
         "card_id",
         "created_at"
+      ]
+    },
+    "undo_entries": {
+      "description": "Each user's single level of undo: the inverse of their last board change. Replaced by the next change, deleted once used.",
+      "columns": {
+        "id": {
+          "type": "INTEGER",
+          "constraint": "PRIMARY KEY AUTOINCREMENT",
+          "nullable": false,
+          "description": "Unique ID"
+        },
+        "user_id": {
+          "type": "INTEGER",
+          "constraint": "UNIQUE, FOREIGN KEY REFERENCES users(id) ON DELETE CASCADE",
+          "nullable": false,
+          "description": "Owner - one entry per user"
+        },
+        "board_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES boards(id) ON DELETE CASCADE",
+          "nullable": false,
+          "description": "Board the change was made on"
+        },
+        "description": {
+          "type": "TEXT",
+          "nullable": false,
+          "description": "Human-readable label shown next to the Undo button"
+        },
+        "steps": {
+          "type": "TEXT",
+          "nullable": false,
+          "description": "JSON list of inverse operations (move/update/delete/create), applied in reverse order"
+        },
+        "created_at": {
+          "type": "TIMESTAMP",
+          "default": "CURRENT_TIMESTAMP",
+          "nullable": false,
+          "description": "When the change was made"
+        }
+      },
+      "indexes": [
+        "user_id (UNIQUE)",
+        "board_id"
       ]
     }
   },
