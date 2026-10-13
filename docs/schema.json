@@ -129,6 +129,12 @@
           "default": 0,
           "description": "Column order (0, 1, 2, ...)"
         },
+        "stage_kind": {
+          "type": "VARCHAR",
+          "default": "'open'",
+          "nullable": false,
+          "description": "Commercial meaning of the stage: 'open', 'won' or 'lost'. Reports use this, never the title. At most one won and one lost per board; can't change while the column has cards. Added to older databases by backend/migrate_stage_kind.py (explicit)."
+        },
         "created_at": {
           "type": "TIMESTAMP",
           "default": "CURRENT_TIMESTAMP",

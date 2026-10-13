@@ -3,7 +3,7 @@ from typing import Dict, List, Optional
 from datetime import date, datetime
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from lead_options import Currency, LeadSource, ProductLine
+from lead_options import Currency, LeadSource, ProductLine, StageKind
 from models import UserRole
 
 
@@ -89,12 +89,15 @@ class ColumnCreate(BaseModel):
     """Schema for creating a column."""
     title: str = Field(..., min_length=1, max_length=255)
     position: int = Field(default=0, ge=0)
+    stage_kind: StageKind = "open"
 
 
 class ColumnUpdate(BaseModel):
-    """Schema for updating a column."""
+    """Schema for updating a column. Renaming never changes stage_kind; the
+    kind only changes when it's sent explicitly."""
     title: Optional[str] = Field(None, min_length=1, max_length=255)
     position: Optional[int] = Field(None, ge=0)
+    stage_kind: Optional[StageKind] = None
 
 
 class ColumnResponse(BaseModel):
@@ -103,6 +106,7 @@ class ColumnResponse(BaseModel):
     board_id: int
     title: str
     position: int
+    stage_kind: str
     created_at: datetime
     updated_at: datetime
 
@@ -193,8 +197,6 @@ class LeadOptionsResponse(BaseModel):
     lead_sources: List[str]
     product_lines: List[str]
     salespeople: List[SalespersonOption]
-    won_stage: str
-    lost_stage: str
 
 
 class ReportGroup(BaseModel):
@@ -209,6 +211,7 @@ class ReportGroup(BaseModel):
 class ReportStage(BaseModel):
     column_id: int
     title: str
+    stage_kind: str
     count: int
     totals: Dict[str, float]
 

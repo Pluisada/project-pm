@@ -9,6 +9,9 @@ services:
       - PORT=8000
       - DATABASE_URL=sqlite:///./pm.db
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      # Required, no default: compose refuses to start without it, and the
+      # app itself refuses missing/default/short keys (see docs/SECURITY.md).
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY must be set in .env - see docs/SECURITY.md}
       - SMTP_HOST=${SMTP_HOST:-}
       - SMTP_PORT=${SMTP_PORT:-587}
       - SMTP_USER=${SMTP_USER:-}

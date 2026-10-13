@@ -93,13 +93,13 @@ class TestBoardRoutes:
         assert response.status_code == 200
         assert response.json() == []
 
-    def test_create_board(self, client):
+    def test_create_board(self, client, admin_headers):
         """Test creating a board."""
         payload = {
             "title": "Test Board",
             "description": "A test board"
         }
-        response = client.post("/api/boards", json=payload)
+        response = client.post("/api/boards", json=payload, headers=admin_headers)
         assert response.status_code == 201
         data = response.json()
         assert data["title"] == "Test Board"
@@ -107,16 +107,16 @@ class TestBoardRoutes:
         assert "id" in data
         assert "user_id" in data
 
-    def test_create_board_missing_title(self, client):
+    def test_create_board_missing_title(self, client, admin_headers):
         """Test creating board without title."""
         payload = {"description": "No title"}
-        response = client.post("/api/boards", json=payload)
+        response = client.post("/api/boards", json=payload, headers=admin_headers)
         assert response.status_code == 422
 
-    def test_list_boards_after_create(self, client):
-        """Test listing boards after creating one."""
+    def test_list_boards_after_create(self, client, admin_headers):
+        """Test listing boards after creating one (any user can list)."""
         payload = {"title": "Board 1"}
-        client.post("/api/boards", json=payload)
+        client.post("/api/boards", json=payload, headers=admin_headers)
 
         response = client.get("/api/boards")
         assert response.status_code == 200
@@ -166,20 +166,20 @@ class TestBoardRoutes:
 class TestColumnRoutes:
     """Test column endpoints."""
 
-    def test_create_column(self, client, test_db):
+    def test_create_column(self, client, test_db, admin_headers):
         """Test creating a column."""
         board = Board(user_id=1, title="Test")
         test_db.add(board)
         test_db.commit()
 
         payload = {"title": "To Do", "position": 0}
-        response = client.post(f"/api/boards/{board.id}/columns", json=payload)
+        response = client.post(f"/api/boards/{board.id}/columns", json=payload, headers=admin_headers)
         assert response.status_code == 201
         data = response.json()
         assert data["title"] == "To Do"
         assert data["position"] == 0
 
-    def test_update_column_title(self, client, test_db):
+    def test_update_column_title(self, client, test_db, admin_headers):
         """Test updating column title."""
         board = Board(user_id=1, title="Test")
         test_db.add(board)
@@ -190,11 +190,11 @@ class TestColumnRoutes:
         test_db.commit()
 
         payload = {"title": "New Title"}
-        response = client.put(f"/api/boards/{board.id}/columns/{col.id}", json=payload)
+        response = client.put(f"/api/boards/{board.id}/columns/{col.id}", json=payload, headers=admin_headers)
         assert response.status_code == 200
         assert response.json()["title"] == "New Title"
 
-    def test_delete_column(self, client, test_db):
+    def test_delete_column(self, client, test_db, admin_headers):
         """Test deleting column."""
         board = Board(user_id=1, title="Test")
         test_db.add(board)
@@ -204,7 +204,7 @@ class TestColumnRoutes:
         test_db.add(col)
         test_db.commit()
 
-        response = client.delete(f"/api/boards/{board.id}/columns/{col.id}")
+        response = client.delete(f"/api/boards/{board.id}/columns/{col.id}", headers=admin_headers)
         assert response.status_code == 204
 
 

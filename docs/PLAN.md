@@ -753,3 +753,58 @@ An Undo button at the top of the board to reverse an unwanted change.
 - Single level only; column renames aren't undoable.
 - Undo restores the user's last state even if someone else changed the same card since (last-writer-wins), except when the card was deleted.
 - Undoing a delete recreates the card with a new id; its member-edit history is lost.
+
+## Part 16: Security Hardening (audit P0s) ✅ COMPLETE (2026-10-13)
+
+### Objective
+Fix the critical findings of the technical audit before any new feature work: structural authorization, the default JWT key, the public test admin, and the unauthenticated paid AI endpoint.
+
+### Changes
+- `routes.py`: `create/update/delete_board` and `create/update/delete_column` use `require_admin`; `POST /api/ai/test` uses `require_admin` (rejected before any OpenRouter call). Card permissions unchanged.
+- `ai_kanban.py`: unknown/structural action types are reported as "Unsupported action type" (they were silently ignored; there was never a structural AI path).
+- `auth.py`: `load_secret_key()` - no fallback; refuses missing/empty, known-insecure (old default, `.env.example` placeholder) and < 32-char keys, never echoing the value.
+- `docker-compose.yml`: `SECRET_KEY=${SECRET_KEY:?...}`; `.env.example` documents generating one without printing it.
+- `admin_cli.py` (new): create/promote/demote admins with no-echo or stdin passwords, takeover and last-admin protection, typed confirmation.
+- `conftest.py` (new): random `SECRET_KEY` and temp `DATABASE_URL` per pytest run.
+- `docs/SECURITY.md` (new): operations guide, including the manual procedure to replace `e2e_admin` in the dev database (not executed).
+
+### Tests & Verification
+- [x] `backend/test_security.py`: 42 tests (member 403 on all six structural writes, 401 unauthenticated, admin allowed, AI structural refusal, card rules unchanged, startup refused without/empty/default/placeholder/short key in a subprocess, valid key starts, old-default tokens rejected, no admin via signup/users/setup, CLI provisioning cases, `/api/ai/test` 401/403 without calling OpenRouter and 200 for admin)
+- [x] `test_routes.py` board/column tests now run as admin (they assumed members could change structure)
+- [x] Full backend suite: 179 passed, only the 3 known pre-existing failures
+- [ ] Not run: Playwright e2e (it runs against the dev database), Docker build
+
+### Known gaps
+- Frontend still renders column titles as editable for members (backend refuses; UI shows an error per keystroke).
+- `e2e_admin` is still the dev database's only admin until the manual replacement procedure in `docs/SECURITY.md` is followed.
+- No rate limiting; no token revocation; e2e not isolated from the dev database.
+
+## Part 17: Stable Stage Identity + Isolated E2E ✅ COMPLETE (2026-10-13)
+
+### Objective
+Remove two structural risks: (1) reports classified won/lost by column title, so a rename changed the KPIs; (2) Playwright ran against the dev backend and `backend/pm.db`.
+
+### Phase A - stage_kind
+- `columns.stage_kind` (`open`/`won`/`lost`, NOT NULL, default `open`) in `models.py`; constants and seed pipeline in `lead_options.py` (`STAGE_KINDS`, `PIPELINE_STAGES`; the title-based `STAGES`/`WON_STAGE`/`LOST_STAGE` are gone).
+- `reports.py` and the frontend "overdue" badge use `stage_kind`; `ReportStage` and `ColumnResponse` expose it; the AI context and prompt use it.
+- `routes._check_stage_kind`: one won and one lost stage per board; a column's kind can't change while it has cards; renames never touch it. Column writes stay admin-only (Part 16).
+- `KanbanColumn.tsx`: title committed on blur/Enter (no request per keystroke), read-only heading for members, won/lost badge.
+- Migration: `migrate_stage_kind.py` (dry run by default, read-only; `--apply` with automatic backup, single transaction, integrity check, `--set` for ambiguity). `init_db()` refuses an unmigrated database (`StageKindMigrationRequired`) instead of migrating it implicitly. **Not applied to the dev database**; its dry run classifies Award=won, Lost=lost, 4 others open, no ambiguity.
+
+### Phase B - E2E isolation
+- `playwright.config.ts`: own backend (:8001, `PM_E2E=1`, temp-dir SQLite, random `SECRET_KEY`, SMTP/OpenRouter cleared) and frontend (:3001, `distDir` `.next-e2e` via `PM_E2E_DIST_DIR` since `next dev` locks its dist dir); `reuseExistingServer: false`; `workers: 1`.
+- Backend `check_e2e_database`: with `PM_E2E=1`, `DATABASE_URL` must be an explicit SQLite file inside the system temp dir (never `pm.db`), else the app won't import. `/api/health` reports `test_mode`.
+- `tests/e2e-setup.ts` (global setup for both configs): requires the config's env, `test_mode: true` and the temp DB file; fingerprints both dev `pm.db` files and fails the run if they changed; removes the temp DB afterwards. `tests/helpers.ts` lost its `localhost:8000` fallback.
+- Found while validating: (a) a `column-title` testid collided with the tests' `column-*` selector; renamed `stage-title`. (b) dnd-kit ignores a new drag while the previous drop animation runs; `dragCardToColumn` now waits for the `drag-overlay` testid to detach (this was the long-standing "flaky drag" cause, not shared-DB interference alone).
+
+### Tests & Verification
+- [x] `backend/test_stages.py` (33): renaming Award/Lost keeps won/lost counts and win rate; other columns renamed "Award"/"Lost" don't become won/lost; unknown titles stay open; closing-soon after rename; seeded kinds; kind validation (422, 409 duplicate, 409 non-empty, allowed change on empty column); member can't rename or reclassify; migration (refusal on unmigrated DB, dry run byte-identical, apply preserves cards/associations + backup, refuses twice, look-alikes stay open with warnings, ambiguity blocked until `--set`, override can't create two won stages, per-board); E2E guard (missing/non-file/in-memory URL, both dev DBs, outside temp, temp accepted; subprocess import refused with default and dev DB, accepted with temp DB)
+- [x] Backend suite: 212 passed, only the 3 known pre-existing failures
+- [x] Playwright (isolated): 47/47 twice in a row, 0 skipped (setup-flow tests now really run on a fresh DB); dev `backend/pm.db` sha256 identical before/after; temp dirs removed; `playwright.docker.config.ts` refuses with an explicit error
+- [x] Lint, type-check, Vitest clean
+
+### Known gaps
+- Dev database not migrated yet; the app won't start on it until `migrate_stage_kind.py --apply` is run.
+- No admin UI to change a column's `stage_kind` (API only).
+- E2E is serial on one shared throwaway board; parallel workers need per-test boards.
+- Docker E2E needs a test profile (`PM_E2E=1`, temp DB) before `playwright.docker.config.ts` can run.

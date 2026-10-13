@@ -10,7 +10,9 @@ from sqlalchemy.pool import StaticPool
 
 from ai_kanban import apply_board_actions
 from database import _add_missing_card_columns, get_db
-from lead_options import STAGES
+from lead_options import PIPELINE_STAGES
+
+STAGES = [title for title, _kind in PIPELINE_STAGES]
 from main import app
 from models import Base, Board, Card, CardEditHistory, Column, User
 from reports import build_board_report
@@ -94,6 +96,7 @@ LEAD = {
 def test_setup_seeds_sales_stages_with_leads(client, tokens, board):
     detail = client.get(f"/api/boards/{board['id']}", headers=auth(tokens["admin"])).json()
     assert [col["title"] for col in detail["columns"]] == STAGES
+    assert [col["stage_kind"] for col in detail["columns"]] == [kind for _t, kind in PIPELINE_STAGES]
     first = detail["columns"][0]["cards"][0]
     assert first["company"] and first["currency"] and first["salesperson_name"] == "admin"
 
@@ -181,7 +184,10 @@ def report_board(test_db):
     board = Board(user_id=alice.id, title="B")
     test_db.add(board)
     test_db.flush()
-    cols = {t: Column(board_id=board.id, title=t, position=i) for i, t in enumerate(STAGES)}
+    cols = {
+        t: Column(board_id=board.id, title=t, position=i, stage_kind=kind)
+        for i, (t, kind) in enumerate(PIPELINE_STAGES)
+    }
     test_db.add_all(cols.values())
     test_db.flush()
 

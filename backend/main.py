@@ -23,7 +23,7 @@ from auth import (
     verify_password,
     verify_signup_token,
 )
-from database import get_db, init_db, seed_default_board
+from database import E2E_MODE, get_db, init_db, seed_default_board
 from deps import get_current_user
 from mailer import send_email
 from models import User, UserRole
@@ -100,8 +100,9 @@ async def logout(current_user: User = Depends(get_current_user)):
 # API health check endpoint
 @app.get("/api/health")
 async def health():
-    """Health check endpoint."""
-    return {"status": "ok"}
+    """Health check endpoint. test_mode is true only in the isolated E2E
+    backend (PM_E2E=1), which the Playwright setup asserts before any test."""
+    return {"status": "ok", "test_mode": E2E_MODE}
 
 
 # Protected endpoint (for testing auth)

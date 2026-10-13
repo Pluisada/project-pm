@@ -10,8 +10,44 @@ from jose import JWTError, jwt
 from pydantic import BaseModel
 
 
-# Configuration
-SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
+# Values that must never sign tokens: the old hardcoded fallback (public in
+# this repository's history) and the .env.example placeholder.
+INSECURE_SECRET_KEYS = {
+    "dev-secret-key-change-in-production",
+    "replace-with-a-long-random-value",
+}
+MIN_SECRET_KEY_LENGTH = 32
+
+
+class InsecureSecretKeyError(RuntimeError):
+    """SECRET_KEY is missing or unsafe; the app refuses to start."""
+
+
+def load_secret_key() -> str:
+    """Read SECRET_KEY from the environment, refusing missing or unsafe values.
+
+    Every JWT (access tokens, signup and reset links) is signed with it, so a
+    guessable key lets anyone forge a login as any user. There is deliberately
+    no fallback. The value itself is never included in the error.
+    """
+    key = os.getenv("SECRET_KEY", "").strip()
+    if not key:
+        problem = "SECRET_KEY is not set"
+    elif key in INSECURE_SECRET_KEYS:
+        problem = "SECRET_KEY is a known insecure default"
+    elif len(key) < MIN_SECRET_KEY_LENGTH:
+        problem = f"SECRET_KEY is shorter than {MIN_SECRET_KEY_LENGTH} characters"
+    else:
+        return key
+    raise InsecureSecretKeyError(
+        f"{problem}. Set a long random value in the environment (e.g. in .env); "
+        "see docs/SECURITY.md for how to generate one without printing it."
+    )
+
+
+# Configuration - fails at import, so neither the app nor any script that
+# uses auth can start with an unsafe key.
+SECRET_KEY = load_secret_key()
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 hours
 SIGNUP_TOKEN_EXPIRE_HOURS = 24

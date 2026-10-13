@@ -9,7 +9,7 @@ from auth import hash_password
 from card_rules import InvalidCardUpdate, apply_card_updates, can_move_card
 from database import get_db
 from deps import get_current_user, require_admin
-from lead_options import CURRENCIES, LEAD_SOURCES, LOST_STAGE, PRODUCT_LINES, WON_STAGE
+from lead_options import CURRENCIES, LEAD_SOURCES, PRODUCT_LINES, STAGE_OPEN
 from models import Board, Column, Card, User, UserRole, ConversationMessage, UndoEntry
 from reports import build_board_report
 from undo import (
@@ -56,6 +56,10 @@ router = APIRouter(prefix="/api", tags=["boards"])
 # ============================================================================
 # BOARD ROUTES
 # ============================================================================
+# Authorization policy: reading boards/columns is open to any authenticated
+# user (boards are shared), but creating, editing or deleting a board or a
+# column - the pipeline's structure - is admin-only (require_admin). Card
+# operations keep their own member/admin rules in card_rules.py.
 
 
 @router.get("/boards", response_model=list[BoardResponse])
@@ -71,7 +75,7 @@ async def list_boards(
 @router.post("/boards", response_model=BoardResponse, status_code=201)
 async def create_board(
     board: BoardCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """Create a new board."""
@@ -129,7 +133,7 @@ async def get_board(
 async def update_board(
     board_id: int,
     board_update: BoardUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """Update board metadata."""
@@ -154,7 +158,7 @@ async def update_board(
 @router.delete("/boards/{board_id}", status_code=204)
 async def delete_board(
     board_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """Delete a board and all its data."""
@@ -175,11 +179,36 @@ async def delete_board(
 # ============================================================================
 
 
+def _check_stage_kind(db: Session, board_id: int, kind: str, column: Optional[Column] = None) -> None:
+    """Enforce the allowed stage_kind states and transitions (admin routes).
+
+    - A board has at most one won and one lost stage, so "won"/"lost" can
+      never be ambiguous for reports.
+    - A column's kind only changes while it holds no cards: changing it would
+      silently reclassify every opportunity in it (e.g. turn open deals into
+      wins). Move the cards out first, then change the kind.
+    """
+    if column is not None and kind != column.stage_kind and column.cards:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Can't change the stage kind of a column that has cards; move them out first",
+        )
+    if kind != STAGE_OPEN:
+        clash = db.query(Column).filter(Column.board_id == board_id, Column.stage_kind == kind)
+        if column is not None:
+            clash = clash.filter(Column.id != column.id)
+        if clash.first() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f'This board already has a "{kind}" stage',
+            )
+
+
 @router.post("/boards/{board_id}/columns", response_model=ColumnResponse, status_code=201)
 async def create_column(
     board_id: int,
     column: ColumnCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """Create a column in a board."""
@@ -191,10 +220,12 @@ async def create_column(
             detail="Board not found",
         )
 
+    _check_stage_kind(db, board_id, column.stage_kind)
     db_column = Column(
         board_id=board_id,
         title=column.title,
         position=column.position,
+        stage_kind=column.stage_kind,
     )
     db.add(db_column)
     db.commit()
@@ -207,7 +238,7 @@ async def update_column(
     board_id: int,
     column_id: int,
     column_update: ColumnUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """Update column."""
@@ -231,10 +262,14 @@ async def update_column(
             detail="Column not found",
         )
 
+    # Renaming is display-only: it never touches stage_kind.
     if column_update.title is not None:
         column.title = column_update.title
     if column_update.position is not None:
         column.position = column_update.position
+    if column_update.stage_kind is not None:
+        _check_stage_kind(db, board_id, column_update.stage_kind, column)
+        column.stage_kind = column_update.stage_kind
 
     db.commit()
     db.refresh(column)
@@ -245,7 +280,7 @@ async def update_column(
 async def delete_column(
     board_id: int,
     column_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """Delete column and all its cards."""
@@ -539,8 +574,13 @@ async def get_card_history(
 
 
 @router.post("/ai/test")
-async def test_ai():
-    """Test AI connectivity with a simple question."""
+async def test_ai(current_user: User = Depends(require_admin)):
+    """Test AI connectivity with a simple question. Admin only.
+
+    A diagnostic that makes a paid OpenRouter call, so it's gated before the
+    call is made: unauthenticated requests get 401 and members 403 from the
+    dependency, never reaching test_ai_connectivity.
+    """
     result = await test_ai_connectivity("What is 2+2?")
 
     if not result["success"]:
@@ -657,8 +697,6 @@ async def get_lead_options(
         lead_sources=LEAD_SOURCES,
         product_lines=PRODUCT_LINES,
         salespeople=[{"id": u.id, "username": u.username} for u in users],
-        won_stage=WON_STAGE,
-        lost_stage=LOST_STAGE,
     )
 
 

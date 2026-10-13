@@ -153,7 +153,7 @@ This document describes the database schema for the Project Management MVP appli
 **Future:** Per-board membership/permissions if boards stop being globally shared.
 
 ### columns
-**Purpose:** Kanban board columns (Backlog, In Progress, Review, Done, etc.)
+**Purpose:** Sales stages of a board (1st Contact, F2F Meeting, RFI, Proposal, Award, Lost)
 
 | Column | Type | Constraints | Purpose |
 |--------|------|-------------|---------|
@@ -161,6 +161,7 @@ This document describes the database schema for the Project Management MVP appli
 | board_id | INTEGER | FK → boards, NOT NULL | Parent board |
 | title | TEXT | NOT NULL | Column name |
 | position | INTEGER | NOT NULL, DEFAULT 0 | Order in board (0, 1, 2, ...) |
+| stage_kind | VARCHAR | NOT NULL, DEFAULT 'open' | Commercial meaning: `open`, `won` or `lost` |
 | created_at | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Creation time |
 | updated_at | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Last modified |
 
@@ -170,7 +171,40 @@ This document describes the database schema for the Project Management MVP appli
 
 **Notes:**
 - Position field allows reordering columns without full reconstruction
-- Typically 3-5 columns per board (Backlog, Discovery, In Progress, Review, Done)
+- **`stage_kind`, not `title`, decides whether a lead is won, lost or open** in reports and in the card "overdue" badge. Titles are display text; renaming never changes the kind.
+- Rules enforced by the API (admin-only routes): values are limited to `open`/`won`/`lost`; at most one `won` and one `lost` stage per board; a column's kind can't change while it holds cards (move them out first), so opportunities are never reclassified silently.
+- New boards are seeded with Award = `won`, Lost = `lost`, the rest `open` (`lead_options.PIPELINE_STAGES`).
+
+#### Migrating an existing database to `stage_kind`
+
+Databases created before Part 17 have no `columns.stage_kind`. The column is **not** added automatically, because it decides which opportunities count as won or lost. Until it's migrated, the app refuses to start with `StageKindMigrationRequired`.
+
+From `backend/`:
+```bash
+cp pm.db pm.db.bak-$(date +%Y%m%d)              # extra manual backup (optional; --apply also makes one)
+uv run python migrate_stage_kind.py              # dry run: read-only, prints the classification
+uv run python migrate_stage_kind.py --apply      # backup + migrate in one transaction
+```
+
+**Classification.** The rule is exactly the one the reports used before Part 17, so no KPI changes at migration time:
+- A column titled exactly `Award` becomes `won`.
+- A column titled exactly `Lost` becomes `lost`.
+- Every other column becomes `open`.
+
+**Ambiguity.** If a board has two or more columns titled exactly `Award` (or exactly `Lost`), none of them is classified automatically. The run stops, and the operator chooses with `--set COLUMN_ID=KIND`, for example `--set 12=won --set 14=open`.
+
+**Look-alikes.** Titles such as `award`, ` Lost `, `Won` or `Perdido` were counted as open by the old reports, so they stay `open`. They are listed as warnings so they can be reclassified on purpose with `--set`.
+
+**What changes.**
+- One column is added: `ALTER TABLE columns ADD COLUMN stage_kind ... DEFAULT 'open'`.
+- `UPDATE`s set the won and lost columns.
+- No card, column, user or association is created, deleted or moved.
+
+**Safety.** The run checks the column count and every card's `column_id` before committing, and rolls back if anything differs. It refuses to run twice.
+
+**Recovery.** Stop the app and copy the automatic backup (`<name>-pre-stage-kind-<time>.db.bak`, ignored by git) back over `pm.db`. The previous code version runs on it unchanged.
+
+**Development database dry run (2026-10-13).** Board 1 has one exact `Award` (column 5) and one exact `Lost` (column 6), with no duplicates and no look-alikes. The migration would classify them `won` and `lost`, and the 4 other stages `open`. It has not been applied.
 
 ### cards
 **Purpose:** Sales leads - one card per lead; the card's column is its sales stage

@@ -4,6 +4,20 @@ User-facing changes, newest first. For design decisions, test results and known 
 
 ## 2026-10-13
 
+### Stable stage identity and isolated E2E tests (PLAN Part 17)
+- Each stage now has a fixed type: open, won or lost. Reports count won and lost deals by that type, so renaming a column (e.g. "Award") no longer changes any number. Won and Lost columns show a small badge.
+- Only admins can rename columns. The new title is saved when you leave the field, not on every keystroke. Members see the title as plain text.
+- **Action needed for existing databases:** run `backend/migrate_stage_kind.py` once. It does a dry run first, and `--apply` backs up the database before changing it. The app refuses to start on an unmigrated database. See `docs/DATABASE.md`.
+- `npm run test:e2e` now starts its own backend and frontend on a temporary database with a random key. It never touches your `pm.db`, and stops with an error if it detects it is connected to anything else.
+
+### Security hardening (PLAN Part 16)
+- Only admins can create, rename, reorder or delete boards and columns; members now get "403 Forbidden". Before this, any logged-in user, including anyone who self-signed-up, could delete the whole board.
+- `SECRET_KEY` is required: the app refuses to start if it's missing, too short, or a known default. **Action needed:** add one to `.env` (see `docs/SECURITY.md`). Setting it logs everyone out and invalidates pending signup/reset links.
+- New `backend/admin_cli.py` to create, promote or demote admins from the server, with passwords entered at a hidden prompt.
+- `POST /api/ai/test` (a paid OpenRouter call) now requires an admin login.
+- The AI assistant explicitly refuses board/column actions.
+- Backend tests always use a temporary database and a random key, never `backend/pm.db`.
+
 ### Undo (PLAN Part 15)
 - Undo button in a bar pinned to the top of the board, labeled with what it will reverse (e.g. `Move "X" back to RFI`).
 - Reverses your last card move, card or lead edit, card creation, or card deletion (admin). One level only.

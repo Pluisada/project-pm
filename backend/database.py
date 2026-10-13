@@ -1,5 +1,6 @@
 """Database configuration and session management."""
 import os
+import tempfile
 from datetime import date
 
 from sqlalchemy import create_engine, inspect, text
@@ -8,6 +9,43 @@ from models import Base
 
 # Database URL from environment or default to SQLite
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./pm.db")
+
+# E2E mode (PM_E2E=1, set by the Playwright config) must never touch real data.
+E2E_MODE = os.getenv("PM_E2E") == "1"
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEVELOPMENT_DATABASES = (
+    os.path.join(_REPO_ROOT, "backend", "pm.db"),
+    os.path.join(_REPO_ROOT, "pm.db"),
+)
+
+
+class E2EDatabaseError(RuntimeError):
+    """E2E mode was asked for without an isolated, throwaway database."""
+
+
+def check_e2e_database(url) -> str:
+    """Return the E2E database path, or refuse if it isn't safely isolated.
+
+    Requires an explicit sqlite file URL whose real path is inside the system
+    temp directory - so it can be neither development database (repo-root or
+    backend/pm.db) nor anything else long-lived. There is no fallback: an
+    incomplete config fails here instead of quietly using pm.db.
+    """
+    if not url:
+        raise E2EDatabaseError("PM_E2E=1 requires an explicit DATABASE_URL")
+    if not url.startswith("sqlite:///") or url in ("sqlite:///", "sqlite:///:memory:"):
+        raise E2EDatabaseError("PM_E2E=1 requires DATABASE_URL to be a SQLite file URL")
+    path = os.path.realpath(url[len("sqlite:///"):])
+    if path in {os.path.realpath(p) for p in DEVELOPMENT_DATABASES}:
+        raise E2EDatabaseError("PM_E2E=1 refuses the development database")
+    temp_root = os.path.realpath(tempfile.gettempdir())
+    if os.path.commonpath([path, temp_root]) != temp_root:
+        raise E2EDatabaseError("PM_E2E=1 requires the database to live in the system temp directory")
+    return path
+
+
+if E2E_MODE:
+    check_e2e_database(os.getenv("DATABASE_URL"))
 
 # Create engine with appropriate settings for SQLite vs PostgreSQL
 if "sqlite" in DATABASE_URL:
@@ -42,6 +80,27 @@ def init_db():
     """Initialize database - create tables if they don't exist."""
     Base.metadata.create_all(bind=engine)
     _add_missing_card_columns(engine)
+    require_stage_kind_column(engine)
+
+
+class StageKindMigrationRequired(RuntimeError):
+    """The database predates columns.stage_kind; the app refuses to start."""
+
+
+def require_stage_kind_column(bind) -> None:
+    """Refuse to run against a database without columns.stage_kind.
+
+    Unlike the nullable lead columns, stage_kind decides which opportunities
+    count as won or lost, so it's never added automatically: an operator runs
+    migrate_stage_kind.py, reviews its classification, and applies it.
+    """
+    existing = {col["name"] for col in inspect(bind).get_columns("columns")}
+    if "stage_kind" not in existing:
+        raise StageKindMigrationRequired(
+            "This database has no columns.stage_kind yet. Back it up, then run "
+            "`uv run python migrate_stage_kind.py` (dry run) and "
+            "`uv run python migrate_stage_kind.py --apply` from backend/ - see docs/DATABASE.md."
+        )
 
 
 def _add_missing_card_columns(bind) -> None:
@@ -95,10 +154,13 @@ SAMPLE_LEADS = [
 
 def seed_pipeline(db: Session, board, salesperson) -> None:
     """Create the sales stage columns on `board` and fill them with sample leads."""
-    from lead_options import STAGES
+    from lead_options import PIPELINE_STAGES
     from models import Card, Column
 
-    columns = [Column(board_id=board.id, title=title, position=i) for i, title in enumerate(STAGES)]
+    columns = [
+        Column(board_id=board.id, title=title, position=i, stage_kind=kind)
+        for i, (title, kind) in enumerate(PIPELINE_STAGES)
+    ]
     db.add_all(columns)
     db.flush()
 

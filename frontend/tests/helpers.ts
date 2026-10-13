@@ -3,7 +3,13 @@
  */
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Set by playwright.config.ts for the isolated E2E backend. No fallback: a
+// missing value must fail, never quietly hit the development backend.
+const configuredApiUrl = process.env.PM_E2E_API_URL;
+if (!configuredApiUrl) {
+  throw new Error("PM_E2E_API_URL is not set - run E2E tests through playwright.config.ts");
+}
+export const API_BASE_URL = configuredApiUrl;
 export const E2E_ADMIN_USERNAME = "e2e_admin";
 export const E2E_ADMIN_PASSWORD = "e2e_admin_password123";
 export const E2E_MEMBER_USERNAME = "e2e_member";
@@ -100,13 +106,25 @@ export async function loginAsMember(page: Page, request: APIRequestContext): Pro
  * (not the cursor's) center overshoots into the next column.
  *
  * Lead cards are tall, so a newly added card can sit below the viewport;
- * it's scrolled into view first, and the drag moves horizontally at the
+ * it's scrolled to the middle of the view first, and the drag moves horizontally at the
  * card's own height (columns share one grid row, so that height is inside
  * the target column too) rather than to a fixed offset from the column top,
  * which may then be scrolled out of view.
  */
+/**
+ * dnd-kit keeps the drag overlay on screen while it animates a drop, and
+ * ignores a new drag until that finishes - starting the next gesture earlier
+ * silently does nothing (seen when a test drags the same card twice).
+ */
+async function waitForDropAnimation(page: Page): Promise<void> {
+  await page.getByTestId("drag-overlay").waitFor({ state: "detached" });
+}
+
 export async function dragCardToColumn(page: Page, card: Locator, targetColumn: Locator): Promise<void> {
-  await card.scrollIntoViewIfNeeded();
+  // Centered, not just "in view": a card left at the viewport's edge puts the
+  // pointer in dnd-kit's auto-scroll zone, which scrolls the board mid-drag.
+  await card.evaluate((el) => el.scrollIntoView({ block: "center", inline: "nearest" }));
+  await waitForDropAnimation(page);
   const cardBox = await card.boundingBox();
   const handleBox = await card.getByRole("button", { name: /^drag /i }).boundingBox();
   const columnBox = await targetColumn.boundingBox();
@@ -126,4 +144,5 @@ export async function dragCardToColumn(page: Page, card: Locator, targetColumn: 
     { steps: 12 }
   );
   await page.mouse.up();
+  await waitForDropAnimation(page);
 }

@@ -231,26 +231,25 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
     }
   };
 
-  const handleRenameColumn = async (columnId: number, title: string) => {
-    if (!board) return;
-
-    // Optimistic update
-    const oldBoard = board;
+  // Called once per committed edit (blur/Enter), not per keystroke. Admin
+  // only - members get a read-only title, and the backend refuses them anyway.
+  // Renaming never changes the stage's stage_kind, so reports are unaffected.
+  const handleRenameColumn = async (columnId: number, title: string): Promise<boolean> => {
     try {
+      const updated = await updateColumn(boardId, columnId, title);
       setBoard((prev) => {
         if (!prev) return prev;
         return {
           ...prev,
           columns: prev.columns.map((col) =>
-            col.id === columnId ? { ...col, title } : col
+            col.id === columnId ? { ...col, title: updated.title } : col
           ),
         };
       });
-
-      await updateColumn(boardId, columnId, title);
+      return true;
     } catch (err: unknown) {
-      setBoard(oldBoard);
       setActionError(getErrorMessage(err, "Failed to rename column"));
+      return false;
     }
   };
 
@@ -495,7 +494,9 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
                   title: column.title,
                   cardIds: column.cards?.map((c) => cardDndId(c.id)) || [],
                   position: column.position,
+                  stageKind: column.stage_kind,
                 }}
+                canRename={isAdminUser}
                 cards={column.cards?.map((c) => ({
                   ...c,
                   id: cardDndId(c.id),
@@ -512,8 +513,7 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
                     overdue:
                       !!c.expected_close_date &&
                       c.expected_close_date < today &&
-                      column.title !== leadOptions?.won_stage &&
-                      column.title !== leadOptions?.lost_stage,
+                      column.stage_kind === "open",
                   },
                 })) || []}
                 canDeleteCards={isAdminUser}
@@ -536,7 +536,9 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
           </section>
           <DragOverlay>
             {activeCard ? (
-              <div className="w-[260px]">
+              // dnd-kit keeps rendering this during the drop animation and
+              // ignores new drags until it's gone; e2e waits on the testid.
+              <div className="w-[260px]" data-testid="drag-overlay">
                 <KanbanCardPreview card={{ ...activeCard, id: cardDndId(activeCard.id), details: activeCard.details || "No details yet." }} />
               </div>
             ) : null}

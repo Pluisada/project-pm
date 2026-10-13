@@ -1,7 +1,7 @@
 """Sales report aggregation over a board's lead cards.
 
 Aggregated in Python: boards are small, and the groupings (per currency,
-won/open by stage title) are clearer here than in SQL.
+won/lost/open by the column's stage_kind) are clearer here than in SQL.
 """
 from collections import defaultdict
 from datetime import date, timedelta
@@ -9,7 +9,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session, selectinload
 
-from lead_options import LOST_STAGE, WON_STAGE
+from lead_options import STAGE_LOST, STAGE_WON
 from models import Card, Column
 
 CLOSING_SOON_DAYS = 30
@@ -23,11 +23,11 @@ def _add(totals: dict, card: Card) -> None:
 def _group(cards: list[Card], key_of) -> list[dict]:
     groups = defaultdict(lambda: {"open_count": 0, "open_totals": {}, "won_count": 0, "won_totals": {}})
     for card in cards:
-        stage = card.column.title
-        if stage == LOST_STAGE:
+        stage_kind = card.column.stage_kind
+        if stage_kind == STAGE_LOST:
             continue
         group = groups[key_of(card)]
-        kind = "won" if stage == WON_STAGE else "open"
+        kind = "won" if stage_kind == STAGE_WON else "open"
         group[f"{kind}_count"] += 1
         _add(group[f"{kind}_totals"], card)
     return [{"key": key, **values} for key, values in sorted(groups.items())]
@@ -59,7 +59,10 @@ def build_board_report(
         query = query.filter(Card.product_line == product_line)
     cards = query.all()
 
-    stages = {col.id: {"column_id": col.id, "title": col.title, "count": 0, "totals": {}} for col in columns}
+    stages = {
+        col.id: {"column_id": col.id, "title": col.title, "stage_kind": col.stage_kind, "count": 0, "totals": {}}
+        for col in columns
+    }
     kpis = {"open_count": 0, "open_totals": {}, "won_count": 0, "won_totals": {}, "lost_count": 0}
     closing_soon = []
     horizon = today + timedelta(days=CLOSING_SOON_DAYS)
@@ -69,10 +72,11 @@ def build_board_report(
         stage["count"] += 1
         _add(stage["totals"], card)
 
-        if card.column.title == WON_STAGE:
+        # Classified by the column's stage_kind, never its (renameable) title.
+        if card.column.stage_kind == STAGE_WON:
             kpis["won_count"] += 1
             _add(kpis["won_totals"], card)
-        elif card.column.title == LOST_STAGE:
+        elif card.column.stage_kind == STAGE_LOST:
             kpis["lost_count"] += 1
         else:
             kpis["open_count"] += 1

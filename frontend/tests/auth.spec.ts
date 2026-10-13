@@ -4,9 +4,8 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { E2E_ADMIN_PASSWORD, E2E_ADMIN_USERNAME } from "./helpers";
+import { API_BASE_URL, E2E_ADMIN_PASSWORD, E2E_ADMIN_USERNAME } from "./helpers";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 test.describe("Setup flow", () => {
   // These only exercise real behavior the first time this suite runs

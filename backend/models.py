@@ -68,6 +68,10 @@ class BoardColumn(Base):
     board_id = SQLColumn(Integer, ForeignKey("boards.id", ondelete="CASCADE"), nullable=False, index=True)
     title = SQLColumn(String, nullable=False)
     position = SQLColumn(Integer, nullable=False, default=0)
+    # Commercial identity of the stage: "open", "won" or "lost"
+    # (lead_options.STAGE_KINDS). Reports key on this, never on the title.
+    # Existing databases get it via migrate_stage_kind.py, run explicitly.
+    stage_kind = SQLColumn(String, nullable=False, default="open", server_default="open")
     created_at = SQLColumn(DateTime, default=func.now(), nullable=False)
     updated_at = SQLColumn(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 

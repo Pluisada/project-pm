@@ -26,6 +26,8 @@ export type Column = {
   cardIds: string[];
   // Set by the API-backed board only; used to enforce members-move-forward-only.
   position?: number;
+  // API-backed board only: the stage's commercial meaning (shown as a badge).
+  stageKind?: "open" | "won" | "lost";
 };
 
 export type BoardData = {

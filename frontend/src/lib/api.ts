@@ -79,11 +79,15 @@ export interface BoardResponse {
   updated_at: string;
 }
 
+/** A stage's commercial meaning; reports key on this, never on the title. */
+export type StageKind = "open" | "won" | "lost";
+
 export interface ColumnResponse {
   id: number;
   board_id: number;
   title: string;
   position: number;
+  stage_kind: StageKind;
   created_at: string;
   updated_at: string;
   cards?: CardResponse[];
@@ -279,8 +283,6 @@ export interface LeadOptions {
   lead_sources: string[];
   product_lines: string[];
   salespeople: { id: number; username: string }[];
-  won_stage: string;
-  lost_stage: string;
 }
 
 export async function getLeadOptions(): Promise<LeadOptions> {
@@ -307,7 +309,7 @@ export interface BoardReport {
     lost_count: number;
     win_rate: number | null;
   };
-  stages: { column_id: number; title: string; count: number; totals: CurrencyTotals }[];
+  stages: { column_id: number; title: string; stage_kind: StageKind; count: number; totals: CurrencyTotals }[];
   by_salesperson: ReportGroup[];
   by_product_line: ReportGroup[];
   by_source: ReportGroup[];

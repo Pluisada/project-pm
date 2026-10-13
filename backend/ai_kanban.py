@@ -5,7 +5,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from card_rules import InvalidCardUpdate, apply_card_updates, can_move_card, is_admin
-from lead_options import CURRENCIES, LEAD_SOURCES, LOST_STAGE, PRODUCT_LINES, STAGES, WON_STAGE
+from lead_options import CURRENCIES, LEAD_SOURCES, PRODUCT_LINES
 from models import ConversationMessage, Card, BoardColumn as Column, User
 from schemas import BoardDetail, CardUpdate
 from undo import record_undo, undo_create, undo_delete, undo_move, undo_update
@@ -15,8 +15,9 @@ from ai import call_ai, AIError
 
 # System prompt for AI
 SYSTEM_PROMPT = f"""You are a helpful AI assistant for Salcomp's sales lead tracking board.
-Each card is a sales lead; columns are the sales stages, in order: {", ".join(STAGES)}.
-"{WON_STAGE}" means the deal was won and "{LOST_STAGE}" that it was lost.
+Each card is a sales lead; columns are the sales stages, in position order.
+Each column has a "stage_kind": "won" means deals in it were won, "lost" that they
+were lost, "open" that they're still in progress. Go by stage_kind, not by title.
 
 The user will provide:
 1. Current board state (columns and cards)
@@ -76,6 +77,7 @@ async def get_board_context(db: Session, board_id: int) -> dict:
                 "id": col.id,
                 "title": col.title,
                 "position": col.position,
+                "stage_kind": col.stage_kind,
                 "cards": [
                     {
                         "id": c.id,
@@ -316,6 +318,14 @@ async def apply_board_actions(
                     undo_steps.append(undo_delete(card))
                     db.delete(card)
                     results["successful"].append({"type": "delete", "card_id": card_id})
+
+                else:
+                    # Only card actions exist. Anything structural (columns,
+                    # the board) is admin-only through the REST routes and
+                    # deliberately has no AI path.
+                    results["failed"].append(
+                        {"action": action, "reason": "Unsupported action type"}
+                    )
 
             except Exception as e:
                 results["failed"].append(

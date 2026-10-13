@@ -101,18 +101,19 @@ test.describe("Kanban Board Integration", () => {
     await page.goto("/");
     const firstColumn = page.locator('[data-testid^="column-"]').first();
     const titleInput = firstColumn.locator('input[aria-label="Column title"]');
-
-    // Get original value
     const originalValue = await titleInput.inputValue();
 
-    // Change it
+    // Saved once on blur (Enter), not per keystroke - and it survives a reload.
     await titleInput.fill("Test Column");
-
-    // Verify change persists
-    expect(await titleInput.inputValue()).toBe("Test Column");
+    await titleInput.press("Enter");
+    await page.reload();
+    await expect(titleInput).toHaveValue("Test Column");
 
     // Revert for other tests
     await titleInput.fill(originalValue);
+    await titleInput.press("Enter");
+    await page.reload();
+    await expect(titleInput).toHaveValue(originalValue);
   });
 
   test("displays no JavaScript errors", async ({ page }) => {
