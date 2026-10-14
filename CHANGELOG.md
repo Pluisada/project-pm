@@ -2,6 +2,12 @@
 
 User-facing changes, newest first. For design decisions, test results and known gaps behind each entry, see the matching part in `docs/PLAN.md`.
 
+## 2026-10-14
+
+### Security: access tokens are bound to the current password
+- Changing or resetting a password now signs that account out everywhere: access tokens carry a fingerprint of the password (`pwh`) and are rejected when it no longer matches.
+- **Action needed:** tokens issued before this deployment have no `pwh` and are rejected, so every user must sign in again once after deploying.
+
 ## 2026-10-13
 
 ### Executive Dashboard (PLAN Part 21)

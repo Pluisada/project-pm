@@ -146,5 +146,5 @@ uv run pytest                       # full suite; 3 failures in test_ai.py/test_
 
 See `CLAUDE.md` → "Status and known gaps":
 - no rate limiting on login, signup or forgot-password;
-- login tokens kept in localStorage with no revocation;
+- login tokens are kept in localStorage and live 24 h; there is no per-token or logout revocation, but every access token carries `pwh` (a fingerprint of the current password hash) and is rejected once the password changes or is reset, and tokens without `pwh` are rejected;
 - E2E tests run serially on one shared throwaway board (isolated from real data, but not from each other).

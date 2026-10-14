@@ -1,10 +1,11 @@
 """Shared FastAPI dependencies for authentication and authorization."""
+import hmac
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
-from auth import verify_token
+from auth import decode_access_token, password_fingerprint
 from database import get_db
 from models import User, UserRole
 from stage_history import SOURCE_API, set_stage_context
@@ -34,19 +35,32 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    username = verify_token(parts[1])
-    if not username:
+    payload = decode_access_token(parts[1])
+    if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user = db.query(User).filter(User.username == username).first()
+    user = db.query(User).filter(User.username == payload["sub"]).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Tokens carry a fingerprint of the password they were issued under, so a
+    # password change or reset ends every earlier session of this user only.
+    # The claim is mandatory: a token without it is rejected.
+    pwh = payload.get("pwh")
+    if not isinstance(pwh, str) or not hmac.compare_digest(
+        pwh, password_fingerprint(user.password_hash)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
 

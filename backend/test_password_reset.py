@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import main
-from auth import create_purpose_token, create_signup_token, password_fingerprint
+from auth import create_purpose_token, create_signup_token, hash_password, password_fingerprint
 from database import get_db
 from main import app
 from models import Base, User
@@ -177,3 +177,70 @@ def test_smtp_failure_returns_502(client, member, monkeypatch):
     monkeypatch.setattr(main, "send_email", fail)
     response = client.post("/api/password/forgot", json={"identifier": EMAIL})
     assert response.status_code == 502
+
+
+# Access-token invalidation after a reset
+
+def _bearer(response):
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+def _reset(client, sent):
+    client.post("/api/password/forgot", json={"identifier": EMAIL})
+    response = client.post(
+        "/api/password/reset", json={"token": token_from(sent[-1][1]), "password": NEW_PASSWORD}
+    )
+    assert response.status_code == 200
+
+
+def test_reset_invalidates_earlier_access_tokens(client, sent, member):
+    old = _bearer(login(client, OLD_PASSWORD))
+    assert client.get("/api/boards", headers=old).status_code == 200
+
+    _reset(client, sent)
+
+    assert client.get("/api/boards", headers=old).status_code == 401
+    assert client.post("/api/logout", headers=old).status_code == 401
+
+
+def test_login_after_reset_gets_working_token(client, sent, member):
+    _reset(client, sent)
+    new = _bearer(login(client, NEW_PASSWORD))
+    assert client.get("/api/boards", headers=new).status_code == 200
+
+
+def test_reset_leaves_other_users_sessions_valid(client, sent, member):
+    admin = _bearer(client.post("/api/login", json={"username": "admin", "password": "adminpass123"}))
+    _reset(client, sent)
+    assert client.get("/api/boards", headers=admin).status_code == 200
+
+
+def test_setup_token_works_and_dies_on_admin_reset(client, test_db):
+    response = client.post("/api/setup", json={"username": "admin", "password": "adminpass123"})
+    headers = _bearer(response)
+    assert client.get("/api/boards", headers=headers).status_code == 200
+
+    admin = test_db.query(User).filter(User.username == "admin").one()
+    admin.password_hash = hash_password("changed12345")
+    test_db.commit()
+
+    assert client.get("/api/boards", headers=headers).status_code == 401
+
+
+def test_token_with_wrong_fingerprint_is_rejected(client, member):
+    from auth import create_access_token
+
+    forged = {"Authorization": "Bearer " + create_access_token({"sub": EMAIL, "pwh": "0" * 16})}
+    assert client.get("/api/boards", headers=forged).status_code == 401
+
+
+def test_token_without_fingerprint_is_rejected(client, member):
+    from auth import create_access_token
+
+    legacy = {"Authorization": "Bearer " + create_access_token({"sub": EMAIL})}
+    assert client.get("/api/boards", headers=legacy).status_code == 401
+
+
+def test_reset_token_is_not_an_access_token(client, sent, member, test_db):
+    token = _reset_token(test_db)
+    assert client.get("/api/boards", headers={"Authorization": f"Bearer {token}"}).status_code == 401

@@ -16,7 +16,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import migrate_stage_kind as migration
-from auth import create_access_token, hash_password
+from auth import create_user_access_token, hash_password
 from database import (
     DEVELOPMENT_DATABASES,
     E2EDatabaseError,
@@ -58,9 +58,10 @@ def client(test_db):
 
 
 def _headers(db, username, role):
-    db.add(User(username=username, password_hash=hash_password("password123"), role=role))
+    user = User(username=username, password_hash=hash_password("password123"), role=role)
+    db.add(user)
     db.commit()
-    return {"Authorization": f"Bearer {create_access_token(data={'sub': username})}"}
+    return {"Authorization": f"Bearer {create_user_access_token(user)}"}
 
 
 @pytest.fixture

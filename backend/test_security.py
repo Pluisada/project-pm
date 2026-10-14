@@ -19,7 +19,7 @@ import admin_cli
 import auth
 import routes
 from ai_kanban import apply_board_actions
-from auth import create_access_token, create_signup_token, hash_password, verify_password
+from auth import create_signup_token, create_user_access_token, hash_password, verify_password
 from database import get_db
 from main import app
 from models import Base, Board, Column, User, UserRole
@@ -57,20 +57,18 @@ def _user(db, username, role):
     return user
 
 
-def _headers(username):
-    return {"Authorization": f"Bearer {create_access_token(data={'sub': username})}"}
+def _headers(user):
+    return {"Authorization": f"Bearer {create_user_access_token(user)}"}
 
 
 @pytest.fixture
 def admin(test_db):
-    _user(test_db, "boss", UserRole.ADMIN.value)
-    return _headers("boss")
+    return _headers(_user(test_db, "boss", UserRole.ADMIN.value))
 
 
 @pytest.fixture
 def member(test_db):
-    _user(test_db, "rep", UserRole.MEMBER.value)
-    return _headers("rep")
+    return _headers(_user(test_db, "rep", UserRole.MEMBER.value))
 
 
 @pytest.fixture
@@ -261,13 +259,27 @@ class TestSecretKeyStartup:
         result = _import_app_with(os.environ["SECRET_KEY"])
         assert result.returncode == 0, result.stderr
 
-    def test_tokens_from_another_key_are_rejected(self, client, member):
-        """Changing the key invalidates every previously signed token."""
+    def test_tokens_from_another_key_are_rejected(self, client, member, test_db):
+        """Changing the key invalidates every previously signed token.
+
+        The forged token is otherwise fully valid (right user, current `pwh`,
+        future expiry), so only the signing key can be what rejects it.
+        """
+        from datetime import datetime, timedelta, timezone
+
         from jose import jwt
 
-        forged = jwt.encode({"sub": "rep"}, "dev-secret-key-change-in-production", algorithm="HS256")
-        response = client.get("/api/user", headers={"Authorization": f"Bearer {forged}"})
-        assert response.status_code == 401
+        user = test_db.query(User).filter(User.username == "rep").one()
+        claims = {
+            "sub": "rep",
+            "pwh": auth.password_fingerprint(user.password_hash),
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+        }
+        headers = lambda key: {"Authorization": "Bearer " + jwt.encode(claims, key, algorithm="HS256")}
+        # Control: the same claims signed with the real key are accepted.
+        assert client.get("/api/user", headers=headers(auth.SECRET_KEY)).status_code == 200
+        forged = headers("dev-secret-key-change-in-production")
+        assert client.get("/api/user", headers=forged).status_code == 401
 
 
 # ---------------------------------------------------------------------------

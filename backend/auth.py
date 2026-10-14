@@ -119,20 +119,23 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return encoded_jwt
 
 
-def verify_token(token: str) -> Optional[str]:
-    """Verify JWT token and return username if valid."""
+def decode_access_token(token: str) -> Optional[dict]:
+    """Return an access token's payload, or None if invalid, expired or purpose-scoped."""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        # Purpose-scoped tokens (e.g. signup links) share SECRET_KEY and a
-        # `sub`, so they must never be accepted as access tokens.
-        if "purpose" in payload:
-            return None
-        username: str = payload.get("sub")
-        if username is None:
-            return None
-        return username
     except JWTError:
         return None
+    # Purpose-scoped tokens (e.g. signup links) share SECRET_KEY and a
+    # `sub`, so they must never be accepted as access tokens.
+    if "purpose" in payload or payload.get("sub") is None:
+        return None
+    return payload
+
+
+def verify_token(token: str) -> Optional[str]:
+    """Verify JWT token and return username if valid."""
+    payload = decode_access_token(token)
+    return payload["sub"] if payload else None
 
 
 def create_purpose_token(sub: str, purpose: str, expires: timedelta, **claims) -> str:
@@ -165,6 +168,14 @@ def verify_signup_token(token: str) -> Optional[str]:
     """Return the email a signup token was issued for, or None if invalid/expired."""
     payload = decode_purpose_token(token, "signup")
     return payload["sub"] if payload else None
+
+
+def create_user_access_token(user, expires_delta: Optional[timedelta] = None) -> str:
+    """Access token for `user`, bound to their current password via `pwh`."""
+    return create_access_token(
+        {"sub": user.username, "pwh": password_fingerprint(user.password_hash)},
+        expires_delta,
+    )
 
 
 def password_fingerprint(password_hash: str) -> str:

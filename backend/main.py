@@ -9,12 +9,11 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from auth import (
-    ACCESS_TOKEN_EXPIRE_MINUTES,
     APP_BASE_URL,
     RESET_TOKEN_EXPIRE_MINUTES,
     LoginRequest,
     LoginResponse,
-    create_access_token,
+    create_user_access_token,
     create_purpose_token,
     create_signup_token,
     decode_purpose_token,
@@ -79,10 +78,7 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
             detail="Invalid credentials",
         )
 
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
-    )
+    access_token = create_user_access_token(user)
 
     return LoginResponse(
         access_token=access_token,
@@ -145,10 +141,7 @@ async def setup(request: SetupRequest, db: Session = Depends(get_db)):
     set_stage_context(db, user, SOURCE_SEED)
     seed_default_board(db, user)
 
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
-    )
+    access_token = create_user_access_token(user)
 
     return LoginResponse(
         access_token=access_token,

@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from auth import create_access_token, hash_password
+from auth import create_user_access_token, hash_password
 from main import app
 from database import get_db
 from models import Base, User, UserRole, Board, Column, Card
@@ -47,7 +47,8 @@ def client(test_db):
 
     app.dependency_overrides[get_db] = override_get_db
     test_client = TestClient(app)
-    token = create_access_token(data={"sub": "test_user"})
+    user = test_db.query(User).filter(User.username == "test_user").one()
+    token = create_user_access_token(user)
     test_client.headers.update({"Authorization": f"Bearer {token}"})
     yield test_client
     app.dependency_overrides.clear()
@@ -63,7 +64,7 @@ def admin_headers(test_db):
     )
     test_db.add(admin)
     test_db.commit()
-    token = create_access_token(data={"sub": "admin_user"})
+    token = create_user_access_token(admin)
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -466,7 +467,7 @@ class TestSharedBoardAccess:
         test_db.add(other)
         test_db.commit()
 
-        other_token = create_access_token(data={"sub": "other_user"})
+        other_token = create_user_access_token(other)
         response = client.get(
             f"/api/boards/{board.id}",
             headers={"Authorization": f"Bearer {other_token}"},

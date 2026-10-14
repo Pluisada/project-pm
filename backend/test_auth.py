@@ -7,13 +7,15 @@ from sqlalchemy.pool import StaticPool
 
 from auth import (
     create_access_token,
+    create_user_access_token,
+    decode_access_token,
     hash_password,
     verify_password,
     verify_token,
 )
 from database import get_db
 from main import app
-from models import Base
+from models import Base, User
 
 
 @pytest.fixture(scope="function")
@@ -245,14 +247,13 @@ class TestProtectedEndpoints:
         )
         assert response.status_code == 401
 
-    def test_get_user_with_expired_token(self, client):
+    def test_get_user_with_expired_token(self, client, test_db):
         """Test accessing protected endpoint with expired token."""
         from datetime import timedelta
 
         create_admin(client)
-        token = create_access_token(
-            data={"sub": "admin"}, expires_delta=timedelta(seconds=-1)
-        )
+        admin = test_db.query(User).one()
+        token = create_user_access_token(admin, expires_delta=timedelta(seconds=-1))
         response = client.get(
             "/api/user", headers={"Authorization": f"Bearer {token}"}
         )
@@ -260,11 +261,41 @@ class TestProtectedEndpoints:
 
     def test_get_user_for_deleted_or_unknown_user(self, client):
         """Test a token for a username that no longer/never existed."""
-        token = create_access_token(data={"sub": "ghost"})
+        token = create_access_token(data={"sub": "ghost", "pwh": "0" * 16})
         response = client.get(
             "/api/user", headers={"Authorization": f"Bearer {token}"}
         )
         assert response.status_code == 401
+
+    def test_token_without_pwh_rejected(self, client):
+        """The pwh claim is mandatory: a token that lacks it is not an access token."""
+        create_admin(client)
+        token = create_access_token(data={"sub": "admin"})
+        response = client.get(
+            "/api/user", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code == 401
+
+    def test_token_with_non_string_pwh_rejected(self, client):
+        create_admin(client)
+        for bad in (None, 0, ["x"]):
+            token = create_access_token(data={"sub": "admin", "pwh": bad})
+            response = client.get(
+                "/api/user", headers={"Authorization": f"Bearer {token}"}
+            )
+            assert response.status_code == 401
+
+    def test_login_and_setup_tokens_carry_pwh(self, client):
+        setup_token = create_admin(client)
+        login_token = client.post(
+            "/api/login", json={"username": "admin", "password": "adminpass123"}
+        ).json()["access_token"]
+        for token in (setup_token, login_token):
+            assert decode_access_token(token)["pwh"]
+            response = client.get(
+                "/api/user", headers={"Authorization": f"Bearer {token}"}
+            )
+            assert response.status_code == 200
 
 
 class TestAuthFlow:

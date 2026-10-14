@@ -12,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import kpis
-from auth import create_access_token, hash_password
+from auth import create_user_access_token, hash_password
 from database import get_db
 from main import app
 from models import Base, Board, Card, CardStageEvent, Column, User
@@ -389,14 +389,15 @@ class TestCurrencies:
 @pytest.fixture
 def api(db, b, monkeypatch):
     monkeypatch.setattr(kpis, "utcnow", lambda: AS_OF)
-    db.add(User(username="rep", password_hash=hash_password("password123"), role="member"))
+    rep = User(username="rep", password_hash=hash_password("password123"), role="member")
+    db.add(rep)
     db.commit()
 
     def override_get_db():
         yield db
 
     app.dependency_overrides[get_db] = override_get_db
-    yield TestClient(app), {"Authorization": f"Bearer {create_access_token(data={'sub': 'rep'})}"}
+    yield TestClient(app), {"Authorization": f"Bearer {create_user_access_token(rep)}"}
     app.dependency_overrides.clear()
 
 
