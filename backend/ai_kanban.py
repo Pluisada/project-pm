@@ -297,7 +297,7 @@ async def apply_board_actions(
                         )
                         continue
 
-                    undo_steps.append(undo_move(card))
+                    undo_steps.append(undo_move(card, column.id))
                     card.column_id = column_id
                     card.position = action.get("position", 0)
                     results["successful"].append({"type": "move", "card_id": card_id})

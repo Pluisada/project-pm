@@ -297,12 +297,12 @@ class TestUndo:
         card_id = create(client, env)
         move(client, env, card_id, "RFI")                    # member's change
         move(client, env, card_id, "Proposal", who="admin")  # someone else's, later
-        assert undo(client, env).status_code == 200          # member undoes theirs
-        last = card_stage_history(test_db, card_id)[-1]
-        # Recorded from where the card actually was, not where the member left it.
-        assert (last.from_column_id, last.to_column_id, last.source) == (
-            env["cols"]["Proposal"], env["cols"]["1st Contact"], "undo"
-        )
+        before = card_stage_history(test_db, card_id)
+        # Undo would overwrite the admin's later move, so it's refused (Part 22D
+        # follow-up: undo checks the card is still as the change left it).
+        assert undo(client, env).status_code == 409
+        assert test_db.get(Card, card_id).column_id == env["cols"]["Proposal"]
+        assert card_stage_history(test_db, card_id) == before  # no compensating event
 
 
 # ---------------------------------------------------------------------------

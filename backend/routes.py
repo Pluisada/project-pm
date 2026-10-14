@@ -471,7 +471,7 @@ async def move_card(
             current_user,
             board_id,
             f'Move "{card.title}" back to {card.column.title}',
-            [undo_move(card)],
+            [undo_move(card, move.column_id)],
         )
     card.column_id = move.column_id
     card.position = move.position
