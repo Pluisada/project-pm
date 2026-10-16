@@ -4,7 +4,8 @@ Every card change (REST route or AI action) records the steps that reverse
 it, replacing that user's previous entry. Undo applies them and deletes the
 entry. A user can only undo their own last change - which is why undo may
 move a member's card backward: it restores where *they* had it, it isn't a
-new backward move (see card_rules.can_move_card).
+new backward move (see card_rules.move_denial). Undo still requires the
+user to own the card at undo time (admins: any card).
 
 Step shapes (JSON):
   {"op": "move",   "card_id", "column_id", "position", "expect"}   put a card back
@@ -22,7 +23,9 @@ are refused too.
 import json
 from datetime import date
 
-from card_rules import apply_card_updates
+from pydantic import ValidationError
+
+from card_rules import CardPermissionDenied, apply_card_updates, audit_deletion, can_edit_card
 from stage_history import SOURCE_UNDO, set_stage_context
 from models import BoardColumn as Column, Card, UndoEntry, User
 from schemas import CardUpdate
@@ -153,17 +156,29 @@ def apply_undo(db, user: User, board_id: int) -> str:
         op = step["op"]
         if op == "move":
             card = _board_card(db, board_id, step["card_id"])
+            if not can_edit_card(user, card):
+                raise UndoError("Can't undo: you can only move opportunities assigned to you")
             card.column_id = step["column_id"]
             card.position = step["position"]
         elif op == "update":
             card = _board_card(db, board_id, step["card_id"])
             # Goes through the normal update path, so a member's undo of an
             # edit is logged like any other edit by them.
-            fields = CardUpdate(**step["fields"]).model_dump(exclude_unset=True)
-            apply_card_updates(db, card, fields, user)
+            try:
+                fields = CardUpdate(**step["fields"]).model_dump(exclude_unset=True)
+            except ValidationError:
+                # e.g. an imported Action longer than the 100-character edit limit
+                raise UndoError("Can't undo: the previous value is no longer valid")
+            try:
+                apply_card_updates(db, card, fields, user)
+            except CardPermissionDenied as exc:
+                raise UndoError(f"Can't undo: {exc}")
         elif op == "delete":
             card = _board_card(db, board_id, step["card_id"])
             if card is not None:  # already gone: nothing to remove
+                if not can_edit_card(user, card):
+                    raise UndoError("Can't undo: you can only change opportunities assigned to you")
+                audit_deletion(db, board_id, card, user)
                 db.delete(card)
         elif op == "create":
             fields = CardUpdate(**step["fields"]).model_dump(exclude_unset=True)

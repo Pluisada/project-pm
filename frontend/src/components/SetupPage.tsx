@@ -11,6 +11,7 @@ export const SetupPage = ({ onSetupSuccess }: SetupPageProps) => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [setupKey, setSetupKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -25,7 +26,7 @@ export const SetupPage = ({ onSetupSuccess }: SetupPageProps) => {
 
     setLoading(true);
     try {
-      const result = await setupAdmin({ username, password });
+      const result = await setupAdmin({ username, password }, setupKey);
       onSetupSuccess(result.username, result.role);
     } catch (err) {
       setError(
@@ -71,6 +72,26 @@ export const SetupPage = ({ onSetupSuccess }: SetupPageProps) => {
                 <p className="text-sm font-medium text-red-800">{error}</p>
               </div>
             )}
+
+            {/* Setup Key Field */}
+            <div className="mb-6">
+              <label
+                htmlFor="setup-key"
+                className="block text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]"
+              >
+                Setup key
+              </label>
+              <input
+                id="setup-key"
+                type="password"
+                value={setupKey}
+                onChange={(e) => setSetupKey(e.target.value)}
+                placeholder="PM_SETUP_TOKEN set by the operator"
+                disabled={loading}
+                className="mt-2 w-full rounded-lg border border-[var(--stroke)] bg-white px-4 py-3 text-sm outline-none transition placeholder:text-[var(--gray-text)] focus:border-[var(--primary-blue)] focus:ring-2 focus:ring-[var(--primary-blue)]/20 disabled:opacity-50"
+                autoComplete="off"
+              />
+            </div>
 
             {/* Username Field */}
             <div className="mb-6">

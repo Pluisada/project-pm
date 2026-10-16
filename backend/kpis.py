@@ -10,7 +10,7 @@ Rules that hold everywhere:
 - stages are classified by stage_kind, never by title;
 - a "baseline" event is a starting point, never a move, win or loss, and the
   time spent before it is unknown (durations from it are lower bounds);
-- money is grouped per currency and never converted or mixed;
+- money is Deal Value in USD (one currency, no conversion); legacy currency codes are ignored;
 - timestamps are naive UTC; periods are half-open [start, end).
 """
 from collections import defaultdict
@@ -23,7 +23,8 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from lead_options import STAGE_LOST, STAGE_OPEN
+from lead_options import DEAL_CURRENCY, STAGE_LOST, STAGE_OPEN
+from reports import annual_amounts
 from models import BoardColumn, Card, CardStageEvent
 # The same naive-UTC clock the stage-history listener stamps events with;
 # routes call kpis.utcnow() so tests can patch it here.
@@ -99,6 +100,10 @@ class CardInfo:
     column_id: int
     deal_value: Optional[float]
     currency: Optional[str]
+    # deal_value is for deal_year; this is deal_year + 1 (0 = none). The
+    # historical snapshots below only ever carried deal_value.
+    deal_value_next_year: float = 0
+    deal_year: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -181,9 +186,12 @@ def load_board_history(db: Session, board_id: int, as_of: Optional[datetime] = N
         )
     }
     cards = {
-        row.id: CardInfo(row.id, row.title, row.column_id, row.deal_value, row.currency)
+        row.id: CardInfo(row.id, row.title, row.column_id, row.deal_value, row.currency, row.deal_value_next_year, row.deal_year)
         for row in db.execute(
-            select(Card.id, Card.title, Card.column_id, Card.deal_value, Card.currency)
+            select(
+                Card.id, Card.title, Card.column_id, Card.deal_value, Card.currency,
+                Card.deal_value_next_year, Card.deal_year,
+            )
             .join(BoardColumn, Card.column_id == BoardColumn.id)
             .where(BoardColumn.board_id == board_id)
         )
@@ -255,21 +263,39 @@ def _currency_totals(pairs) -> dict:
 
 
 def _money(history: BoardHistory, card_ids) -> dict:
-    """Per-currency totals of the current values of distinct cards."""
+    """USD totals of the current values of distinct cards."""
     pairs, without_value = [], 0
     for card_id in sorted(set(card_ids)):
         card = history.cards.get(card_id)
-        if card is None or card.deal_value is None or not card.currency:
+        if card is None or card.deal_value is None:
             without_value += 1  # deleted (value gone) or never valued
         else:
-            pairs.append((card.deal_value, card.currency))
+            pairs.append((card.deal_value, DEAL_CURRENCY))
     return {"values": _currency_totals(pairs), "without_value": without_value}
 
 
+def _annual_money(history: BoardHistory, card_ids) -> dict:
+    """The three measures of the current values of distinct cards, per currency:
+    current-year (deal_value; a card without one is unavailable, not 0),
+    next-year and their total. Only for cards that exist today."""
+    current, next_year, total = [], [], []
+    for card_id in sorted(set(card_ids)):
+        card = history.cards.get(card_id)
+        amounts = annual_amounts(card) if card else None
+        if amounts is None:
+            continue
+        if amounts[0] is not None:
+            current.append((amounts[0], DEAL_CURRENCY))
+        next_year.append((amounts[1], DEAL_CURRENCY))
+        total.append((amounts[2], DEAL_CURRENCY))
+    return {"current": _currency_totals(current), "next": _currency_totals(next_year), "total": _currency_totals(total)}
+
+
 def _closing_money(events: list) -> dict:
-    """Per-currency totals of the values recorded *on* the given events (one
+    """USD totals of the values recorded *on* the given events (one
     per distinct opportunity). Three outcomes per event, never mixed:
-    - snapshot with value and currency -> counted in its currency;
+    - snapshot with a value -> counted as USD (the stored snapshot is not
+      rewritten; whatever currency code it carries is ignored);
     - snapshot taken but the card had no value -> without_value;
     - no snapshot (event predates snapshots) -> value_unavailable: the value
       at that moment is unknown and the card's current value is NOT used."""
@@ -277,10 +303,10 @@ def _closing_money(events: list) -> dict:
     for event in sorted(events, key=lambda e: e.card_id):
         if not event.snapshot_taken:
             unavailable += 1
-        elif event.deal_value_snapshot is None or not event.deal_currency_snapshot:
+        elif event.deal_value_snapshot is None:
             without_value += 1
         else:
-            pairs.append((event.deal_value_snapshot, event.deal_currency_snapshot))
+            pairs.append((event.deal_value_snapshot, DEAL_CURRENCY))
     return {"values": _currency_totals(pairs), "without_value": without_value, "value_unavailable": unavailable}
 
 
@@ -334,6 +360,9 @@ def won_lost(history: BoardHistory, period: Period) -> dict:
             current = _money(history, card_ids)
             entry["current_values"] = current["values"]
             entry["current_without_value"] = current["without_value"]
+            annual = _annual_money(history, card_ids)
+            entry["current_next_year_values"] = annual["next"]
+            entry["current_total_values"] = annual["total"]
             entry["still_in_outcome"] = sum(1 for c in card_ids if _current_kind(history, c) == event_type)
         result[event_type] = entry
     return result
@@ -486,22 +515,34 @@ def aging(history: BoardHistory) -> list:
             "entry_observed": stay.entry_observed if stay else None,
             "age_days": _days(history.as_of - stay.entered_at) if stay else None,
             "history": ("observed" if stay.entry_observed else "since_tracking_start") if stay else "none",
-            "deal_value": card.deal_value, "currency": card.currency,
+            "deal_value": card.deal_value, "currency": DEAL_CURRENCY,
+            "deal_value_next_year": card.deal_value_next_year or 0,
+            "deal_value_total": (annual_amounts(card) or (None, None, None))[2],
+            "deal_year": card.deal_year,
         })
     rows.sort(key=lambda r: (-(r["age_days"] if r["age_days"] is not None else -1), r["card_id"]))
     return rows
 
 
 def pipeline(history: BoardHistory) -> list:
-    """Section 9: live cards per stage, per currency."""
+    """Section 9: live cards per stage (USD)."""
     by_column = defaultdict(list)
     for card in history.cards.values():
         by_column[card.column_id].append(card.id)
-    return [
-        {"column_id": c.id, "title": c.title, "stage_kind": c.stage_kind,
-         "count": len(by_column[c.id]), **_money(history, by_column[c.id])}
-        for c in _ordered_columns(history)
-    ]
+    rows = []
+    for c in _ordered_columns(history):
+        annual = _annual_money(history, by_column[c.id])
+        rows.append({
+            "column_id": c.id, "title": c.title, "stage_kind": c.stage_kind,
+            "count": len(by_column[c.id]), **_money(history, by_column[c.id]),
+            "next_year_values": annual["next"], "total_values": annual["total"],
+        })
+    return rows
+
+
+def pipeline_deal_years(history: BoardHistory) -> list:
+    """The deal_year of every live card with an amount: one year normally, several when totals span years."""
+    return sorted({c.deal_year for c in history.cards.values() if c.deal_year is not None and annual_amounts(c)})
 
 
 def period_kpis(history: BoardHistory, period: Period) -> dict:

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import clsx from "clsx";
 import type { CardResponse, CardUpdatePayload, LeadFields, LeadOptions } from "@/lib/api";
 import { getErrorMessage } from "@/lib/api";
 
@@ -13,23 +14,50 @@ type LeadEditModalProps = {
 
 // Form state keeps every field as a string (what inputs/selects hold);
 // "" means unset and is sent as null.
-type FormState = Record<keyof LeadFields, string>;
+type EditField =
+  | Exclude<keyof LeadFields, "currency">
+  | "title"
+  | "details"
+  | "deal_value_next_year"
+  | "next_step_due"
+  | "next_step";
+
+export const ACTION_MAX_LENGTH = 100;
+type FormState = Record<EditField, string>;
 
 const toForm = (card: CardResponse): FormState => ({
+  title: card.title,
+  details: card.details ?? "",
   company: card.company ?? "",
   contact: card.contact ?? "",
   deal_value: card.deal_value != null ? String(card.deal_value) : "",
-  currency: card.currency ?? "",
+  deal_value_next_year: String(card.deal_value_next_year ?? 0),
   expected_close_date: card.expected_close_date ?? "",
   lead_source: card.lead_source ?? "",
   product_line: card.product_line ?? "",
   salesperson_id: card.salesperson_id != null ? String(card.salesperson_id) : "",
+  next_step_due: card.bid_details?.next_step_due ?? "",
+  next_step: card.bid_details?.next_step ?? "",
 });
 
-const fromForm = (field: keyof LeadFields, value: string) => {
+const fromForm = (field: EditField, value: string) => {
+  if (field === "title" || field === "details") return value;
+  if (field === "deal_value_next_year") return value === "" ? 0 : Number(value);
   if (value === "") return null;
   if (field === "deal_value" || field === "salesperson_id") return Number(value);
   return value;
+};
+
+// The labels name the year the card's amounts were entered for (its stored
+// deal_year), so they never change meaning because the calendar did; a
+// year rollover is an explicit operator step (docs/DATABASE.md).
+const dealYearLabels = (dealYear: number | undefined) => {
+  const thisYear = new Date().getFullYear();
+  if (dealYear == null || dealYear === thisYear) {
+    const year = dealYear ?? thisYear;
+    return { current: `Deal value - current year (${year})`, next: `Deal value - next year (${year + 1})` };
+  }
+  return { current: `Deal value - ${dealYear}`, next: `Deal value - ${dealYear + 1}` };
 };
 
 const inputClass =
@@ -49,23 +77,23 @@ export const LeadEditModal = ({ card, options, onSave, onClose }: LeadEditModalP
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
 
-  const set = (field: keyof LeadFields) => (
-    event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
+  const set = (field: EditField) => (
+    event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
   ) => setForm((prev) => ({ ...prev, [field]: event.target.value }));
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError(null);
 
-    if (form.deal_value !== "" && form.currency === "") {
-      setError("Choose a currency for the deal value");
+    if (form.title.trim() === "") {
+      setError("The opportunity name cannot be empty");
       return;
     }
 
     // Send only what changed, so a member's save doesn't log untouched fields.
     const original = toForm(card);
     const updates: CardUpdatePayload = {};
-    for (const field of Object.keys(form) as (keyof LeadFields)[]) {
+    for (const field of Object.keys(form) as EditField[]) {
       if (form[field] !== original[field]) {
         Object.assign(updates, { [field]: fromForm(field, form[field]) });
       }
@@ -125,6 +153,15 @@ export const LeadEditModal = ({ card, options, onSave, onClose }: LeadEditModalP
             </div>
           )}
 
+          <label className={clsx(labelClass, "sm:col-span-2")}>
+            Opportunity name
+            <input value={form.title} onChange={set("title")} className={inputClass} maxLength={255} autoFocus />
+          </label>
+          <label className={clsx(labelClass, "sm:col-span-2")}>
+            Details
+            <textarea value={form.details} onChange={set("details")} rows={3} className={inputClass} />
+          </label>
+
           <label className={labelClass}>
             Company
             <input value={form.company} onChange={set("company")} className={inputClass} maxLength={255} />
@@ -135,7 +172,7 @@ export const LeadEditModal = ({ card, options, onSave, onClose }: LeadEditModalP
           </label>
 
           <label className={labelClass}>
-            Deal value
+            {dealYearLabels(card.deal_year).current}
             <input
               type="number"
               min={0}
@@ -146,17 +183,19 @@ export const LeadEditModal = ({ card, options, onSave, onClose }: LeadEditModalP
             />
           </label>
           <label className={labelClass}>
-            Currency
-            <select value={form.currency} onChange={set("currency")} className={inputClass}>
-              <option value="">Not set</option>
-              {options.currencies.map((currency) => (
-                <option key={currency} value={currency}>{currency}</option>
-              ))}
-            </select>
+            {dealYearLabels(card.deal_year).next}
+            <input
+              type="number"
+              min={0}
+              step="any"
+              value={form.deal_value_next_year}
+              onChange={set("deal_value_next_year")}
+              className={inputClass}
+            />
           </label>
 
           <label className={labelClass}>
-            Expected close date
+            Expected Close Date
             <input
               type="date"
               value={form.expected_close_date}
@@ -172,6 +211,26 @@ export const LeadEditModal = ({ card, options, onSave, onClose }: LeadEditModalP
                 <option key={source} value={source}>{source}</option>
               ))}
             </select>
+          </label>
+
+          <label className={labelClass}>
+            Next Action Date
+            <input
+              type="date"
+              value={form.next_step_due}
+              onChange={set("next_step_due")}
+              className={inputClass}
+            />
+          </label>
+          <label className={labelClass}>
+            Action
+            <input
+              value={form.next_step}
+              onChange={set("next_step")}
+              className={inputClass}
+              maxLength={ACTION_MAX_LENGTH}
+              placeholder="e.g. Call customer to follow up on proposal"
+            />
           </label>
 
           <label className={labelClass}>

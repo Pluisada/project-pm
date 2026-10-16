@@ -11,7 +11,7 @@ from models import Board, User
 
 
 def main() -> None:
-    init_db()  # also adds the lead columns to an older cards table
+    init_db()  # refuses a missing or un-migrated database; it repairs nothing
     db = SessionLocal()
     try:
         board = db.query(Board).order_by(Board.id).first()

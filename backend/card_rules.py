@@ -6,19 +6,84 @@ trail can't drift between the two entry points - a member must be bound by
 the same rules whether they act through the UI or ask the AI to do it.
 """
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 
-from models import Card, CardEditHistory, User, UserRole
+from lead_options import DEAL_CURRENCY
+from models import AuditEvent, Card, CardEditHistory, User, UserRole
 
 
 def is_admin(user: User) -> bool:
     return user.role == UserRole.ADMIN.value
 
 
-def can_move_card(user: User, from_position: int, to_position: int) -> bool:
-    """Members may only advance cards (equal or higher column position) or
-    reorder within the same column; admins are unrestricted."""
-    return is_admin(user) or to_position >= from_position
+def move_denial(user: User, card: Card, to_position: int) -> str | None:
+    """Why `user` may not move `card` to a column at `to_position`, or None if they may.
+
+    Admins move any card anywhere. Members move only cards assigned to them
+    (never unassigned ones), and only forward or within the same column.
+    Judged on the card's current database state."""
+    if is_admin(user):
+        return None
+    if not can_edit_card(user, card):
+        return "You can only move opportunities assigned to you"
+    if to_position < card.column.position:
+        return "Members can only move cards forward, not back to an earlier column"
+    return None
+
+
+class CardPermissionDenied(PermissionError):
+    """The user may not make this change to this card (routes answer 403)."""
+
+
+def can_edit_card(user: User, card: Card) -> bool:
+    """Admins edit every card; members only cards assigned to them. An unassigned
+    card is editable by admins alone. Judged on the card's current database state."""
+    return is_admin(user) or (card.salesperson_id is not None and card.salesperson_id == user.id)
+
+
+def record_audit(db, board_id: int, card_id: int | None, actor: User, action: str, details: dict) -> None:
+    """Add an audit row (assignment change or deletion) to the open transaction."""
+    db.add(AuditEvent(
+        board_id=board_id,
+        card_id=card_id,
+        actor_user_id=actor.id,
+        action=action,
+        details=json.dumps(details),
+        created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+    ))
+
+
+def _assignment_details(db, card: Card, old_id, new_id) -> dict:
+    def name(user_id):
+        user = db.get(User, user_id) if user_id is not None else None
+        return user.username if user else None
+
+    return {"title": card.title, "from_id": old_id, "from": name(old_id), "to_id": new_id, "to": name(new_id)}
+
+
+def new_card_fields(user: User, fields: dict) -> dict:
+    """Owner of a card being created. A member cannot assign: a card they create
+    is assigned to themselves (otherwise they could never edit it); an admin's
+    choice, if any, stands."""
+    return fields if is_admin(user) else {**fields, "salesperson_id": user.id}
+
+
+def audit_new_card_owner(db, board_id: int, card: Card, user: User) -> None:
+    """Audit the creation of a freshly flushed card and its initial assignment, if it has one."""
+    record_audit(db, board_id, card.id, user, "create", {
+        "title": card.title,
+        "column": card.column.title if card.column else None,
+    })
+    if card.salesperson_id is not None:
+        record_audit(db, board_id, card.id, user, "assign", _assignment_details(db, card, None, card.salesperson_id))
+
+
+def audit_deletion(db, board_id: int, card: Card, user: User) -> None:
+    record_audit(db, board_id, card.id, user, "delete", {
+        "title": card.title,
+        "column": card.column.title if card.column else None,
+        "salesperson_id": card.salesperson_id,
+    })
 
 
 class InvalidCardUpdate(ValueError):
@@ -55,16 +120,31 @@ def apply_card_updates(db, card: Card, updates: dict, user: User) -> dict:
     """Apply a validated partial update to a card, logging member edits.
 
     The single update path for both the REST route and the AI sidebar.
-    Raises InvalidCardUpdate for a salesperson_id that isn't a user.
+    Raises CardPermissionDenied unless `user` may edit this card (and, for a
+    change of salesperson, is an admin), and InvalidCardUpdate for a
+    salesperson_id that isn't a user. A change of salesperson is audited.
     """
+    if not can_edit_card(user, card):
+        raise CardPermissionDenied("You can only edit opportunities assigned to you")
+    reassigns = "salesperson_id" in updates and updates["salesperson_id"] != card.salesperson_id
+    if reassigns and not is_admin(user):
+        raise CardPermissionDenied("Only an administrator can assign or reassign opportunities")
     salesperson_id = updates.get("salesperson_id")
     if salesperson_id is not None and db.get(User, salesperson_id) is None:
         raise InvalidCardUpdate("Salesperson not found")
 
+    previous_owner = card.salesperson_id
     changes = diff_card_changes(db, card, updates)
     for field, value in updates.items():
         setattr(card, field, value)
+    if updates.keys() & {"deal_value", "deal_value_next_year", "currency"}:
+        card.currency = DEAL_CURRENCY  # Deal Value is always USD; not a logged change
     record_member_edit(db, card, user, changes)
+    if reassigns:
+        record_audit(
+            db, card.column.board_id, card.id, user, "assign",
+            _assignment_details(db, card, previous_owner, card.salesperson_id),
+        )
     return changes
 
 

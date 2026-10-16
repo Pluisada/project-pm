@@ -29,6 +29,7 @@ from lead_options import PIPELINE_STAGES
 from main import app
 from models import Base, Board, Card, Column, User, UserRole
 from reports import build_board_report
+from auth_test_utils import SETUP_HEADERS, VERIFIED
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 TODAY = date(2026, 10, 13)
@@ -58,7 +59,7 @@ def client(test_db):
 
 
 def _headers(db, username, role):
-    user = User(username=username, password_hash=hash_password("password123"), role=role)
+    user = User(email_verified_at=VERIFIED, username=username, password_hash=hash_password("Password123!"), role=role)
     db.add(user)
     db.commit()
     return {"Authorization": f"Bearer {create_user_access_token(user)}"}
@@ -115,7 +116,7 @@ class TestReportsUseStageKind:
         kpis = _report(test_db, pipeline[0])["kpis"]
         assert (kpis["won_count"], kpis["lost_count"], kpis["open_count"]) == (2, 1, 3)
         assert kpis["win_rate"] == pytest.approx(2 / 3)
-        assert kpis["won_totals"] == {"EUR": 900}
+        assert kpis["won_totals"] == {"USD": 900}
 
     def test_renaming_award_keeps_won_count(self, client, admin, test_db, pipeline):
         board, cols = pipeline
@@ -125,7 +126,7 @@ class TestReportsUseStageKind:
         assert response.status_code == 200
         assert response.json()["stage_kind"] == "won"
         kpis = _report(test_db, board)["kpis"]
-        assert kpis["won_count"] == 2 and kpis["won_totals"] == {"EUR": 900}
+        assert kpis["won_count"] == 2 and kpis["won_totals"] == {"USD": 900}
         assert kpis["win_rate"] == pytest.approx(2 / 3)
 
     def test_renaming_lost_keeps_lost_count(self, client, admin, test_db, pipeline):
@@ -215,7 +216,7 @@ class TestStageKindRules:
         assert second.status_code == 409
 
     def test_new_board_seeds_kinds(self, client):
-        response = client.post("/api/setup", json={"username": "owner", "password": "password123"})
+        response = client.post("/api/setup", json={"username": "owner", "password": "Password123!"}, headers=SETUP_HEADERS)
         token = response.json()["access_token"]
         board = client.get("/api/boards", headers={"Authorization": f"Bearer {token}"}).json()[0]
         detail = client.get(f"/api/boards/{board['id']}", headers={"Authorization": f"Bearer {token}"}).json()

@@ -1,4 +1,5 @@
 """Tests for single-level, per-user undo."""
+from auth_test_utils import SETUP_HEADERS, add_member
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -45,15 +46,11 @@ def auth(token):
 def tokens(client):
     """Admin (setup seeds the sales board) and a member."""
     admin = client.post(
-        "/api/setup", json={"username": "admin", "password": "adminpass123"}
+        "/api/setup", json={"username": "admin", "password": "Adminpass123!"}, headers=SETUP_HEADERS
     ).json()["access_token"]
-    client.post(
-        "/api/users",
-        json={"username": "member", "password": "memberpass123"},
-        headers=auth(admin),
-    )
+    add_member(client, "member", "Memberpass123!")
     member = client.post(
-        "/api/login", json={"username": "member", "password": "memberpass123"}
+        "/api/login", json={"username": "member", "password": "Memberpass123!"}
     ).json()["access_token"]
     return {"admin": admin, "member": member}
 
@@ -68,6 +65,12 @@ def board(client, tokens):
 def card(board):
     """The first lead in the first stage, with its column ids for moves."""
     return board["columns"][0]["cards"][0]
+
+
+def assign_to_member(test_db, card):
+    member = test_db.query(User).filter(User.username == "member").one()
+    test_db.get(Card, card["id"]).salesperson_id = member.id
+    test_db.commit()
 
 
 def base(board):
@@ -110,6 +113,7 @@ def test_undo_move(client, tokens, board, card, test_db):
 
 
 def test_member_can_undo_own_forward_move(client, tokens, board, card, test_db):
+    assign_to_member(test_db, card)
     assert move(client, tokens["member"], board, card["id"], 3).status_code == 200
     # A direct backward move is still refused...
     assert move(client, tokens["member"], board, card["id"], 0).status_code == 403
@@ -119,6 +123,9 @@ def test_member_can_undo_own_forward_move(client, tokens, board, card, test_db):
 
 
 def test_undo_lead_edit_is_logged_for_member(client, tokens, board, card, test_db):
+    member = test_db.query(User).filter(User.username == "member").one()
+    test_db.get(Card, card["id"]).salesperson_id = member.id
+    test_db.commit()
     original = {"company": card["company"], "deal_value": card["deal_value"]}
     client.put(
         f"{base(board)}/cards/{card['id']}",
@@ -180,7 +187,8 @@ def test_undo_is_per_user(client, tokens, board, card):
     assert status(client, tokens["admin"], board)["available"] is True
 
 
-def test_undo_after_card_deleted_conflicts(client, tokens, board, card):
+def test_undo_after_card_deleted_conflicts(client, tokens, board, card, test_db):
+    assign_to_member(test_db, card)
     move(client, tokens["member"], board, card["id"], 1)
     client.delete(f"{base(board)}/cards/{card['id']}", headers=auth(tokens["admin"]))
 
@@ -193,6 +201,8 @@ def test_undo_after_card_deleted_conflicts(client, tokens, board, card):
 @pytest.mark.asyncio
 async def test_ai_request_undone_in_one_step(client, tokens, board, card, test_db):
     member = test_db.query(User).filter(User.username == "member").one()
+    test_db.get(Card, card["id"]).salesperson_id = member.id
+    test_db.commit()
     first_column = board["columns"][0]["id"]
     await apply_board_actions(
         test_db,

@@ -1,9 +1,9 @@
 /**
  * Global setup for every Playwright config: refuse to run unless the backend
- * is the isolated E2E one, and fail the run if a development database changed.
+ * is the isolated E2E one on a temporary database. Development databases are
+ * never opened or hashed (a concurrent dev session may legitimately change them).
  */
-import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -12,9 +12,6 @@ const DEVELOPMENT_DATABASES = [
   path.join(REPO_ROOT, "backend", "pm.db"),
   path.join(REPO_ROOT, "pm.db"),
 ];
-
-const fingerprint = (file: string) =>
-  existsSync(file) ? createHash("sha256").update(readFileSync(file)).digest("hex") : "absent";
 
 const isInside = (child: string, parent: string) => {
   const relative = path.relative(realpathSync(parent), realpathSync(child));
@@ -41,24 +38,20 @@ export default async function e2eSetup() {
   if (!existsSync(dbPath) || !isInside(dbPath, tmpdir())) {
     throw new Error(`The E2E database is not the expected temporary file (${dbPath}).`);
   }
-  if (DEVELOPMENT_DATABASES.some((db) => existsSync(db) && realpathSync(db) === realpathSync(dbPath))) {
+  // Path comparison only: the development databases are never opened or read.
+  const resolvedDb = path.join(realpathSync(path.dirname(dbPath)), path.basename(dbPath));
+  if (DEVELOPMENT_DATABASES.some((db) => path.resolve(db) === resolvedDb)) {
     throw new Error("The E2E database is a development database - refusing to run.");
   }
 
-  const before = DEVELOPMENT_DATABASES.map(fingerprint);
-
   return async () => {
-    const changed = DEVELOPMENT_DATABASES.filter((db, i) => fingerprint(db) !== before[i]);
+    if (!existsSync(dbPath) || !isInside(dbPath, tmpdir())) {
+      throw new Error(`The E2E database left its temporary location during the run (${dbPath}).`);
+    }
     // The E2E data is disposable: remove its temp dir (only ever pm-e2e-* in tmp).
     const dir = path.dirname(dbPath);
     if (path.basename(dir).startsWith("pm-e2e-") && isInside(dir, tmpdir())) {
       rmSync(dir, { recursive: true, force: true });
-    }
-    if (changed.length > 0) {
-      throw new Error(
-        `A development database changed during the E2E run: ${changed.join(", ")}. ` +
-          "If you were using the dev app at the same time, that explains it; otherwise investigate."
-      );
     }
   };
 }

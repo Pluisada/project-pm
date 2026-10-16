@@ -2,6 +2,7 @@
 real app paths, used by the KPIs instead of the card's current value, and
 added to existing databases by an explicit migration. In-memory and pytest
 tmp_path databases only - never pm.db."""
+from auth_test_utils import SETUP_HEADERS
 import hashlib
 import sqlite3
 from datetime import datetime
@@ -51,7 +52,7 @@ def auth(token):
 
 @pytest.fixture
 def env(client, test_db):
-    admin = client.post("/api/setup", json={"username": "boss", "password": "password123"}).json()["access_token"]
+    admin = client.post("/api/setup", json={"username": "boss", "password": "Password123!"}, headers=SETUP_HEADERS).json()["access_token"]
     board = client.get("/api/boards", headers=auth(admin)).json()[0]
     detail = client.get(f"/api/boards/{board['id']}", headers=auth(admin)).json()
     return {"h": auth(admin), "board": board["id"], "cols": {c["title"]: c["id"] for c in detail["columns"]}}
@@ -101,9 +102,9 @@ def won(db, board_id):
 
 class TestSnapshotsRecorded:
     def test_won_event_records_value(self, client, env, test_db):
-        card_id = new_card(client, env, 1250.5, "EUR")
+        card_id = new_card(client, env, 1250.5, "USD")
         move(client, env, card_id, "Award")
-        assert snapshots(test_db, card_id)[-1] == ("won", 1250.5, "EUR", True)
+        assert snapshots(test_db, card_id)[-1] == ("won", 1250.5, "USD", True)
 
     def test_lost_event_records_value(self, client, env, test_db):
         card_id = new_card(client, env, 300, "USD")
@@ -111,44 +112,44 @@ class TestSnapshotsRecorded:
         assert snapshots(test_db, card_id)[-1] == ("lost", 300, "USD", True)
 
     def test_later_edit_keeps_closing_snapshot(self, client, env, test_db):
-        card_id = new_card(client, env, 1000, "EUR")
+        card_id = new_card(client, env, 1000, "USD")
         move(client, env, card_id, "Award")
         set_value(client, env, card_id, 5, "USD")
-        assert snapshots(test_db, card_id)[-1] == ("won", 1000, "EUR", True)
+        assert snapshots(test_db, card_id)[-1] == ("won", 1000, "USD", True)
         result = won(test_db, env["board"])["won"]
-        assert result["values"] == {"EUR": {"total": 1000.0, "count": 1}}        # history
+        assert result["values"] == {"USD": {"total": 1000.0, "count": 1}}        # history
         assert result["current_values"] == {"USD": {"total": 5.0, "count": 1}}   # today, separate
 
     def test_each_transition_records_value_at_that_moment(self, client, env, test_db):
         card_id = new_card(client, env)              # created without value
-        set_value(client, env, card_id, 10, "BRL")
+        set_value(client, env, card_id, 10, "USD")
         move(client, env, card_id, "RFI")
-        set_value(client, env, card_id, 20, "BRL")
+        set_value(client, env, card_id, 20, "USD")
         move(client, env, card_id, "Award")
         assert snapshots(test_db, card_id) == [
             ("created", None, None, True),   # recorded: it genuinely had no value
-            ("moved", 10, "BRL", True),
-            ("won", 20, "BRL", True),
+            ("moved", 10, "USD", True),
+            ("won", 20, "USD", True),
         ]
 
     def test_value_edit_alone_adds_no_event(self, client, env, test_db):
-        card_id = new_card(client, env, 1, "EUR")
+        card_id = new_card(client, env, 1, "USD")
         before = test_db.query(CardStageEvent).count()
-        set_value(client, env, card_id, 2, "EUR")
+        set_value(client, env, card_id, 2, "USD")
         assert test_db.query(CardStageEvent).count() == before
 
     def test_deleted_event_keeps_last_value(self, client, env, test_db):
-        card_id = new_card(client, env, 77, "VND")
+        card_id = new_card(client, env, 77, "USD")
         move(client, env, card_id, "Award")
         client.delete(f"/api/boards/{env['board']}/cards/{card_id}", headers=env["h"])
-        assert snapshots(test_db, card_id)[-1] == ("deleted", 77, "VND", True)
+        assert snapshots(test_db, card_id)[-1] == ("deleted", 77, "USD", True)
         result = won(test_db, env["board"])["won"]
-        assert result["values"] == {"VND": {"total": 77.0, "count": 1}}   # history survives deletion
+        assert result["values"] == {"USD": {"total": 77.0, "count": 1}}   # history survives deletion
         assert result["current_without_value"] == 1                        # the card is gone
 
     @pytest.mark.asyncio
     async def test_ai_and_undo_record_snapshots(self, client, env, test_db):
-        card_id = new_card(client, env, 40, "EUR")
+        card_id = new_card(client, env, 40, "USD")
         admin = test_db.query(User).filter(User.username == "boss").one()
         await apply_board_actions(
             test_db, env["board"], [{"type": "move", "card_id": card_id, "column_id": env["cols"]["Award"]}], admin
@@ -159,7 +160,7 @@ class TestSnapshotsRecorded:
         ]
 
     def test_exactly_one_event_per_transition(self, client, env, test_db):
-        card_id = new_card(client, env, 5, "EUR")
+        card_id = new_card(client, env, 5, "USD")
         for stage in ("F2F Meeting", "Award", "Lost"):
             before = test_db.query(CardStageEvent).count()
             move(client, env, card_id, stage)
@@ -172,24 +173,23 @@ class TestSnapshotsRecorded:
 
 
 class TestKpiValues:
-    def test_currencies_stay_separate(self, client, env, test_db):
-        for value, currency in [(0.1, "EUR"), (0.2, "EUR"), (99, "USD")]:
-            card_id = new_card(client, env, value, currency)
+    def test_closing_values_are_summed_as_one_usd_total(self, client, env, test_db):
+        for value in (0.1, 0.2, 99):
+            card_id = new_card(client, env, value, "USD")
             move(client, env, card_id, "Award")
-        assert won(test_db, env["board"])["won"]["values"] == {
-            "EUR": {"total": 0.3, "count": 2}, "USD": {"total": 99.0, "count": 1}}
+        assert won(test_db, env["board"])["won"]["values"] == {"USD": {"total": 99.3, "count": 3}}
 
     def test_events_without_snapshot_are_unavailable_not_invented(self, client, env, test_db):
-        card_id = new_card(client, env, 500, "EUR")
+        card_id = new_card(client, env, 500, "USD")
         move(client, env, card_id, "Award")
         # Simulate an event written before snapshots existed.
         event = card_stage_history(test_db, card_id)[-1]
         event.value_snapshot_taken, event.deal_value_snapshot, event.deal_currency_snapshot = False, None, None
         test_db.commit()
         result = won(test_db, env["board"])["won"]
-        assert result["values"] == {}                    # not the current 500 EUR
+        assert result["values"] == {}                    # not the current 500 USD
         assert (result["value_unavailable"], result["without_value"]) == (1, 0)
-        assert result["current_values"] == {"EUR": {"total": 500.0, "count": 1}}
+        assert result["current_values"] == {"USD": {"total": 500.0, "count": 1}}
 
     def test_recorded_without_value_is_not_unavailable(self, client, env, test_db):
         card_id = new_card(client, env)
@@ -198,18 +198,18 @@ class TestKpiValues:
         assert (result["without_value"], result["value_unavailable"], result["values"]) == (1, 0, {})
 
     def test_reopen_and_win_again_uses_latest_closing_value(self, client, env, test_db):
-        card_id = new_card(client, env, 100, "EUR")
+        card_id = new_card(client, env, 100, "USD")
         move(client, env, card_id, "Award")
         move_back = client.put(
             f"/api/boards/{env['board']}/cards/{card_id}/position",
             json={"column_id": env["cols"]["Proposal"], "position": 0}, headers=env["h"],
         )
         assert move_back.status_code == 200                       # admin may reopen
-        set_value(client, env, card_id, 140, "EUR")
+        set_value(client, env, card_id, 140, "USD")
         move(client, env, card_id, "Award")
         result = won(test_db, env["board"])
         assert (result["won"]["events"], result["won"]["opportunities"]) == (2, 1)
-        assert result["won"]["values"] == {"EUR": {"total": 140.0, "count": 1}}   # once, latest closing
+        assert result["won"]["values"] == {"USD": {"total": 140.0, "count": 1}}   # once, latest closing
         assert result["reopened"]["events"] == 1
 
     def test_api_returns_historical_values(self, client, env, test_db, monkeypatch):

@@ -17,6 +17,9 @@ dependencies = [
     "httpx==0.28.1",
     "bcrypt==4.2.1",
     "email-validator==2.2.0",
+    "openpyxl==3.1.5",
+    "defusedxml==0.7.1",
+    "python-multipart==0.0.20",
 ]
 
 [project.optional-dependencies]

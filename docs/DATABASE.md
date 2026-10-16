@@ -122,6 +122,8 @@ This document describes the database schema for the Project Management MVP appli
 | role | TEXT | NOT NULL, DEFAULT "member" | "admin" or "member" |
 | email | TEXT | UNIQUE | Contact email (optional for MVP) |
 | full_name | TEXT | - | Display name (optional) |
+| session_version | INTEGER | NOT NULL, DEFAULT 0 | Bumped on logout and on password change/reset; access tokens carry it (`sv`) and are rejected on mismatch. Ends all of the user's sessions |
+| email_verified_at | TIMESTAMP | NULL | Set when the user proves control of the email (signup/reset link). NULL = no application access |
 | created_at | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Account creation |
 | updated_at | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Last modified |
 
@@ -132,6 +134,36 @@ This document describes the database schema for the Project Management MVP appli
 
 **Current:** The first user ever created (via `POST /api/setup`) becomes `role="admin"`. Only an admin can create further users (`POST /api/users`), who are always created with `role="member"`. Role is re-read from this table on every request (not embedded in the JWT), so it can't go stale.
 **Future:** More granular profiles beyond admin/member (viewer, editor, etc.)
+
+`password_hash = "!"` marks an account with no usable password (never a bcrypt hash, so no password matches): this is how the commercial administrator is provisioned. Added by `migrate_auth_security.py` (existing users are marked verified at their `created_at`).
+
+### auth_tokens
+**Purpose:** Persistent, revocable, single-use signup and password-reset tokens.
+
+| Column | Type | Constraints | Purpose |
+|--------|------|-------------|---------|
+| id | INTEGER | PK | |
+| token_hash | VARCHAR(64) | UNIQUE, NOT NULL | SHA-256 of the random token; the raw token is never stored |
+| purpose | VARCHAR(20) | NOT NULL | `signup` or `reset` |
+| user_id | INTEGER | FK users, ON DELETE CASCADE, NULL | The user (reset); NULL for a pending signup |
+| email | TEXT | NULL | The pending registration's address (signup) |
+| created_at / expires_at | TIMESTAMP | NOT NULL | UTC. Signup 24 h, reset 1 h |
+| consumed_at / invalidated_at | TIMESTAMP | NULL | Set once on use / when superseded or revoked |
+
+A token is valid only while both are NULL and `expires_at` is in the future. Consuming is one conditional UPDATE inside the caller's transaction, so concurrent requests cannot both succeed.
+
+### audit_events
+**Purpose:** Audit trail of opportunity assignment changes (`action = "assign"`) and deletions (`"delete"`).
+
+| Column | Type | Constraints | Purpose |
+|--------|------|-------------|---------|
+| id | INTEGER | PK | |
+| board_id, card_id, actor_user_id | INTEGER | no foreign keys | Deliberately unconstrained so rows outlive the card and the actor |
+| action | VARCHAR(20) | NOT NULL | `assign` or `delete` |
+| details | TEXT | NOT NULL | JSON: assignment `{title, from_id, from, to_id, to}`; deletion `{title, column, salesperson_id}` |
+| created_at | TIMESTAMP | NOT NULL | UTC |
+
+No rows exist for events before the migration; none are reconstructed.
 
 ### boards
 **Purpose:** Kanban boards, shared across all authenticated users
@@ -219,7 +251,7 @@ uv run python migrate_stage_kind.py --apply      # backup + migrate in one trans
 | company | TEXT | - | Lead's company |
 | contact | TEXT | - | Contact person |
 | deal_value | REAL | - | Deal value (>= 0), in `currency` |
-| currency | VARCHAR(3) | - | EUR, USD, CNY, INR, BRL or VND |
+| currency | VARCHAR(3) | - | Legacy. Deal Value is always USD: only `USD` is accepted on write (and set whenever an amount is saved), reads always report `USD`, and older codes left in existing rows are ignored. No migration rewrites them |
 | expected_close_date | DATE | - | Expected close date |
 | lead_source | TEXT | - | Website, Referral, Trade show, Cold outreach, Existing customer, Other |
 | product_line | TEXT | - | Chargers or Power supplies |
@@ -236,8 +268,8 @@ uv run python migrate_stage_kind.py --apply      # backup + migrate in one trans
 - Position allows drag-and-drop reordering
 - Deleting a column cascades delete to all its cards
 - Allowed lead values and the stages (1st Contact, F2F Meeting, RFI, Proposal, Award, Lost) live in `backend/lead_options.py`; they're validated by the API, not the database. "Award" = won, "Lost" = lost, everything else open.
-- The lead columns were added after the first release: `database._add_missing_card_columns()` adds them with `ALTER TABLE` on startup to older databases (`create_all` never alters existing tables).
-- Report totals are per currency - values are never converted or summed across currencies.
+- The lead columns were added after the first release. `init_db()` does **not** add them to an older `cards` table: it validates the schema before any write (`require_complete_schema`) and refuses a database that lacks tables or columns the models expect, raising `DatabaseSchemaIncomplete` and listing what is missing (`create_all` never alters existing tables). Such a database needs an explicit migration before it can be initialized. No migration script for the lead columns exists yet, so there is no documented procedure for it; until one is written and validated, restore a complete database or a backup instead of pointing the app at the old file.
+- Report totals are USD (the only Deal Value currency); legacy currency codes are ignored and amounts are never converted.
 - `has_member_edits` in the API response is not a stored column - it's derived from whether `card_edit_history` has any rows for this card
 
 ### conversation_messages
@@ -284,6 +316,7 @@ uv run python migrate_stage_kind.py --apply      # backup + migrate in one trans
 - Only written for edits made by `member` users - admin edits are not tracked here (`routes.update_card`)
 - A card's `has_member_edits` flag is `true` whenever it has at least one row here; it stays `true` permanently, even if an admin edits the card afterwards
 - `user_id` is `SET NULL` rather than cascading, so history survives if the editing user is later removed
+- Changes made by a Salcomp Bid import are **never** written here (they would turn on the "M" badge, i.e. pass for a member edit): they go to `card_import_changes` (Part 22D), and this table's structure and meaning are unchanged
 
 ### card_stage_events
 **Purpose:** Append-only history of each card's stage (Part 18), read by the KPI engine (`backend/kpis.py`, Part 19).
@@ -297,7 +330,7 @@ uv run python migrate_stage_kind.py --apply      # backup + migrate in one trans
 | from_column_id / from_stage_kind | INTEGER / VARCHAR | nullable | Stage before (empty for `created`/`baseline`) |
 | to_column_id / to_stage_kind | INTEGER / VARCHAR | nullable | Stage after (empty for `deleted`) |
 | user_id | INTEGER | FK → users, ON DELETE SET NULL, nullable | Who acted (empty for `system`/`migration`) |
-| source | VARCHAR | NOT NULL | `api` (REST: UI or API client), `ai`, `undo`, `seed`, `migration`, `system` |
+| source | VARCHAR | NOT NULL | `api` (REST: UI or API client), `ai`, `undo`, `seed`, `migration`, `import` (Salcomp Bid import, Part 22D), `system` |
 | occurred_at | DATETIME | NOT NULL, indexed | When (UTC) |
 | deal_value_snapshot | FLOAT | nullable | Card's `deal_value` at the event (Part 20); an exact copy of `cards.deal_value`, which is also FLOAT |
 | deal_currency_snapshot | VARCHAR(3) | nullable | Card's `currency` at the event |
@@ -310,7 +343,7 @@ uv run python migrate_stage_kind.py --apply      # backup + migrate in one trans
 - `moved`: open → open.
 - `created`: a card is inserted.
 - `deleted`: a card is removed.
-- `baseline`: written only by the migration (see below).
+- `baseline`: written by the migration (see below) for cards that existed when tracking started, and by the Salcomp Bid import for each card it creates (source `import`, dated at the import, never at a source date). The listener writes it instead of `created` while the session's source is `import`: importing a Bid is not when the opportunity was created, so it never counts in a creation cohort, and a card imported into Award/Lost is not a win/loss.
 
 A reorder within the same column, or an edit of title, details or lead fields, records **nothing**.
 
@@ -396,11 +429,12 @@ uv run python migrate_stage_event_values.py --database "$PWD/pm.db" --apply    #
 | user_id | INTEGER | FK → users, NOT NULL, UNIQUE, ON DELETE CASCADE | Owner (one row per user) |
 | board_id | INTEGER | FK → boards, NOT NULL, ON DELETE CASCADE | Board the change was made on |
 | description | TEXT | NOT NULL | Shown next to the Undo button, e.g. `Move "X" back to RFI` |
-| steps | TEXT | NOT NULL | JSON list of inverse operations (`move`/`update`/`delete`/`create`, see `backend/undo.py`), applied in reverse |
+| steps | TEXT | NOT NULL | JSON list of inverse operations (`move`/`update`/`delete`/`create`, see `backend/undo.py`), applied in reverse. Card steps carry `expect`: the card's state as the change left it |
 | created_at | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | When the change was made |
 
 **Notes:**
 - Replaced by the user's next change; deleted once undone (or once found impossible to undo).
+- **Undo only applies if nothing changed since.** Before applying anything, undo compares every card with its steps' `expect` (merged per card, so several edits in one AI request compare with the final state). If another user, the AI or a Bid import changed those values (or the card's column) since, undo is refused with HTTP 409 and the later change is kept. This is a later change, not a structural one: no schema change was needed, because the steps are JSON. Entries recorded before `expect` existed can't be checked, so they are refused too (at most one per user, once).
 
 ### card_actions
 **Purpose:** Audit trail of AI-suggested card changes
@@ -426,6 +460,322 @@ uv run python migrate_stage_event_values.py --database "$PWD/pm.db" --apply    #
 - Future: Could implement undo/redo using this table
 - Helps debug AI decision-making
 
+### Salcomp Bid import tables (Part 22)
+
+Four tables for importing the Salcomp Bids report (`relatorio-leads.xlsx`). The Excel reader (22B) and the preview (22C) only read. `bid_import_service.py` (22D, below) is the only code that writes these tables. The admin-only endpoints (`backend/import_routes.py`, Part 22E) call the service; the UI is planned (see `docs/PLAN.md`, Part 22). The models live in `backend/models.py`; `backend/import_schema.py` derives the exact expected schema from them, and both the migration and `init_db()` check databases against it.
+
+#### import_batches
+**Purpose:** One attempted import (metadata only).
+
+| Column | Type | Constraints | Purpose |
+|--------|------|-------------|---------|
+| id | INTEGER | PK | Unique identifier |
+| board_id | INTEGER | FK → boards, NOT NULL, ON DELETE CASCADE | Board imported into |
+| user_id | INTEGER | FK → users, ON DELETE SET NULL | Who ran the import |
+| filename | VARCHAR | NOT NULL | Uploaded file name |
+| file_sha256 | VARCHAR(64) | NOT NULL | SHA-256 of the file |
+| mapping_json | TEXT | - | Mapping used (JSON) |
+| created_count, updated_count, skipped_count, review_count | INTEGER | NOT NULL, DEFAULT 0 | Row outcomes |
+| status | VARCHAR | NOT NULL, DEFAULT 'pending' | `pending` / `completed` / `failed` |
+| created_at, updated_at | DATETIME | NOT NULL | Timestamps |
+| completed_at | DATETIME | - | When it finished |
+
+**Indexes:** `id`, `board_id`, `user_id`, `file_sha256`, `created_at`.
+
+#### card_bid_details
+**Purpose:** The Bid report's commercial fields, one row per card.
+
+| Column | Type | Constraints | Purpose |
+|--------|------|-------------|---------|
+| id | INTEGER | PK | Unique identifier |
+| card_id | INTEGER | FK → cards, NOT NULL, UNIQUE, ON DELETE CASCADE | The card (1:1) |
+| plant, customer_type, business_type, product_category, product, solution_type | VARCHAR | - | Classification fields from the report |
+| confidence | INTEGER | - | Confidence |
+| volume_current_year, volume_next_year | INTEGER | - | Volumes |
+| production_start_date | DATE | - | Start of production |
+| revenue_current_year_cents, revenue_next_year_cents | INTEGER | - | Annual revenue **in cents** of `revenue_currency` |
+| revenue_currency | VARCHAR(3) | NOT NULL, DEFAULT 'BRL' | Currency of both revenue columns |
+| status_note, next_step, close_reason_note | TEXT | - | Free-text notes |
+| project_lead, cpm, close_reason | VARCHAR | - | Project lead and CPM (source text as written, never users), close reason |
+| next_step_due | DATE | - | Next step due date |
+| created_at, updated_at | DATETIME | NOT NULL | Timestamps |
+
+**Indexes:** `card_id` (UNIQUE), `id`, `created_at`.
+
+**Revenue in cents.** SQLite has no exact decimal type: a `NUMERIC(18, 2)` column (the first draft) silently rounds past about 15 significant digits (`12345678901234567.89` came back as `12345678901234568`). Revenue is therefore an exact 64-bit INTEGER number of cents:
+- Convert only with `backend/bid_money.py`. `reais_to_cents()` takes a `Decimal`, an `int` or a plain decimal string, never a float. It rejects (never rounds) more than two decimal places, negative values, NaN/Infinity, text that is not a plain decimal number (`"1.234,56"`, `"R$ 10"`) and anything above `MAX_BID_REVENUE_CENTS` (R$ 9,999,999,999,999,999.99).
+- `cents_to_reais()` turns cents back into a `Decimal` with two places. Divide by 100 only for display.
+- `NULL` means "not informed", in both directions, and is never stored as 0; a real zero is `0`.
+- This is annual revenue from the report. It is not `cards.deal_value`, it is never copied into it or summed with it, and reports/KPIs don't read it.
+
+#### card_source_refs
+**Purpose:** Where an imported card came from, so a later import can find it again.
+
+| Column | Type | Constraints | Purpose |
+|--------|------|-------------|---------|
+| id | INTEGER | PK | Unique identifier |
+| card_id | INTEGER | FK → cards, NOT NULL, UNIQUE, ON DELETE CASCADE | The card (at most one source ref) |
+| source_system | VARCHAR | NOT NULL, DEFAULT 'salcomp-bids' | Source system |
+| source_key | VARCHAR | NOT NULL; UNIQUE with source_system | Identity within the source |
+| source_code | VARCHAR | NOT NULL | Codigo, as text (keeps leading zeros) |
+| source_status, source_stage | VARCHAR | - | Status/stage as written in the source |
+| source_confidence | VARCHAR | - | Confidence label as written, e.g. `LOW (10%)` (the percentage is `card_bid_details.confidence`) |
+| source_created_at, source_updated_at, source_last_edited_at | DATETIME | - | Source timestamps |
+| last_import_batch_id | INTEGER | FK → import_batches, ON DELETE SET NULL | Last batch that touched it |
+| source_row_hash | VARCHAR(64) | - | Hash of the source row |
+| created_at, updated_at | DATETIME | NOT NULL | Timestamps |
+
+**Indexes:** `uq_card_source_refs_system_key` UNIQUE (`source_system`, `source_key`), `card_id` (UNIQUE), `id`, `source_system`, `last_import_batch_id`, `created_at`.
+
+Uniqueness is enforced by the database, not only by code. For Bids, `source_key` is `bid_source_key(Código, Cliente)` in `backend/bid_import_preview.py` (Part 22C), because Código alone repeats in the report:
+- **Format:** `v1:` followed by the JSON array of the two parts, e.g. `v1:["000123-01","cliente sao paulo"]`.
+- **Each part:** accents dropped (NFKD without combining marks), whitespace collapsed, casefolded. Leading zeros are kept.
+- **No collisions:** the JSON encoding means no separator inside a value can make two pairs collide.
+
+`source_row_hash` is `bid_row_hash(record)`: `v1:` + SHA-256 of every value read from the row except its position. The preview uses it to tell unchanged re-imports from changed ones.
+
+#### Bid report columns (reader, Part 22B)
+
+`backend/bid_excel_reader.py` reads the report and maps each column to a field of its `BidRecord`. **It writes nothing:** these tables stay empty until the import step exists. Field names reuse the `card_bid_details` / `card_source_refs` column names where the meaning matches. The import step will decide what is actually stored.
+
+| # | Header | Reader field | Kind | Rules |
+|---|--------|--------------|------|-------|
+| 1 | Código | code | code | **Required value.** Text kept as written (leading zeros included). A numeric cell is zero-padded only with an all-zeros format; otherwise it is flagged `code_needs_review`. Not unique in the report. |
+| 2 | Ano | year | year | Whole number, 1900-2100 |
+| 3 | CAT | cat | text | **Required value.** Kept as written (not mapped) |
+| 4 | Atualizado em | source_updated_on | date | `dd/mm/yyyy` or an Excel date |
+| 5 | Estágio | stage | text | **Required value.** Kept as written (not mapped) |
+| 6 | Planta | plant | text | |
+| 7 | Cliente | customer | text | **Required value** |
+| 8 | Tipo de cliente | customer_type | text | |
+| 9 | Tipo de negócio | business_type | text | |
+| 10 | Categoria de Produto | product_category | text | |
+| 11 | Produto | product | text | Numbers become text |
+| 12 | Solução | solution_type | text | |
+| 13 | Nome do projeto | project_name | text | **Required column** |
+| 14 | Descrição da prospecção | prospect_description | text | |
+| 15 | Nível de Confiança | confidence_label + confidence_percent | confidence | `"LOW (10%)"` -> 10 |
+| 16 | Volume (ano atual) | volume_current_year | volume | Whole number >= 0; 1 is kept with a warning |
+| 17 | Volume (próximo ano) | volume_next_year | volume | Same |
+| 18 | Data de MP | production_start_date | date | |
+| 19 | Revenue BRL (ano atual) | revenue_current_year_cents | revenue | Decimal -> exact cents (BRL) via `bid_money.py` |
+| 20 | Revenue BRL (próximo ano) | revenue_next_year_cents | revenue | Same |
+| 21 | Descrição do status | status_note | text | |
+| 22 | Budget habilitado | budget_enabled | text | Kept as written |
+| 23 | Budget | budget | text | Kept as written (no currency stated) |
+| 24 | CPM | cpm | text | Kept verbatim in `card_bid_details.cpm`; never turned into a user or salesperson |
+| 25 | Líder do projeto | project_lead | text | A name; never turned into a user |
+| 26 | Próximo passo | next_step | text | |
+| 27 | Deadline | next_step_due | date | Not an expected close date |
+| 28 | Razão | close_reason_note | text | |
+| 29 | Status da conclusão | close_reason | text | |
+| 30 | Data de criação | source_created_on | date | Not the card's creation date |
+| 31 | Última edição | source_last_edited_on | date | |
+
+**Rules for every column:**
+- **Absent values:** `-` and blank mean "absent" (None), never 0.
+- **Header matching:** case-insensitive, with whitespace collapsed.
+- **Required columns:** missing one of the five (`Código`, `CAT`, `Estágio`, `Cliente`, `Nome do projeto`) is a file error. A missing optional column is a warning.
+- **Severities:** see `docs/PLAN.md` Part 22B for file errors, row errors and warnings, and for the file safety checks.
+
+#### card_import_changes
+**Purpose:** What an import actually changed on an existing card (Part 22D follow-up). Import history, kept apart from `card_edit_history`.
+
+| Column | Type | Constraints | Purpose |
+|--------|------|-------------|---------|
+| id | INTEGER | PK | Unique identifier |
+| card_id | INTEGER | FK → cards, NOT NULL, ON DELETE CASCADE | The updated card |
+| import_batch_id | INTEGER | FK → import_batches, NOT NULL, ON DELETE CASCADE | The batch that changed it |
+| user_id | INTEGER | FK → users, ON DELETE SET NULL | Who ran the import (the batch's user) |
+| changes | TEXT (JSON) | NOT NULL | `{"card.title": {"old", "new"}, "bid_details.next_step": {...}, "source_ref.source_status": {...}}`. Only fields that really changed; dates as ISO text |
+| created_at | DATETIME | NOT NULL | When the change was written |
+
+**Indexes:** `uq_card_import_changes_card_batch` UNIQUE (`card_id`, `import_batch_id`), plus `card_id`, `import_batch_id`, `user_id`, `created_at`.
+
+**What is written:**
+- **Only a confirmed UPDATE** that changed at least one managed field gets a row: one row per card and batch, enforced by the database.
+- **Never** for created cards (they get a `baseline` event and a source ref), unchanged re-imports, older sources, skipped rows, pending reviews or unconfirmed updates.
+- **Old and new values** are read from the database objects themselves before and after the update. The history shows what really changed, including a value someone had edited in the app since the last import.
+- **Not recorded here:** the row hash, unchanged fields, unmapped fields and the file. A confirmed move appears in `card_stage_events`, not here.
+- **Same transaction:** it is written with the update and rolls back with it.
+
+**Personal data:** values such as the customer or the project lead's name appear only when that field changed, as needed for the audit.
+
+**Deletion:** like `card_edit_history`, the rows go with their card. They also go with their batch, which is only deleted with its board.
+
+#### Import mapping (preview, Part 22C)
+
+`backend/bid_import_preview.py` proposes, without writing, what each row would become. The stage rules, actions and decisions are in `docs/PLAN.md` Part 22C. Model column <- report column:
+- **cards:** `title` <- Nome do projeto, `details` <- Descrição da prospecção, `company` <- Cliente. Nothing else is set: no `deal_value`, `currency`, `expected_close_date`, `lead_source`, `product_line`, `contact` or `salesperson_id`. The card's own `created_at` is never Data de criação.
+- **card_bid_details:**
+
+  | Column | Report column |
+  |--------|---------------|
+  | plant | Planta |
+  | customer_type | Tipo de cliente |
+  | business_type | Tipo de negócio |
+  | product_category | Categoria de Produto |
+  | product | Produto |
+  | solution_type | Solução |
+  | confidence | Nível de Confiança, as a percentage |
+  | volume_current_year, volume_next_year | the two Volume columns |
+  | production_start_date | Data de MP |
+  | revenue_current_year_cents, revenue_next_year_cents | the two Revenue BRL columns, in cents |
+  | revenue_currency | always BRL |
+  | status_note | Descrição do status |
+  | project_lead | Líder do projeto (text) |
+  | cpm | CPM (text, verbatim; no business definition assumed) |
+  | next_step | Próximo passo |
+  | next_step_due | Deadline |
+  | close_reason | Status da conclusão |
+  | close_reason_note | Razão |
+- **card_source_refs:**
+
+  | Column | Value |
+  |--------|-------|
+  | source_system | `salcomp-bids` |
+  | source_key | `bid_source_key(Código, Cliente)` |
+  | source_code | Código |
+  | source_status | CAT, as written |
+  | source_stage | Estágio, as written |
+  | source_confidence | Nível de Confiança, as written |
+  | source_created_at | Data de criação |
+  | source_updated_at | Atualizado em |
+  | source_last_edited_at | Última edição |
+  | source_row_hash | `bid_row_hash(record)` |
+- **Not mapped** (shown in the preview, never imported): Ano, Budget habilitado, Budget. CPM and Líder do projeto are stored as text and never matched to users. API responses never include the CPM name.
+
+#### Applying an import (Part 22D)
+
+`backend/bid_import_service.py` writes a confirmed preview. The HTTP endpoints (Part 22E, below) call it; they never write these tables themselves.
+- **`preview_bid_import(db, read_result, board_id, decisions)`** builds the preview from the board's columns and the already-imported cards (`load_board_stages`, `load_existing_imports`). It is read-only.
+- **`apply_bid_import(db, read_result, preview, decisions, board_id, user)`** does everything in one transaction on the caller's session:
+  1. inserts the `import_batches` row (`pending`), which takes SQLite's write lock;
+  2. rebuilds the preview from the database with the same decisions and refuses (`ImportConflict`) unless it equals the confirmed one. This covers concurrent imports, data edited since the preview and a repeated confirmation;
+  3. refuses (`ImportRejected`) decisions that don't fit their rows;
+  4. writes the authorized rows, flushes, sets the counts and `completed`, and commits.
+
+  **On failure:** any exception rolls back the whole batch. A unique-key violation on `card_source_refs` becomes `ImportConflict`.
+- **Create:** a card in the decided column, appended at the end, with `title`/`details`/`company`, plus `card_bid_details` and `card_source_refs` (`last_import_batch_id` = the batch). The listener records a `baseline` event, source `import`.
+- **Update** (only when `confirm_update` was given): overwrites only the mapped card / Bid / source-ref fields. `deal_value`, `currency`, `contact`, `expected_close_date`, `lead_source`, `product_line`, `salesperson_id`, the position and the column are untouched. The card moves only with `confirm_move`, which records a real `moved`/`won`/`lost` event, dated now, source `import`.
+- **Counts:**
+  - IGNORE rows -> `skipped_count`;
+  - REVIEW rows and updates awaiting confirmation -> `review_count`;
+  - unchanged rows are never counted as updated.
+- **`mapping_json`** holds the rule versions, the stage rules, the board's stages and the decisions. It holds no row content, and the file itself is not stored.
+- **Failed attempts:** any failure of `apply_bid_import` rolls back the whole import. Then, in a separate short transaction on its own session, the service records a batch with `status = failed`:
+  - **`failure_kind`:** `validation` (`ImportRejected`), `conflict` (`ImportConflict`) or `unexpected` (anything else);
+  - **`failure_reason`:** at most 500 characters. For validation/conflict it is the service's own message (row numbers and codes, never cell content); for unexpected failures, only the exception type, since its message may quote SQL parameters;
+  - **other fields:** user, board, file name and SHA-256, and the mapping. Counts stay 0.
+
+  **Guarantees:**
+  - commercial data is never partial;
+  - a failure to record the attempt is only logged (by exception type) and never replaces or hides the original error;
+  - a completed import is never recorded as failed;
+  - no record is possible for a board that doesn't exist.
+
+  **Limitation:** recording reuses the caller's engine. On a single-connection test engine (in-memory `StaticPool`) it shares that connection.
+- **A Bid already imported into another board:** `source_system` + `source_key` is unique across the whole database, so a Bid lives on one board only.
+  - **Preview:** `preview_bid_import` raises `ImportConflict`, naming the Códigos and the board they're on.
+  - **Apply:** at apply time (for example, if the other board imported it after the preview) the whole import is rolled back, nothing is written, and the attempt is recorded as `conflict`.
+  - **To proceed:** import into that board, or remove those rows from the file.
+
+#### Adding the import tables to an existing database (Part 22)
+
+A brand-new database gets the three tables from `create_all`. An existing one gets them only from the explicit migration. `init_db()` checks before `create_all` and refuses to start in three cases:
+- **None of the tables:** `ImportTablesMigrationRequired`, telling you to run the migration.
+- **Only some of them** (an interrupted or manual change): `ImportTablesSchemaError` ("partly migrated").
+- **All three, but different from the models** (a column, type, NOT NULL, default, index or foreign key rule): `ImportTablesSchemaError`, listing every difference.
+
+Nothing is ever repaired automatically: restore the backup the migration took.
+
+From `backend/`, with the app stopped. `--database` is required; there is no `DATABASE_URL` or `./pm.db` fallback:
+```bash
+uv run python migrate_import_tables.py --database "$PWD/pm.db"            # dry run, read-only
+uv run python migrate_import_tables.py --database "$PWD/pm.db" --apply    # backup + migrate
+```
+
+**Refused, with exit 1, nothing written and no backup:**
+- **Out of order:** the earlier migrations must already be applied: `columns.stage_kind` (`migrate_stage_kind.py`), `card_stage_events` (`migrate_stage_events.py`) and its value columns (`migrate_stage_event_values.py`). The error names the script to run.
+- **Partial or incompatible** import tables.
+- **A second `--apply`.** A dry run on a migrated database prints "nothing to do" and exits 0.
+- **A file that doesn't exist** (it is not created) or isn't a Sales Pipeline database.
+
+**What `--apply` does:**
+1. Writes `<name>-pre-import-tables-<time>.db.bak` next to the database (ignored by git).
+2. In one transaction:
+   - re-checks that the tables are still absent;
+   - creates the three tables and their indexes, with the DDL generated from the models (identical to `create_all`'s);
+   - verifies the result with the same check `init_db()` uses;
+   - verifies that every row of every pre-existing table is unchanged;
+   - rolls back on any failure.
+3. Leaves the new tables empty. No user, board, card or history row is created or changed.
+
+#### Import revert tables (Part 23, schema only)
+
+Two additive tables prepare the revert of a confirmed Bid import. This step only creates the schema; nothing writes to them yet.
+
+- `import_batch_ledgers`: one row per batch (`import_batch_id` UNIQUE, FK to `import_batches` ON DELETE CASCADE). Its existence makes a batch revertible; batches imported before the migration have none and stay not revertible. Holds `ledger_version`, `created_at`, the revert claim (`reverted_at`, `reverted_by_user_id` FK to `users` ON DELETE SET NULL) and the final result (`revert_outcome`, `no_commercial_changes`, `cards_deleted_count`, `cards_restored_count`, `moves_reverted_count`, `already_deleted_count`, `result_summary_json`: counts only, no cell content).
+- `import_batch_items`: one row per card a batch created, updated or observed (`ledger_id` FK ON DELETE CASCADE; `UNIQUE(ledger_id, card_id)`; index on `card_id`). `card_id` and `board_id` are plain integers with no foreign key, so an item outlives its card. Holds `source_key`, `action` (`created`/`updated`/`observed`), `observation`, `before_json`, `after_json`, `bid_details_created`, `stage_event_max_id_after`.
+
+The Part 22 tables are unchanged. `import_schema.py` checks this group separately (`revert_schema_state`), so a Part 22 database is not reported as incompatible. A brand-new database (including `create_commercial_db.py`) gets both tables from `create_all`. For an existing one, `init_db()` raises `ImportRevertMigrationRequired` (none of the two) or `ImportRevertSchemaError` (partial or different from the models) before `create_all`; the Part 22 guard runs first.
+
+From `backend/`, with the app stopped (same rules as `migrate_import_tables.py`: dry run by default, `--database` required, backup `<name>-pre-import-revert-<time>.db.bak`, one transaction with row-preservation check, refuses a second `--apply`, refuses a database without the earlier migrations or with Part 22 tables missing or different):
+```bash
+uv run python migrate_import_revert.py --database "$PWD/pm.db"            # dry run, read-only
+uv run python migrate_import_revert.py --database "$PWD/pm.db" --apply    # backup + migrate
+```
+
+#### Annual Deal Value: `cards.deal_value_next_year`, `cards.deal_year` (migration `migrate_deal_years.py`)
+
+`cards.deal_value` is unchanged and now means the amount for `deal_year` (the "current year"); `deal_value_next_year` (FLOAT NOT NULL, default 0) is the amount for `deal_year + 1`. Both are in USD (see `cards.currency`: legacy, ignored; no conversion), and they are separate from Bid revenue (`card_bid_details.revenue_*`). The minimized card shows `deal_value + deal_value_next_year`; the edit form shows both, labelled with the card's own `deal_year` (no year is hard-coded). `deal_year` is stamped when a card is created and cannot be set through the API.
+
+A database without the two columns is refused at startup with `DealYearsMigrationRequired`. The year of the existing amounts can't be inferred, so it is passed explicitly. From `backend/`, app stopped, on a backup first (dry run by default, `--database` absolute, `--apply` needs `--expect-sha256`, refuses `pm.db`, takes `<name>-pre-deal-years-<time>.db.bak`, one transaction, refuses a second `--apply`):
+
+```
+uv run python migrate_deal_years.py --database /abs/path/db --year 2026                                   # dry run
+uv run python migrate_deal_years.py --database /abs/path/db --year 2026 --expect-sha256 <hash> --apply
+```
+
+Every existing `deal_value` stays as is and becomes the amount for `--year`; `deal_value_next_year` is 0 on every card.
+
+Year rollover is explicit, never automatic. Until it is run, stored amounts keep the year they were entered for (the UI labels follow the card's `deal_year`, not the calendar). Once a year has ended (the script refuses otherwise), with the app stopped and a hash approved:
+
+```
+uv run python migrate_deal_year_rollover.py --database /abs/path/db --from-year 2026                      # dry run
+uv run python migrate_deal_year_rollover.py --database /abs/path/db --from-year 2026 --expect-sha256 <hash> --apply
+```
+
+For each card with `deal_year = 2026`: `deal_value` becomes the old `deal_value_next_year` (NULL if that was 0), `deal_value_next_year` becomes 0 and `deal_year` becomes 2027. The old current-year amount is only kept in the backup. Stage-history value snapshots are past events and are not rewritten. Reports and the Dashboard show the current-year, next-year and two-year total measures (docs/KPIS.md); the stage-history closing snapshots stay `deal_value` alone.
+
+#### `card_bid_details.cpm` (migration `migrate_bid_cpm.py`)
+
+A nullable VARCHAR added after the Part 22 tables, for the report's CPM column. A database that has the import tables but not this column is refused at startup with `BidCpmMigrationRequired`; new databases get it from `create_all`. From `backend/`, with the app stopped (dry run by default, `--database` required, backup `<name>-pre-bid-cpm-<time>.db.bak`, one transaction with foreign keys enforced, refuses a second `--apply`, refuses any other difference from the models):
+```bash
+uv run python migrate_bid_cpm.py --database "$PWD/pm.db"            # dry run, read-only
+uv run python migrate_bid_cpm.py --database "$PWD/pm.db" --apply    # backup + migrate
+```
+It runs one `ALTER TABLE ... ADD COLUMN`, then verifies that every row of every table and every other schema object is unchanged, `foreign_key_check` is clean and the new column is all NULL.
+
+#### HTTP endpoints (Part 22E)
+
+All admin-only (401/403 otherwise), in `backend/import_routes.py`:
+
+| Method and path | Writes | Returns |
+|---|---|---|
+| `POST /api/boards/{id}/imports/preview` (multipart `file`, `decisions`) | nothing | the classified preview, `confirmable`, `preview_token` |
+| `POST /api/boards/{id}/imports` (multipart `file`, `decisions`, `preview_token`, `confirm=true`) | through `apply_bid_import` only | 201: the batch and created/updated/moved card ids |
+| `GET /api/boards/{id}/imports?limit&offset` | nothing | the board's `import_batches`, newest first |
+| `GET /api/imports/{batch_id}` | nothing | one batch, with its parsed `mapping_json` and `card_changes_count` |
+
+- **The preview token** binds the confirmation to the admin, the board, the file's SHA-256, the decisions, the latest completed batch and the preview shown. The confirmation re-reads the file and rebuilds the preview before calling the service.
+- **What is stored:** the uploaded file never is. Only its name and SHA-256 go in `import_batches`.
+- **What responses leave out:** batch responses carry no row content, and users appear only as `user_id`/`username`.
+
+**Recovery:** stop the app and copy the backup over the database file.
+
+**Development database.** `backend/pm.db` has not been migrated. Until an operator runs the migration on it, the app refuses to start on it with `ImportTablesMigrationRequired`.
+
 ---
 
 ## Data Relationships
@@ -435,10 +785,14 @@ uv run python migrate_stage_event_values.py --database "$PWD/pm.db" --apply    #
 - **DELETE user** → Cascade delete boards, messages, actions; SET NULL on card_edit_history.user_id (preserve history)
 - **DELETE board** → Cascade delete columns, cards, messages, actions
 - **DELETE column** → Cascade delete cards
-- **DELETE card** → Cascade delete card_edit_history; SET NULL on card_actions.card_id (preserve history)
+- **DELETE card** → Cascade delete card_edit_history, card_import_changes, card_bid_details and card_source_refs; SET NULL on card_actions.card_id (preserve history); card_stage_events is kept (no FK)
+- **DELETE board** also cascade-deletes its import_batches; **DELETE user** sets import_batches.user_id to NULL
+- **DELETE import batch** → SET NULL on card_source_refs.last_import_batch_id
 - **DELETE message** → SET NULL on card_actions.message_id (preserve history)
 
 This ensures referential integrity while preserving audit history.
+
+SQLite only enforces foreign keys (and these cascades) when `PRAGMA foreign_keys=ON` is set on each connection. `database.enable_sqlite_foreign_keys()` does this from a SQLAlchemy `connect` event, and is applied to the application engine (`database.py`) and to `create_commercial_db.py`. Any new code that builds a SQLite engine must call it; `test_foreign_keys.py` fails if a non-test module calls `create_engine` without it. The standalone `migrate_*.py` scripts use raw `sqlite3` connections and do not enable it.
 
 ---
 
@@ -447,12 +801,14 @@ This ensures referential integrity while preserving audit history.
 ### User Login
 ```sql
 SELECT * FROM users WHERE username = 'alice'
+-- accepted only if the password matches AND email_verified_at IS NOT NULL;
+-- the token then carries session_version (sv), re-checked on every request
 ```
 
 ### First-run Admin Setup (`POST /api/setup`)
 ```sql
 -- Only allowed while the users table is empty
-INSERT INTO users (username, password_hash, role) VALUES ('alice', '<bcrypt hash>', 'admin')
+INSERT INTO users (username, password_hash, role, email_verified_at) VALUES ('alice', '<bcrypt hash>', 'admin', CURRENT_TIMESTAMP)
 ```
 
 ### Load Kanban Board (Part 6)
@@ -516,6 +872,48 @@ COMMIT
 
 ---
 
+## Creating the clean commercial database
+
+The commercial database is a separate file from the development `backend/pm.db`, built once by `create_commercial_db.py`. Existing migrations don't apply to it: it is created with the current schema.
+
+```bash
+cd backend
+SECRET_KEY=<any value, >=32 chars> uv run python create_commercial_db.py \
+  --database /absolute/path/pm-commercial.db --email <admin-email>
+```
+
+- `--database` is required and must not exist (a file, symlink or directory there is refused, never overwritten); its directory must exist. There is no `DATABASE_URL` or `./pm.db` fallback, and the development database paths are refused.
+- The administrator is created **without a usable password** (`password_hash = "!"`, email unverified): there is no password argument, prompt, stdin option or constant. The `--email` (lowercase, also the username) owner requests "Forgot my password?" in the application, which emails a single-use link, sets the password (which must meet the password policy) and verifies the email. This needs working SMTP and the reset flow, so test those before the transition. `e2e_admin` / `e2e_member` are refused as names.
+- It creates the full schema (Part 22 and auth tables included), the first admin, the "Salcomp Sales Pipeline" board and the stages from `lead_options.PIPELINE_STAGES` with their `stage_kind` (1st Contact, F2F Meeting, RFI, Proposal = open; Award = won; Lost = lost). No cards, sample leads, import batches or history rows.
+- If any step fails the new file is removed. The schema is checked with the same guards the app runs at startup before the admin is created.
+- Because the admin exists, `/api/setup` answers 409 and the setup screen is skipped. Further admins: `admin_cli.py`; members: Manage Users or signup links.
+
+Run the app on it by setting `DATABASE_URL` for that process only, leaving `.env` and the development database untouched:
+
+```bash
+cd backend
+DATABASE_URL=sqlite:////absolute/path/pm-commercial.db uv run uvicorn main:app --port 8000
+```
+
+(Four slashes: `sqlite:///` plus an absolute path.) For Docker, `docker-compose.yml` takes the URL from `PM_DATABASE_URL` and the mount from `PM_DB_HOST_PATH` / `PM_DB_CONTAINER_PATH` (defaults keep `./pm.db`); see `docs/DEPLOYMENT.md`. That path is configured but not yet verified on a real server.
+
+Local commercial database (decided 2026-10-16): the permanent path on the user's Mac is `/Users/pauloluisada/Library/Application Support/SalcompSalesPipeline/data/pm-commercial.db`, a byte-identical copy of the prepared scratch file (`pm-phase3-scratch/data/pm-commercial.db`), which stays preserved until the user explicitly authorizes retiring it. It is not activated; CPM migration, workbook import, administrator activation and cleanup each need separate authorization. The prepared file predates `migrate_bid_cpm.py`, so the app refuses to start on it until that migration is applied. Exact startup command (quoting, `PM_REQUIRE_EXISTING_DB=1`) and the `scripts/start-mac.sh` warning are in `docs/DEPLOYMENT.md`.
+
+Validate the result (read-only):
+
+```bash
+sqlite3 /absolute/path/pm-commercial.db "
+SELECT username, role, password_hash, email_verified_at FROM users; -- one row: admin, '!', NULL
+SELECT title FROM boards;                              -- Salcomp Sales Pipeline
+SELECT title, stage_kind FROM columns ORDER BY position; -- 6 stages, kinds as above
+SELECT (SELECT COUNT(*) FROM cards), (SELECT COUNT(*) FROM card_stage_events), (SELECT COUNT(*) FROM import_batches); -- 0|0|0
+"
+```
+
+Then start the app as above; the admin cannot log in until the password reset is completed. Tests: `uv run pytest test_create_commercial_db.py` (temporary databases only).
+
+---
+
 ## Migration Strategy
 
 ### SQLite → PostgreSQL
@@ -542,7 +940,7 @@ psql -U postgres -d pm_db < schema.sql
 ### Current
 - Passwords hashed with bcrypt (no plaintext storage)
 - Binary role check (admin/member) gates user-management endpoints, and within card routes: deleting a card and moving a card to an earlier column are admin-only; all other board/card routes just require authentication, not a specific role
-- No token revocation/blacklist - a logged-out token remains valid until it expires (up to 24h)
+- Access tokens last 8 hours and are revocable: logout and password changes bump `users.session_version`, which invalidates every earlier token of that user (all devices)
 
 ### Production
 - Add password reset flow
@@ -591,12 +989,13 @@ The ORM models are auto-generated from this design and provide type safety and v
 
 ## Testing Database
 
-For tests, use in-memory SQLite:
-```python
-DATABASE_URL = "sqlite:///:memory:"
-```
+Backend tests never touch `backend/pm.db`: `backend/conftest.py` sets a random `SECRET_KEY` and a temp-file `DATABASE_URL` for every pytest run. Tests that need several databases (migrations, startup guards) build them as files under pytest's `tmp_path`. Some route tests use in-memory SQLite with `StaticPool`. Playwright uses its own temp database (`PM_E2E=1`).
 
-This provides isolation between tests with no cleanup needed.
+```bash
+cd backend
+uv run pytest                                          # whole suite
+uv run pytest test_import_tables.py test_bid_money.py  # Part 22
+```
 
 ---
 

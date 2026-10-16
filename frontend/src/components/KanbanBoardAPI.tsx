@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import {
   DndContext,
   DragOverlay,
@@ -16,10 +17,11 @@ import {
 import { KanbanColumn } from "@/components/KanbanColumn";
 import { KanbanCardPreview } from "@/components/KanbanCardPreview";
 import { CardHistoryModal } from "@/components/CardHistoryModal";
+import { CardDetailsModal } from "@/components/CardDetailsModal";
 import { LeadEditModal } from "@/components/LeadEditModal";
 import { LoadingScreen } from "@/components/LoadingScreen";
-import { todayIso } from "@/lib/format";
-import type { UserRole } from "@/lib/auth";
+import { dealValueTotal, isValidIsoDate, todayIso } from "@/lib/format";
+import { getAuthState, type UserRole } from "@/lib/auth";
 import {
   getBoard,
   moveCard,
@@ -79,6 +81,7 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
 
   const [leadOptions, setLeadOptions] = useState<LeadOptions | null>(null);
   const [leadCardId, setLeadCardId] = useState<number | null>(null);
+  const [detailsCardId, setDetailsCardId] = useState<number | null>(null);
 
   const [undoStatus, setUndoStatus] = useState<UndoStatus | null>(null);
   const [undoing, setUndoing] = useState(false);
@@ -272,24 +275,6 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
     refreshUndo();
   };
 
-  const handleUpdateCard = async (
-    columnId: number,
-    cardId: number,
-    title: string,
-    details: string
-  ): Promise<boolean> => {
-    if (!board) return false;
-
-    try {
-      replaceCard(await updateCard(boardId, cardId, { title, details }));
-      refreshUndo();
-      return true;
-    } catch (err: unknown) {
-      setActionError(getErrorMessage(err, "Failed to update card"));
-      return false;
-    }
-  };
-
   const handleDeleteCard = async (columnId: number, cardId: number) => {
     if (!board) return;
 
@@ -346,75 +331,70 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
     );
   }
 
+  // Mirrors card_rules.can_edit_card for showing the Edit action only; the
+  // backend stays the authority. Members edit only cards assigned to them.
+  const username = getAuthState().username;
+  const canEditCard = (card: CardResponse) =>
+    isAdminUser || (card.salesperson_name != null && card.salesperson_name === username);
+
+  // Return focus to the card's summary after the edit form closes (the
+  // details view that opened it is gone by then).
+  const closeLeadEditor = () => {
+    const cardId = leadCardId;
+    setLeadCardId(null);
+    if (cardId !== null) {
+      requestAnimationFrame(() =>
+        document
+          .querySelector<HTMLElement>(`[data-testid="card-${cardDndId(cardId)}"] [data-open-details]`)
+          ?.focus()
+      );
+    }
+  };
+
   const activeCard = activeCardId ? cardsById[activeCardId] : null;
+  // Undo lives in the top navigation; AppNav reserves the element, and it is
+  // already mounted by the time the board has loaded.
+  const undoSlot = document.getElementById("nav-undo-slot");
   const today = todayIso();
   const historyCard = historyCardId ? cardsById[historyCardId] : null;
 
   return (
-    // overflow-clip, not overflow-hidden: both clip the decorative gradients,
-    // but overflow-hidden would make this div the scroll container and stop
-    // the Undo bar below from sticking.
+    // overflow-clip, not overflow-hidden: overflow-hidden would make this div
+    // a scroll container.
     <div className="relative overflow-clip">
-      <div className="pointer-events-none absolute left-0 top-0 h-[420px] w-[420px] -translate-x-1/3 -translate-y-1/3 rounded-full bg-[radial-gradient(circle,_rgba(32,157,215,0.25)_0%,_rgba(32,157,215,0.05)_55%,_transparent_70%)]" />
-      <div className="pointer-events-none absolute bottom-0 right-0 h-[520px] w-[520px] translate-x-1/4 translate-y-1/4 rounded-full bg-[radial-gradient(circle,_rgba(117,57,145,0.18)_0%,_rgba(117,57,145,0.05)_55%,_transparent_75%)]" />
-
-      {/* Stays at the top of the scrolling board area so it's always reachable. */}
-      <div className="sticky top-0 z-20 flex items-center justify-end gap-3 border-b border-[var(--stroke)] bg-white/90 px-6 py-2 backdrop-blur">
-        {undoNotice && (
-          <span className="text-xs font-medium text-green-700" role="status">
-            {undoNotice}
-          </span>
-        )}
-        <button
-          type="button"
-          onClick={handleUndo}
-          disabled={!undoStatus?.available || undoing}
-          title={undoStatus?.description ?? "Nothing to undo"}
-          className="rounded-lg border border-[var(--stroke)] bg-white px-4 py-1.5 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--navy-dark)] transition hover:border-[var(--primary-blue)] disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {undoing ? "Undoing..." : "Undo"}
-        </button>
-        {undoStatus?.description && !undoing && (
-          <span className="hidden max-w-[360px] truncate text-xs text-[var(--gray-text)] sm:inline">
-            {undoStatus.description}
-          </span>
-        )}
-      </div>
-
-      <main className="relative mx-auto flex min-h-screen max-w-[1500px] flex-col gap-10 px-6 pb-16 pt-12">
-        <header className="flex flex-col gap-6 rounded-[32px] border border-[var(--stroke)] bg-white/80 p-8 shadow-[var(--shadow)] backdrop-blur">
-          <div className="flex flex-wrap items-start justify-between gap-6">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
-                Salcomp Sales Pipeline
-              </p>
-              <h1 className="mt-3 font-display text-4xl font-semibold text-[var(--navy-dark)]">
-                {board.title}
-              </h1>
-              <p className="mt-3 max-w-xl text-sm leading-6 text-[var(--gray-text)]">
-                {board.description || "Each card is a lead. Drag it forward as the deal progresses, and open Edit lead to record company, value, close date and owner."}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--surface)] px-5 py-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.25em] text-[var(--gray-text)]">
-                Focus
-              </p>
-              <p className="mt-2 text-lg font-semibold text-[var(--primary-blue)]">
-                {board.columns.length} stages. {Object.keys(cardsById).length} leads.
-              </p>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-4">
-            {board.columns.map((column) => (
-              <div
-                key={column.id}
-                className="flex items-center gap-2 rounded-full border border-[var(--stroke)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--navy-dark)]"
+      {undoSlot &&
+        createPortal(
+          <>
+            {undoNotice && (
+              <span
+                className="sr-only text-xs font-medium text-green-700 lg:not-sr-only lg:max-w-[14rem] lg:truncate"
+                role="status"
+                title={undoNotice}
               >
-                <span className="h-2 w-2 rounded-full bg-[var(--accent-yellow)]" />
-                {column.title}
-              </div>
-            ))}
-          </div>
+                {undoNotice}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={handleUndo}
+              disabled={!undoStatus?.available || undoing}
+              title={undoStatus?.description ?? "Nothing to undo"}
+              className="rounded-md border border-[var(--stroke)] px-2 py-1.5 text-sm font-semibold text-[var(--navy-dark)] transition hover:border-[var(--primary-blue)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary-blue)] disabled:cursor-not-allowed disabled:opacity-40 sm:px-3"
+            >
+              {undoing ? "Undoing..." : "Undo"}
+            </button>
+          </>,
+          undoSlot
+        )}
+
+      <main className="relative mx-auto flex max-w-[1500px] flex-col gap-4 px-6 pb-20 pt-4 lg:pb-16">
+        <header className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
+          <h1 className="font-display text-2xl font-semibold text-[var(--navy-dark)]">
+            {board.title}
+          </h1>
+          <p className="text-sm font-semibold text-[var(--primary-blue)]">
+            {board.columns.length} stages. {Object.keys(cardsById).length} leads.
+          </p>
         </header>
 
         {actionError && (
@@ -439,10 +419,14 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
         >
           {/* Six stages don't fit side by side at a readable width next to
               the AI sidebar, so the row scrolls horizontally instead. */}
-          <section className="grid auto-cols-[minmax(240px,1fr)] grid-flow-col gap-6 overflow-x-auto pb-2">
-            {board.columns.map((column) => (
+          <section className="-m-1 grid auto-cols-[minmax(240px,1fr)] grid-flow-col gap-6 overflow-x-auto p-1 pb-3">
+            {board.columns.map((column, index) => (
               <KanbanColumn
                 key={column.id}
+                stageIndex={
+                  board.columns.slice(0, index).filter((c) => c.stage_kind === "open").length
+                }
+                openStageCount={board.columns.filter((c) => c.stage_kind === "open").length}
                 column={{
                   id: colDndId(column.id),
                   title: column.title,
@@ -459,15 +443,23 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
                   lead: {
                     company: c.company,
                     contact: c.contact,
-                    dealValue: c.deal_value,
-                    currency: c.currency,
+                    dealValue: dealValueTotal(c.deal_value, c.deal_value_next_year),
                     expectedCloseDate: c.expected_close_date,
                     productLine: c.product_line,
                     salespersonName: c.salesperson_name,
                     overdue:
-                      !!c.expected_close_date &&
+                      isValidIsoDate(c.expected_close_date) &&
                       c.expected_close_date < today &&
                       column.stage_kind === "open",
+                    nextStep: c.bid_details?.next_step ?? null,
+                    nextStepDue: isValidIsoDate(c.bid_details?.next_step_due)
+                      ? c.bid_details!.next_step_due
+                      : null,
+                    nextStepOverdue:
+                      isValidIsoDate(c.bid_details?.next_step_due) &&
+                      c.bid_details!.next_step_due! < today &&
+                      column.stage_kind === "open",
+                    sourceCode: c.source_ref?.source_code ?? null,
                   },
                 })) || []}
                 canDeleteCards={isAdminUser}
@@ -476,15 +468,8 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
                 onDeleteCard={(_colId, cardDndIdValue) =>
                   handleDeleteCard(column.id, cardIdFromDndId(cardDndIdValue))
                 }
-                onUpdateCard={(_colId, cardDndIdValue, title, details) =>
-                  handleUpdateCard(column.id, cardIdFromDndId(cardDndIdValue), title, details)
-                }
                 onOpenCardHistory={(cardDndIdValue) => handleOpenHistory(cardIdFromDndId(cardDndIdValue))}
-                onEditLead={
-                  leadOptions
-                    ? (cardDndIdValue) => setLeadCardId(cardIdFromDndId(cardDndIdValue))
-                    : undefined
-                }
+                onOpenDetails={(cardDndIdValue) => setDetailsCardId(cardIdFromDndId(cardDndIdValue))}
               />
             ))}
           </section>
@@ -500,12 +485,30 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
         </DndContext>
       </main>
 
+      {detailsCardId !== null && cardsById[detailsCardId] && (() => {
+        const card = cardsById[detailsCardId];
+        const column = board.columns.find((col) => col.id === card.column_id);
+        return (
+          <CardDetailsModal
+            card={card}
+            stageTitle={column?.title ?? "-"}
+            stageKind={column?.stage_kind ?? "open"}
+            canEdit={!!leadOptions && canEditCard(card)}
+            onEdit={() => {
+              setDetailsCardId(null);
+              setLeadCardId(card.id);
+            }}
+            onClose={() => setDetailsCardId(null)}
+          />
+        );
+      })()}
+
       {leadCardId !== null && cardsById[leadCardId] && leadOptions && (
         <LeadEditModal
           card={cardsById[leadCardId]}
           options={leadOptions}
           onSave={(updates) => handleSaveLead(leadCardId, updates)}
-          onClose={() => setLeadCardId(null)}
+          onClose={closeLeadEditor}
         />
       )}
 

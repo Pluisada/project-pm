@@ -6,8 +6,23 @@ import type { Card, Column } from "@/lib/kanban";
 import { KanbanCard } from "@/components/KanbanCard";
 import { NewCardForm } from "@/components/NewCardForm";
 
+const OPEN_TONES = ["blue", "cyan", "turquoise", "lime"] as const;
+
+// Won/lost come from the stage's kind; open stages are tinted by their order
+// in the pipeline, never by title (stages can be renamed).
+const stageTone = (column: Column, stageIndex?: number) => {
+  if (column.stageKind === "won") return "green";
+  if (column.stageKind === "lost") return "red";
+  if (stageIndex === undefined) return null;
+  return OPEN_TONES[Math.min(stageIndex, OPEN_TONES.length - 1)];
+};
+
 type KanbanColumnProps = {
   column: Column;
+  // Order of this stage among the open stages, and how many there are
+  // (API-backed board only); drives the "1/4" indicator.
+  stageIndex?: number;
+  openStageCount?: number;
   cards: Card[];
   canDeleteCards: boolean;
   // Called once per committed edit (blur or Enter), not per keystroke. May
@@ -17,22 +32,22 @@ type KanbanColumnProps = {
   canRename?: boolean;
   onAddCard: (columnId: string, title: string, details: string) => void;
   onDeleteCard: (columnId: string, cardId: string) => void;
-  onUpdateCard: (columnId: string, cardId: string, title: string, details: string) => Promise<boolean>;
   onOpenCardHistory: (cardId: string) => void;
-  onEditLead?: (cardId: string) => void;
+  onOpenDetails?: (cardId: string) => void;
 };
 
 export const KanbanColumn = ({
   column,
+  stageIndex,
+  openStageCount,
   cards,
   canDeleteCards,
   onRename,
   canRename = true,
   onAddCard,
   onDeleteCard,
-  onUpdateCard,
   onOpenCardHistory,
-  onEditLead,
+  onOpenDetails,
 }: KanbanColumnProps) => {
   const { setNodeRef, isOver } = useDroppable({ id: column.id });
   // The in-progress edit; null when not editing, so the field always falls
@@ -48,22 +63,41 @@ export const KanbanColumn = ({
     setDraft(null);
   };
 
+  const tone = stageTone(column, stageIndex);
+
   return (
     <section
       ref={setNodeRef}
       className={clsx(
-        "flex min-h-[520px] flex-col rounded-3xl border border-[var(--stroke)] bg-[var(--surface-strong)] p-4 shadow-[var(--shadow)] transition",
+        "flex min-h-[520px] flex-col rounded-[14px] border border-t-[3px] border-[var(--stroke)] p-4 transition",
+        !tone && "bg-[var(--surface-strong)]",
         isOver && "ring-2 ring-[var(--accent-yellow)]"
       )}
+      style={
+        tone
+          ? {
+              backgroundColor: `var(--stage-${tone}-bg)`,
+              borderColor: `color-mix(in srgb, var(--stage-${tone}-accent) 40%, white)`,
+              borderTopColor: `var(--stage-${tone}-accent)`,
+            }
+          : undefined
+      }
       data-testid={`column-${column.id}`}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="w-full">
-          <div className="flex items-center gap-3">
-            <div className="h-2 w-10 rounded-full bg-[var(--accent-yellow)]" />
-            <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]">
-              {cards.length} cards
+          <div className="flex min-h-6 items-center justify-between gap-3">
+            <span className="text-xs font-semibold text-[var(--gray-text)]">
+              {cards.length} {cards.length === 1 ? "card" : "cards"}
             </span>
+            {column.stageKind === "open" && stageIndex !== undefined && openStageCount !== undefined && (
+              <span
+                className="rounded-full bg-white/70 px-2 py-0.5 text-[11px] font-semibold text-[var(--navy-dark)]"
+                aria-label={`Open stage ${stageIndex + 1} of ${openStageCount}`}
+              >
+                {stageIndex + 1}/{openStageCount}
+              </span>
+            )}
           </div>
           <div className="mt-3 flex items-center gap-2">
             {canRename ? (
@@ -90,10 +124,8 @@ export const KanbanColumn = ({
             {column.stageKind && column.stageKind !== "open" && (
               <span
                 className={clsx(
-                  "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.1em]",
-                  column.stageKind === "won"
-                    ? "bg-green-50 text-green-800"
-                    : "bg-[var(--surface)] text-[var(--gray-text)]"
+                  "shrink-0 rounded-full bg-white/70 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.1em]",
+                  column.stageKind === "won" ? "text-green-800" : "text-red-800"
                 )}
                 title={`Deals in this stage count as ${column.stageKind}`}
               >
@@ -111,14 +143,13 @@ export const KanbanColumn = ({
               card={card}
               canDelete={canDeleteCards}
               onDelete={(cardId) => onDeleteCard(column.id, cardId)}
-              onUpdate={(cardId, title, details) => onUpdateCard(column.id, cardId, title, details)}
               onOpenHistory={onOpenCardHistory}
-              onEditLead={onEditLead}
+              onOpenDetails={onOpenDetails}
             />
           ))}
         </SortableContext>
         {cards.length === 0 && (
-          <div className="flex flex-1 items-center justify-center rounded-2xl border border-dashed border-[var(--stroke)] px-3 py-6 text-center text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]">
+          <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-[var(--stroke)] px-3 py-6 text-center text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]">
             Drop a card here
           </div>
         )}

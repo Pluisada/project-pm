@@ -31,7 +31,7 @@ test("renaming the won stage doesn't change the won count", async ({ page, reque
     await page.getByRole("button", { name: "Reports" }).click();
     const tile = page.getByTestId("report-kpis").locator("div", { hasText: /^Won/ }).first();
     const value = await tile.locator("p").nth(1).textContent();
-    await page.getByRole("button", { name: "Back to Board" }).click();
+    await page.getByRole("button", { name: "Board", exact: true }).click();
     return value;
   };
 

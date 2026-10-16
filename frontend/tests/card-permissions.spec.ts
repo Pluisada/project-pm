@@ -7,7 +7,7 @@
  * testids.
  */
 import { expect, type Locator, type Page, test } from "@playwright/test";
-import { dragCardToColumn, loginAsAdmin, loginAsMember } from "./helpers";
+import { dragCardToColumn, loginAsAdmin, loginAsMember, openCardEditor } from "./helpers";
 
 const columns = (page: Page) => page.locator('[data-testid^="column-"]');
 
@@ -58,26 +58,46 @@ test.describe("Member card permissions", () => {
     const newTitle = `Edited title ${Date.now()}`;
     await addCard(columns(page).first(), originalTitle);
 
-    const card = cardWithTitle(page, originalTitle);
-    const titleInput = card.getByLabel("Card title");
-    await titleInput.fill(newTitle);
-    await titleInput.press("Enter");
+    const dialog = await openCardEditor(page, originalTitle);
+    await dialog.getByLabel("Opportunity name").fill(newTitle);
+    await dialog.getByRole("button", { name: "Save lead" }).click();
+    await expect(dialog).toBeHidden();
 
     const editedCard = cardWithTitle(page, newTitle);
     const historyButton = editedCard.getByRole("button", { name: /view edit history/i });
     await expect(historyButton).toBeVisible();
 
     await historyButton.click();
-    const dialog = page.getByRole("dialog");
-    await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole("heading", { name: newTitle })).toBeVisible();
+    const historyDialog = page.getByRole("dialog");
+    await expect(historyDialog).toBeVisible();
+    await expect(historyDialog.getByRole("heading", { name: newTitle })).toBeVisible();
     // The before -> after diff line contains both the old and new title.
-    await expect(dialog.locator("dd")).toContainText(originalTitle);
-    await expect(dialog.locator("dd")).toContainText(newTitle);
+    await expect(historyDialog.locator("dd")).toContainText(originalTitle);
+    await expect(historyDialog.locator("dd")).toContainText(newTitle);
 
-    await dialog.getByRole("button", { name: /close/i }).click();
+    await historyDialog.getByRole("button", { name: /close/i }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
   });
+});
+
+test("a member sees no Edit action on a card that is not assigned to them", async ({ browser, page, request }) => {
+  const title = `Unassigned card ${Date.now()}`;
+  // An admin-created card is unassigned, so only admins may edit it.
+  const adminPage = await browser.newPage();
+  await loginAsAdmin(adminPage, request);
+  await adminPage.goto("/");
+  await addCard(columns(adminPage).first(), title);
+  await expect(cardWithTitle(adminPage, title)).toBeVisible();
+  await adminPage.close();
+
+  await loginAsMember(page, request);
+  await page.goto("/");
+  await page.getByRole("button", { name: `Open details for ${title}` }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("heading", { name: title })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Edit", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
 });
 
 test.describe("Admin card permissions", () => {
@@ -101,10 +121,10 @@ test.describe("Admin card permissions", () => {
     const newTitle = `Admin edited ${Date.now()}`;
     await addCard(columns(page).first(), originalTitle);
 
-    const card = cardWithTitle(page, originalTitle);
-    const titleInput = card.getByLabel("Card title");
-    await titleInput.fill(newTitle);
-    await titleInput.press("Enter");
+    const dialog = await openCardEditor(page, originalTitle);
+    await dialog.getByLabel("Opportunity name").fill(newTitle);
+    await dialog.getByRole("button", { name: "Save lead" }).click();
+    await expect(dialog).toBeHidden();
 
     const editedCard = cardWithTitle(page, newTitle);
     await expect(editedCard).toBeVisible();

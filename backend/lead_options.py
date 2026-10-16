@@ -23,7 +23,12 @@ PIPELINE_STAGES = [
     ("Lost", STAGE_LOST),
 ]
 
-CURRENCIES = ["EUR", "USD", "CNY", "INR", "BRL", "VND"]
+# Every opportunity Deal Value (current and next year) is in US dollars: this
+# app tracks bids, not the official forecast, so there is one currency and no
+# conversion. Legacy currency codes in cards.currency are ignored on read and
+# amounts are read as USD unchanged. Bid revenue has its own revenue_currency.
+DEAL_CURRENCY = "USD"
+CURRENCIES = [DEAL_CURRENCY]
 LEAD_SOURCES = ["Website", "Referral", "Trade show", "Cold outreach", "Existing customer", "Other"]
 PRODUCT_LINES = ["Chargers", "Power supplies"]
 

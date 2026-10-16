@@ -1,19 +1,33 @@
 """API routes for boards, columns, and cards."""
 import json
+import logging
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 
-from auth import hash_password
-from card_rules import InvalidCardUpdate, apply_card_updates, can_move_card
+from auth import APP_BASE_URL, SIGNUP_TOKEN_EXPIRE_HOURS, UNUSABLE_PASSWORD_HASH
+from card_rules import (
+    CardPermissionDenied,
+    InvalidCardUpdate,
+    apply_card_updates,
+    audit_deletion,
+    audit_new_card_owner,
+    move_denial,
+    new_card_fields,
+)
 from database import get_db
 from deps import get_current_user, require_admin
 from lead_options import CURRENCIES, LEAD_SOURCES, PRODUCT_LINES, STAGE_OPEN
 from models import Board, Column, Card, User, UserRole, ConversationMessage, UndoEntry
+import ai_limits
 import kpis
+import token_store
+from mailer import send_in_background
+from rate_limit import limit_ai_chat
 from reports import build_board_report
 from undo import (
     UndoError,
@@ -26,6 +40,7 @@ from undo import (
     undo_update,
 )
 from schemas import (
+    AIChatRequest,
     BoardCreate,
     BoardUpdate,
     BoardResponse,
@@ -98,13 +113,8 @@ async def create_board(
     return db_board
 
 
-@router.get("/boards/{board_id}", response_model=BoardDetail)
-async def get_board(
-    board_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Get board with all columns and cards."""
+def load_board_detail(db: Session, board_id: int) -> BoardDetail:
+    """Board with all columns and cards (read-only; shared by the legacy and company routes)."""
     board = db.query(Board).filter(Board.id == board_id).first()
 
     if not board:
@@ -118,12 +128,17 @@ async def get_board(
 
     # One query for every card on the board (not one per column), grouped
     # below. has_member_edits and salesperson_name read edit_history and
-    # salesperson - eager-load them so serializing doesn't cost a query per card.
+    # salesperson (and the read-only bid_details / source_ref) - eager-load them so serializing doesn't cost a query per card.
     cards_by_column = defaultdict(list)
     for card in (
         db.query(Card)
         .join(Column)
-        .options(selectinload(Card.edit_history), selectinload(Card.salesperson))
+        .options(
+            selectinload(Card.edit_history),
+            selectinload(Card.salesperson),
+            selectinload(Card.bid_details),
+            selectinload(Card.source_ref),
+        )
         .filter(Column.board_id == board_id)
         .order_by(Card.column_id, Card.position)
         .all()
@@ -139,6 +154,16 @@ async def get_board(
         **board.__dict__,
         columns=columns_data,
     )
+
+
+@router.get("/boards/{board_id}", response_model=BoardDetail)
+async def get_board(
+    board_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get board with all columns and cards."""
+    return load_board_detail(db, board_id)
 
 
 @router.put("/boards/{board_id}", response_model=BoardResponse)
@@ -358,9 +383,11 @@ async def create_card(
         title=card.title,
         details=card.details,
         position=card.position,
+        **new_card_fields(current_user, {}),
     )
     db.add(db_card)
     db.flush()
+    audit_new_card_owner(db, board_id, db_card, current_user)
     record_undo(db, current_user, board_id, f'Remove new card "{db_card.title}"', [undo_create(db_card)])
     db.commit()
     db.refresh(db_card)
@@ -405,6 +432,8 @@ async def update_card(
     undo_description = f'Undo edit to "{card.title}"'
     try:
         apply_card_updates(db, card, updates, current_user)
+    except CardPermissionDenied as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     except InvalidCardUpdate as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     record_undo(db, current_user, board_id, undo_description, [undo_step])
@@ -456,14 +485,11 @@ async def move_card(
             detail="Card not found",
         )
 
-    # Members may only advance cards (move to a column further right, or
-    # reorder within the same column) - never move them back to an earlier
-    # column. Admins are unrestricted.
-    if not can_move_card(current_user, card.column.position, target_column.position):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Members can only move cards forward, not back to an earlier column",
-        )
+    # Members move only their own cards, and only forward (or within a
+    # column). Admins are unrestricted.
+    denial = move_denial(current_user, card, target_column.position)
+    if denial:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=denial)
 
     if (card.column_id, card.position) != (move.column_id, move.position):
         record_undo(
@@ -511,6 +537,7 @@ async def delete_card(
         )
 
     record_undo(db, current_user, board_id, f'Restore deleted card "{card.title}"', [undo_delete(card)])
+    audit_deletion(db, board_id, card, current_user)
     db.delete(card)
     db.commit()
 
@@ -607,8 +634,9 @@ async def test_ai(current_user: User = Depends(require_admin)):
 @router.post("/boards/{board_id}/ai")
 async def board_ai_chat(
     board_id: int,
-    request: dict,
+    request: AIChatRequest,
     current_user: User = Depends(get_current_user),
+    _: None = Depends(limit_ai_chat),
     db: Session = Depends(get_db),
 ):
     """AI chat endpoint for board management."""
@@ -621,11 +649,16 @@ async def board_ai_chat(
             detail="Board not found",
         )
 
-    user_message = request.get("message", "")
-    if not user_message:
+    user_message = request.message
+    if not user_message.strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Message required",
+        )
+    if len(user_message) > ai_limits.max_message_chars():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Message too long (maximum {ai_limits.max_message_chars()} characters)",
         )
 
     try:
@@ -685,9 +718,11 @@ async def board_ai_chat(
         raise
     except Exception as e:
         db.rollback()
+        # str(e) can quote SQL, parameters or paths; log only the type.
+        logging.getLogger(__name__).error("AI chat failed (%s)", type(e).__name__)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
+            detail="The AI request failed",
         )
 
 
@@ -836,7 +871,7 @@ async def get_kpi_pipeline(
 ):
     """Current cards per stage and per currency."""
     history = _kpi_history(db, board_id)
-    return {"as_of": history.as_of, "stages": kpis.pipeline(history)}
+    return {"as_of": history.as_of, "stages": kpis.pipeline(history), "deal_years": kpis.pipeline_deal_years(history)}
 
 
 # ============================================================================
@@ -856,22 +891,39 @@ async def list_users(
 @router.post("/users", response_model=UserResponse, status_code=201)
 async def create_user(
     payload: UserCreate,
+    background: BackgroundTasks,
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Create a new user with the "member" role. Admin-only."""
-    if db.query(User).filter(User.username == payload.username).first():
+    """Invite a new user with the "member" role by email. Admin-only.
+
+    The account is created unverified and without a usable password, so it
+    cannot log in. The invitee follows a single-use emailed link, which proves
+    control of the mailbox, verifies the email and sets the first password
+    (the password-reset flow). The link is never returned or logged."""
+    email = payload.email.lower()
+    if db.query(User).filter(or_(User.username == email, User.email == email)).first():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Username already exists",
+            detail="User already exists",
         )
 
     user = User(
-        username=payload.username,
-        password_hash=hash_password(payload.password),
+        username=email,
+        email=email,
+        password_hash=UNUSABLE_PASSWORD_HASH,
         role=UserRole.MEMBER.value,
     )
     db.add(user)
+    db.flush()
+    raw = token_store.issue(db, token_store.PURPOSE_RESET, timedelta(hours=SIGNUP_TOKEN_EXPIRE_HOURS), user_id=user.id)
     db.commit()
     db.refresh(user)
+    send_in_background(
+        background,
+        email,
+        "You have been invited to PM",
+        f"An administrator created an account for you. Open this link to verify your email and choose a password:"
+        f"\n\n{APP_BASE_URL}/?reset_token={raw}\n\nThe link expires in {SIGNUP_TOKEN_EXPIRE_HOURS} hours and works once.",
+    )
     return user

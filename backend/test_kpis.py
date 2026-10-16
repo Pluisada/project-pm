@@ -16,6 +16,7 @@ from auth import create_user_access_token, hash_password
 from database import get_db
 from main import app
 from models import Base, Board, Card, CardStageEvent, Column, User
+from auth_test_utils import VERIFIED
 
 SEPT = kpis.Period(datetime(2026, 9, 1), datetime(2026, 10, 1), "custom")
 AS_OF = datetime(2026, 10, 15, 12, 0)
@@ -53,10 +54,11 @@ class Board_:
         db.commit()
         self._next_event = 1
 
-    def card(self, card_id, column, value=None, currency=None):
+    def card(self, card_id, column, value=None, currency=None, next_year=0, deal_year=2026):
         self.db.execute(Card.__table__.insert().values(
             id=card_id, column_id=self.cols[column].id, title=f"card {card_id}", position=0,
             deal_value=value, currency=currency, created_at=AS_OF, updated_at=AS_OF,
+            deal_value_next_year=next_year, deal_year=deal_year,
         ))
         self.db.commit()
 
@@ -99,7 +101,7 @@ class TestWonLost:
         b.event(1, "won", D(12), to="Award", frm="Lead")
         result = kpis.won_lost(b.history(), SEPT)
         assert (result["won"]["events"], result["won"]["opportunities"], result["won"]["card_ids"]) == (1, 1, [1])
-        assert result["won"]["values"] == {"EUR": {"total": 100.0, "count": 1}}
+        assert result["won"]["values"] == {"USD": {"total": 100.0, "count": 1}}   # the EUR code is ignored
         assert result["won"]["still_in_outcome"] == 1
         assert result["lost"]["events"] == 0
 
@@ -154,7 +156,7 @@ class TestWonLost:
         assert (result["won"]["events"], result["won"]["opportunities"]) == (2, 1)
         assert (result["lost"]["events"], result["lost"]["opportunities"]) == (1, 1)
         assert result["reopened"]["events"] == 2
-        assert result["won"]["values"] == {"EUR": {"total": 30.0, "count": 1}}  # counted once
+        assert result["won"]["values"] == {"USD": {"total": 30.0, "count": 1}}  # counted once
         assert kpis.win_rate_closed(h, SEPT) == {"value": 1.0, "numerator": 1, "denominator": 1,
                                                   "unavailable_reason": None}
         cohort = kpis.cohort(h, SEPT)
@@ -358,18 +360,19 @@ class TestPeriodsAndOrdering:
 
 
 # ---------------------------------------------------------------------------
-# 15, 16: currencies
+# 15, 16: one currency (USD)
 # ---------------------------------------------------------------------------
 
 
 class TestCurrencies:
-    def test_totals_per_currency_without_conversion(self, b):
+    def test_legacy_currency_codes_are_summed_as_usd_without_conversion(self, b):
         for card_id, value, currency in [(1, 0.1, "EUR"), (2, 0.2, "EUR"), (3, 1000, "USD"), (4, None, None)]:
             b.card(card_id, "Award", value, currency)
             b.event(card_id, "created", D(1), to="Lead")
             b.event(card_id, "won", D(2), to="Award", frm="Lead")
         won = kpis.won_lost(b.history(), SEPT)["won"]
-        assert won["values"] == {"EUR": {"total": 0.3, "count": 2}, "USD": {"total": 1000.0, "count": 1}}
+        # One currency: legacy EUR and USD codes are all read as USD, summed unconverted.
+        assert won["values"] == {"USD": {"total": 1000.3, "count": 3}}
         assert won["without_value"] == 1
 
     def test_pipeline_distribution(self, b):
@@ -378,7 +381,69 @@ class TestCurrencies:
         b.card(3, "Lead")
         lead = next(s for s in kpis.pipeline(b.history()) if s["title"] == "Lead")
         assert (lead["count"], lead["values"], lead["without_value"]) == (
-            3, {"BRL": {"total": 7.0, "count": 1}, "EUR": {"total": 5.0, "count": 1}}, 1)
+            3, {"USD": {"total": 12.0, "count": 2}}, 1)
+
+
+class TestAnnualDealValue:
+    """Current-year (deal_value), next-year and two-year total, per currency."""
+
+    def test_pipeline_has_the_three_measures_in_usd(self, b):
+        b.card(1, "Lead", 100, "BRL", next_year=50)
+        b.card(2, "Lead", 10, "EUR", next_year=0)
+        b.card(3, "Lead", None, "EUR", next_year=7)      # no current-year value, only next year
+        b.card(4, "Lead")                                # nothing at all
+        b.card(5, "Lead", 99, None, next_year=1)         # no currency code: still USD
+        h = b.history()
+        lead = next(s for s in kpis.pipeline(h) if s["title"] == "Lead")
+        assert lead["count"] == 5
+        # Existing current-year measure: unavailable (NULL) is skipped, not counted as 0.
+        assert lead["values"] == {"USD": {"total": 209.0, "count": 3}}
+        assert lead["next_year_values"] == {"USD": {"total": 58.0, "count": 4}}
+        assert lead["total_values"] == {"USD": {"total": 267.0, "count": 4}}
+        assert kpis.pipeline_deal_years(h) == [2026]
+
+    def test_deal_years_lists_every_stored_year_in_scope(self, b):
+        b.card(1, "Lead", 1, "EUR", deal_year=2026)
+        b.card(2, "Lead", 1, "EUR", deal_year=2027)
+        b.card(3, "Lead", None, "EUR", deal_year=2030)   # no amount: its year doesn't count
+        assert kpis.pipeline_deal_years(b.history()) == [2026, 2027]
+
+    def test_closing_values_stay_historical_and_current_comparison_gains_the_annual_split(self, b):
+        b.card(1, "Award", 100, "EUR")
+        b.event(1, "created", D(2), to="Lead")
+        b.event(1, "won", D(12), to="Award", frm="Lead")      # snapshot: deal_value 100 only
+        b.db.execute(Card.__table__.update().where(Card.id == 1).values(deal_value_next_year=40))
+        b.db.commit()
+        won = kpis.won_lost(b.history(), SEPT)["won"]
+        assert won["values"] == {"USD": {"total": 100.0, "count": 1}}            # snapshot, untouched
+        assert won["current_values"] == {"USD": {"total": 100.0, "count": 1}}
+        assert won["current_next_year_values"] == {"USD": {"total": 40.0, "count": 1}}
+        assert won["current_total_values"] == {"USD": {"total": 140.0, "count": 1}}
+
+    def test_event_without_snapshot_stays_unavailable_not_current_value(self, b):
+        b.card(1, "Award", 100, "EUR", next_year=5)
+        b.event(1, "created", D(2), to="Lead", snapshot=False)
+        b.event(1, "won", D(12), to="Award", frm="Lead", snapshot=False)
+        won = kpis.won_lost(b.history(), SEPT)["won"]
+        assert (won["values"], won["value_unavailable"]) == ({}, 1)
+
+    def test_aging_rows_carry_the_annual_amounts(self, b):
+        b.card(1, "Lead", 100, "EUR", next_year=25, deal_year=2026)
+        b.card(2, "Lead")
+        rows = {r["card_id"]: r for r in kpis.aging(b.history())}
+        assert (rows[1]["deal_value"], rows[1]["deal_value_next_year"], rows[1]["deal_value_total"], rows[1]["deal_year"]) == (
+            100, 25, 125, 2026)
+        assert (rows[2]["deal_value"], rows[2]["deal_value_total"]) == (None, None)
+
+    def test_pipeline_api_exposes_the_new_fields(self, api, b):
+        client, headers = api
+        b.card(1, "Lead", 100, "BRL", next_year=50)
+        body = client.get(f"/api/boards/{b.id}/kpis/pipeline", headers=headers).json()
+        lead = next(s for s in body["stages"] if s["title"] == "Lead")
+        assert lead["total_values"]["USD"]["total"] == 150.0
+        assert lead["next_year_values"]["USD"]["total"] == 50.0
+        assert set(lead["total_values"]) == {"USD"}
+        assert body["deal_years"] == [2026]
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +454,7 @@ class TestCurrencies:
 @pytest.fixture
 def api(db, b, monkeypatch):
     monkeypatch.setattr(kpis, "utcnow", lambda: AS_OF)
-    rep = User(username="rep", password_hash=hash_password("password123"), role="member")
+    rep = User(email_verified_at=VERIFIED, username="rep", password_hash=hash_password("Password123!"), role="member")
     db.add(rep)
     db.commit()
 

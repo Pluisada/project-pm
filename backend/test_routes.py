@@ -9,6 +9,7 @@ from auth import create_user_access_token, hash_password
 from main import app
 from database import get_db
 from models import Base, User, UserRole, Board, Column, Card
+from auth_test_utils import VERIFIED
 
 
 @pytest.fixture(scope="function")
@@ -25,7 +26,7 @@ def test_db():
 
     # Create test user (a plain member; individual tests promote a second
     # user to admin via the admin_headers fixture where they need one)
-    user = User(
+    user = User(email_verified_at=VERIFIED,
         username="test_user",
         password_hash=hash_password("test_password"),
         full_name="Test User",
@@ -57,9 +58,9 @@ def client(test_db):
 @pytest.fixture
 def admin_headers(test_db):
     """Promote a second user to admin and return auth headers for them."""
-    admin = User(
+    admin = User(email_verified_at=VERIFIED,
         username="admin_user",
-        password_hash=hash_password("adminpass123"),
+        password_hash=hash_password("Adminpass123!"),
         role=UserRole.ADMIN.value,
     )
     test_db.add(admin)
@@ -244,7 +245,7 @@ class TestCardRoutes:
         test_db.add(col)
         test_db.commit()
 
-        card = Card(column_id=col.id, title="Old Title", details="Old", position=0)
+        card = Card(column_id=col.id, title="Old Title", details="Old", position=0, salesperson_id=1)
         test_db.add(card)
         test_db.commit()
 
@@ -267,7 +268,8 @@ class TestCardRoutes:
         test_db.add(col2)
         test_db.commit()
 
-        card = Card(column_id=col1.id, title="Task", details="", position=0)
+        card = Card(column_id=col1.id, title="Task", details="", position=0,
+                    salesperson_id=test_db.query(User).filter_by(username="test_user").one().id)
         test_db.add(card)
         test_db.commit()
 
@@ -326,7 +328,8 @@ class TestCardPermissions:
     def test_member_can_move_card_forward(self, client, test_db, board_with_columns):
         """Moving to a column further right is allowed for members."""
         board, columns = board_with_columns
-        card = Card(column_id=columns[0].id, title="Task", details="", position=0)
+        card = Card(column_id=columns[0].id, title="Task", details="", position=0,
+                    salesperson_id=test_db.query(User).filter_by(username="test_user").one().id)
         test_db.add(card)
         test_db.commit()
 
@@ -338,7 +341,8 @@ class TestCardPermissions:
     def test_member_can_reorder_within_same_column(self, client, test_db, board_with_columns):
         """Moving within the same column (no left/right change) is allowed."""
         board, columns = board_with_columns
-        card = Card(column_id=columns[1].id, title="Task", details="", position=0)
+        card = Card(column_id=columns[1].id, title="Task", details="", position=0,
+                    salesperson_id=test_db.query(User).filter_by(username="test_user").one().id)
         test_db.add(card)
         test_db.commit()
 
@@ -349,7 +353,8 @@ class TestCardPermissions:
     def test_member_cannot_move_card_backward(self, client, test_db, board_with_columns):
         """Moving to a column further left is rejected for members."""
         board, columns = board_with_columns
-        card = Card(column_id=columns[2].id, title="Task", details="", position=0)
+        card = Card(column_id=columns[2].id, title="Task", details="", position=0,
+                    salesperson_id=test_db.query(User).filter_by(username="test_user").one().id)
         test_db.add(card)
         test_db.commit()
 
@@ -358,6 +363,25 @@ class TestCardPermissions:
         assert response.status_code == 403
         test_db.refresh(card)
         assert card.column_id == columns[2].id
+
+    def test_member_cannot_move_unassigned_or_foreign_card(self, client, test_db, board_with_columns):
+        """Members move only cards assigned to them; unassigned cards are admin-only."""
+        board, columns = board_with_columns
+        other = User(username="someone_else", password_hash="x", role=UserRole.MEMBER.value, email_verified_at=VERIFIED)
+        test_db.add(other)
+        test_db.flush()
+        unassigned = Card(column_id=columns[0].id, title="Free", details="", position=0)
+        foreign = Card(column_id=columns[0].id, title="Theirs", details="", position=1, salesperson_id=other.id)
+        test_db.add_all([unassigned, foreign])
+        test_db.commit()
+
+        for card in (unassigned, foreign):
+            response = client.put(
+                f"/api/boards/{board.id}/cards/{card.id}/position", json={"column_id": columns[2].id, "position": 0}
+            )
+            assert response.status_code == 403
+            test_db.refresh(card)
+            assert card.column_id == columns[0].id
 
     def test_admin_can_move_card_backward(self, client, test_db, board_with_columns, admin_headers):
         """Admins are not restricted to moving forward."""
@@ -387,7 +411,7 @@ class TestCardEditHistory:
         test_db.add(col)
         test_db.commit()
 
-        card = Card(column_id=col.id, title="Original Title", details="Original details", position=0)
+        card = Card(column_id=col.id, title="Original Title", details="Original details", position=0, salesperson_id=1)
         test_db.add(card)
         test_db.commit()
         return board, card
@@ -459,7 +483,7 @@ class TestSharedBoardAccess:
         test_db.add(board)
         test_db.commit()
 
-        other = User(
+        other = User(email_verified_at=VERIFIED,
             username="other_user",
             password_hash=hash_password("other_password"),
             role=UserRole.MEMBER.value,
@@ -497,7 +521,7 @@ class TestUserManagementRoutes:
     def test_non_admin_cannot_create_user(self, client):
         """A member cannot create new users."""
         response = client.post(
-            "/api/users", json={"username": "new_member", "password": "password123"}
+            "/api/users", json={"email": "new_member@example.com"}
         )
         assert response.status_code == 403
 
@@ -508,49 +532,3 @@ class TestUserManagementRoutes:
         usernames = {u["username"] for u in response.json()}
         assert "test_user" in usernames
         assert "admin_user" in usernames
-
-    def test_admin_can_create_member_user(self, client, admin_headers):
-        """An admin creates a new user, who is always a member."""
-        response = client.post(
-            "/api/users",
-            json={"username": "new_member", "password": "password123"},
-            headers=admin_headers,
-        )
-        assert response.status_code == 201
-        data = response.json()
-        assert data["username"] == "new_member"
-        assert data["role"] == "member"
-        assert "password" not in data
-        assert "password_hash" not in data
-
-    def test_admin_cannot_create_duplicate_username(self, client, admin_headers):
-        """Creating a user with a taken username is rejected."""
-        response = client.post(
-            "/api/users",
-            json={"username": "test_user", "password": "password123"},
-            headers=admin_headers,
-        )
-        assert response.status_code == 409
-
-    def test_new_member_can_login_and_see_shared_board(self, test_db, client, admin_headers):
-        """A member created by the admin can log in and use the shared board."""
-        test_db.add(Board(user_id=1, title="Shared Board"))
-        test_db.commit()
-
-        client.post(
-            "/api/users",
-            json={"username": "new_member", "password": "password123"},
-            headers=admin_headers,
-        )
-
-        login_response = client.post(
-            "/api/login", json={"username": "new_member", "password": "password123"}
-        )
-        assert login_response.status_code == 200
-        token = login_response.json()["access_token"]
-
-        boards_response = client.get(
-            "/api/boards", headers={"Authorization": f"Bearer {token}"}
-        )
-        assert boards_response.status_code == 200
-        assert len(boards_response.json()) == 1

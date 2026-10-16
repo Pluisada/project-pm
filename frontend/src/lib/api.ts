@@ -2,11 +2,22 @@
  * Frontend API client for communicating with backend
  */
 
-import { API_BASE_URL, extractErrorDetail, getAuthHeader } from "./auth";
+import { API_BASE_URL, SESSION_EXPIRED_EVENT, clearAuth, extractErrorDetail, getAuthHeader } from "./auth";
 
 export interface ApiError {
   detail: string;
   status_code?: number;
+  /** Machine code and extra fields of a structured error body (`detail: { code, message, ... }`). */
+  code?: string;
+  data?: Record<string, unknown>;
+}
+
+/** The structured part of an error body, if the server sent one. */
+function structuredError(errorData: unknown): Pick<ApiError, "code" | "data"> {
+  const detail = (errorData as { detail?: unknown } | null)?.detail;
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) return {};
+  const data = detail as Record<string, unknown>;
+  return { code: typeof data.code === "string" ? data.code : undefined, data };
 }
 
 /**
@@ -29,8 +40,11 @@ async function apiCall<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`;
+  // A FormData body needs the browser to set its own multipart boundary.
+  const contentType: Record<string, string> =
+    options.body instanceof FormData ? {} : { "Content-Type": "application/json" };
   const headers = {
-    "Content-Type": "application/json",
+    ...contentType,
     ...getAuthHeader(),
     ...options.headers,
   };
@@ -42,10 +56,17 @@ async function apiCall<T>(
     });
 
     if (!response.ok) {
+      // Only a request that carried a token can mean "session expired"; without
+      // one the 401 is just the caller's answer, and no event means no loop.
+      if (response.status === 401 && "Authorization" in headers) {
+        clearAuth();
+        window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+      }
       const errorData = await response.json().catch(() => ({}));
       throw {
         status_code: response.status,
         detail: extractErrorDetail(errorData, `HTTP ${response.status}`),
+        ...structuredError(errorData),
       } as ApiError;
     }
 
@@ -105,6 +126,35 @@ export interface LeadFields {
   salesperson_id: number | null;
 }
 
+/** Read-only Bid report fields of an imported card. Revenue is integer cents of revenue_currency. */
+export interface BidDetails {
+  plant: string | null;
+  customer_type: string | null;
+  business_type: string | null;
+  product_category: string | null;
+  product: string | null;
+  solution_type: string | null;
+  confidence: number | null;
+  volume_current_year: number | null;
+  volume_next_year: number | null;
+  production_start_date: string | null; // YYYY-MM-DD
+  revenue_current_year_cents: number | null;
+  revenue_next_year_cents: number | null;
+  revenue_currency: string;
+  status_note: string | null;
+  project_lead: string | null; // source name, not a user
+  cpm: string | null; // source name, not a user
+  next_step: string | null;
+  next_step_due: string | null; // YYYY-MM-DD
+  close_reason: string | null;
+  close_reason_note: string | null;
+}
+
+export interface SourceRef {
+  source_code: string;
+  source_confidence: string | null;
+}
+
 export interface CardResponse extends LeadFields {
   id: number;
   column_id: number;
@@ -112,13 +162,25 @@ export interface CardResponse extends LeadFields {
   details?: string;
   position: number;
   has_member_edits: boolean;
+  // deal_value is the amount for deal_year; this is deal_year + 1, same currency.
+  deal_value_next_year?: number;
+  deal_year?: number;
   salesperson_name: string | null;
+  bid_details?: BidDetails | null;
+  source_ref?: SourceRef | null;
   created_at: string;
   updated_at: string;
 }
 
 /** Partial card update: omitted fields are unchanged, null clears a lead field. */
-export type CardUpdatePayload = Partial<LeadFields> & { title?: string; details?: string };
+export type CardUpdatePayload = Partial<LeadFields> & {
+  title?: string;
+  details?: string;
+  deal_value_next_year?: number;
+  // Next Action Date and its Action (the Action is at most 100 characters).
+  next_step_due?: string | null; // YYYY-MM-DD
+  next_step?: string | null;
+};
 
 export interface CardEditHistoryEntry {
   id: number;
@@ -295,21 +357,40 @@ export type CurrencyTotals = Record<string, number>;
 export interface ReportGroup {
   key: string;
   open_count: number;
+  /** *_totals: current-year amounts (deal_value); *_next_totals: next year; *_sum_totals: both. */
   open_totals: CurrencyTotals;
+  open_next_totals?: CurrencyTotals;
+  open_sum_totals?: CurrencyTotals;
   won_count: number;
   won_totals: CurrencyTotals;
+  won_next_totals?: CurrencyTotals;
+  won_sum_totals?: CurrencyTotals;
 }
 
 export interface BoardReport {
   kpis: {
     open_count: number;
     open_totals: CurrencyTotals;
+    open_next_totals?: CurrencyTotals;
+    open_sum_totals?: CurrencyTotals;
     won_count: number;
     won_totals: CurrencyTotals;
+    won_next_totals?: CurrencyTotals;
+    won_sum_totals?: CurrencyTotals;
     lost_count: number;
     win_rate: number | null;
   };
-  stages: { column_id: number; title: string; stage_kind: StageKind; count: number; totals: CurrencyTotals }[];
+  stages: {
+    column_id: number;
+    title: string;
+    stage_kind: StageKind;
+    count: number;
+    totals: CurrencyTotals;
+    next_totals?: CurrencyTotals;
+    sum_totals?: CurrencyTotals;
+  }[];
+  /** Years the amounts were entered for (the cards' stored deal_year); several = totals span years. */
+  deal_years?: number[];
   by_salesperson: ReportGroup[];
   by_product_line: ReportGroup[];
   by_source: ReportGroup[];
@@ -320,6 +401,9 @@ export interface BoardReport {
     stage: string;
     salesperson_name: string | null;
     deal_value: number | null;
+    deal_value_next_year?: number;
+    deal_value_total?: number | null;
+    deal_year?: number | null;
     currency: string | null;
     expected_close_date: string;
     overdue: boolean;
@@ -401,6 +485,9 @@ export interface OutcomeFlow {
   /** The same cards at their value today - comparison only, not history. */
   current_values: MoneyTotals;
   current_without_value: number;
+  /** The same cards' next-year amount and two-year total today (comparison only). */
+  current_next_year_values?: MoneyTotals;
+  current_total_values?: MoneyTotals;
   still_in_outcome: number;
 }
 
@@ -482,6 +569,9 @@ export interface KpiAgingRow {
   age_days: number | null;
   history: "observed" | "since_tracking_start" | "none";
   deal_value: number | null;
+  deal_value_next_year?: number;
+  deal_value_total?: number | null;
+  deal_year?: number | null;
   currency: string | null;
 }
 
@@ -493,7 +583,14 @@ export interface KpiAging {
 
 export interface KpiPipeline {
   as_of: string;
-  stages: (StageRef & { count: number; values: MoneyTotals; without_value: number })[];
+  stages: (StageRef & {
+    count: number;
+    values: MoneyTotals;
+    without_value: number;
+    next_year_values?: MoneyTotals;
+    total_values?: MoneyTotals;
+  })[];
+  deal_years?: number[];
 }
 
 function kpiQuery(query: KpiPeriodQuery, extra: Record<string, string> = {}): string {
@@ -563,12 +660,289 @@ export async function listUsers(): Promise<UserResponse[]> {
   return apiCall<UserResponse[]>("/api/users");
 }
 
-export async function createUser(
-  username: string,
-  password: string
-): Promise<UserResponse> {
+export async function createUser(email: string): Promise<UserResponse> {
   return apiCall<UserResponse>("/api/users", {
     method: "POST",
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ email }),
+  });
+}
+
+// ============================================================================
+// BID IMPORT API (admin-only, Part 22E)
+// ============================================================================
+
+export type ImportAction = "create" | "update" | "ignore" | "review";
+export type DecisionNeeded =
+  | "fix_source_row"
+  | "confirm_stage"
+  | "choose_stage"
+  | "resolve_duplicate"
+  | "confirm_update"
+  | "confirm_move";
+
+/** One explicit choice for one Excel row; the backend resolves everything else. */
+export interface ImportDecision {
+  row_number: number;
+  target_stage?: string;
+  confirm_proposed_stage?: boolean;
+  skip?: boolean;
+  confirm_update?: boolean;
+  confirm_move?: boolean;
+}
+
+export interface ImportIssue {
+  severity: string;
+  code: string;
+  message: string;
+  row: number | null;
+  column: string | null;
+  field: string | null;
+}
+
+export interface ImportStageRef {
+  column_id: number;
+  title: string;
+  stage_kind: StageKind;
+}
+
+export interface ImportFieldChange {
+  field: string;
+  current: unknown;
+  incoming: unknown;
+}
+
+export interface ImportPreviewRow {
+  row_number: number;
+  code: string | null;
+  customer: string | null;
+  project_name: string | null;
+  source_status: string | null;
+  source_stage: string | null;
+  action: ImportAction;
+  classification: {
+    status: string;
+    target: ImportStageRef | null;
+    proposed: ImportStageRef | null;
+  };
+  target_stage: string | null;
+  reasons: ImportIssue[];
+  errors: ImportIssue[];
+  warnings: ImportIssue[];
+  required_decisions: DecisionNeeded[];
+  duplicate_rows: number[];
+  existing_card_id: number | null;
+  changed_fields: ImportFieldChange[];
+  stage_change: { from: string; to: string } | null;
+  move_confirmed: boolean;
+}
+
+export interface ImportPreviewSummary {
+  total_rows: number;
+  valid_rows: number;
+  rows_with_errors: number;
+  rows_with_warnings: number;
+  proposed_creates: number;
+  proposed_updates: number;
+  unconfirmed_updates: number;
+  unchanged: number;
+  internal_duplicate_rows: number;
+  pending_review: number;
+  ignored: number;
+  by_target_stage: Record<string, number>;
+  by_classification: Record<string, number>;
+  by_action: Record<string, number>;
+  /** Cents, per currency. */
+  revenue_cents_by_currency: Record<string, { current_year: number; next_year: number }>;
+}
+
+export interface ImportPreview {
+  file: { filename: string; size_bytes: number; sha256: string };
+  sheet: { name: string; missing_optional_columns: string[]; ignored_columns: string[] } | null;
+  file_warnings: ImportIssue[];
+  summary: ImportPreviewSummary;
+  rows: ImportPreviewRow[];
+  notice: string | null;
+  confirmable: boolean;
+  preview_token: string | null;
+  expires_in_minutes: number;
+}
+
+export interface ImportBatchRevert {
+  has_ledger: boolean;
+  /** Structural only: completed, has a ledger, not yet reverted. Conflicts come from the revert preview. */
+  revertible: boolean;
+  reason: string | null;
+  reverted: boolean;
+  reverted_at: string | null;
+  reverted_by_user_id: number | null;
+  reverted_by_username: string | null;
+  outcome: "reverted" | "no_commercial_changes" | null;
+  no_commercial_changes: boolean | null;
+  cards_deleted: number | null;
+  cards_restored: number | null;
+  moves_reverted: number | null;
+  already_deleted: number | null;
+  summary: Record<string, unknown> | null;
+}
+
+export interface ImportBatch {
+  id: number;
+  board_id: number;
+  username: string | null;
+  filename: string;
+  file_sha256: string;
+  status: string;
+  failure_kind: string | null;
+  failure_reason: string | null;
+  created_count: number;
+  updated_count: number;
+  skipped_count: number;
+  review_count: number;
+  created_at: string;
+  completed_at: string | null;
+  revert: ImportBatchRevert | null;
+}
+
+export interface ImportBatchDetail extends ImportBatch {
+  mapping: Record<string, unknown> | null;
+  card_changes_count: number;
+}
+
+export interface ImportBatchList {
+  items: ImportBatch[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ImportResult {
+  batch: ImportBatch | null;
+  no_op?: boolean;
+  created_card_ids: number[];
+  updated_card_ids: number[];
+  moved_card_ids: number[];
+  skipped: number;
+  review: number;
+}
+
+function importForm(file: File, decisions: ImportDecision[]): FormData {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("decisions", JSON.stringify(decisions));
+  return form;
+}
+
+export async function previewBidImport(
+  boardId: number,
+  file: File,
+  decisions: ImportDecision[]
+): Promise<ImportPreview> {
+  return apiCall<ImportPreview>(`/api/boards/${boardId}/imports/preview`, {
+    method: "POST",
+    body: importForm(file, decisions),
+  });
+}
+
+/** The same file and decisions that produced `previewToken`. */
+export async function confirmBidImport(
+  boardId: number,
+  file: File,
+  decisions: ImportDecision[],
+  previewToken: string
+): Promise<ImportResult> {
+  const form = importForm(file, decisions);
+  form.append("preview_token", previewToken);
+  form.append("confirm", "true");
+  return apiCall<ImportResult>(`/api/boards/${boardId}/imports`, { method: "POST", body: form });
+}
+
+export async function listBidImports(boardId: number, limit = 50, offset = 0): Promise<ImportBatchList> {
+  return apiCall<ImportBatchList>(`/api/boards/${boardId}/imports?limit=${limit}&offset=${offset}`);
+}
+
+export async function getBidImport(batchId: number): Promise<ImportBatchDetail> {
+  return apiCall<ImportBatchDetail>(`/api/imports/${batchId}`);
+}
+
+// Revert (Part 23). Values in blockers are commercial data: show them only in the admin UI, never log them.
+
+export interface RevertBlocker {
+  code: string;
+  card_id: number | null;
+  field: string | null;
+  imported: string | number | boolean | null;
+  current: string | number | boolean | null;
+  batch_ids: number[];
+}
+
+export interface RevertOperation {
+  kind: "delete_card" | "restore_fields" | "move_card" | "delete_bid_details";
+  card_id: number;
+  fields: string[] | null;
+  from_column_id: number | null;
+  to_column_id: number | null;
+}
+
+export interface RevertItem {
+  item_id: number;
+  card_id: number;
+  source_key: string;
+  action: "created" | "updated" | "observed";
+  observation: string | null;
+  classification: string;
+  operations: RevertOperation[];
+  blockers: RevertBlocker[];
+}
+
+export interface RevertCounts {
+  items: number;
+  cards_to_delete: number;
+  cards_to_restore: number;
+  moves_to_revert: number;
+  bid_details_to_delete: number;
+  already_deleted: number;
+  already_reverted: number;
+  observed: number;
+  blocked: number;
+}
+
+export interface RevertPlan {
+  batch_id: number;
+  status: "ready" | "blocked" | "not_revertible" | "already_reverted";
+  reason: string | null;
+  /** status == ready: the confirmation would be accepted now. */
+  revertible: boolean;
+  no_commercial_changes: boolean;
+  ledger_version: number | null;
+  plan_fingerprint: string;
+  counts: RevertCounts;
+  blockers: RevertBlocker[];
+  dependent_batches: { batch_id: number; card_ids: number[] }[];
+  items: RevertItem[];
+}
+
+export interface RevertResult {
+  batch: ImportBatch;
+  outcome: "reverted" | "no_commercial_changes";
+  no_commercial_changes: boolean;
+  counts: {
+    cards_deleted: number;
+    cards_restored: number;
+    moves_reverted: number;
+    already_deleted: number;
+    bid_details_deleted: number;
+    already_reverted: number;
+    observed: number;
+  };
+}
+
+export async function getRevertPreview(batchId: number): Promise<RevertPlan> {
+  return apiCall<RevertPlan>(`/api/imports/${batchId}/revert-preview`);
+}
+
+export async function revertBidImport(batchId: number, planFingerprint: string): Promise<RevertResult> {
+  return apiCall<RevertResult>(`/api/imports/${batchId}/revert`, {
+    method: "POST",
+    body: JSON.stringify({ plan_fingerprint: planFingerprint }),
   });
 }

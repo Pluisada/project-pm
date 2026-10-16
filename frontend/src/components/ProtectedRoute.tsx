@@ -7,6 +7,7 @@ import {
   getSetupStatus,
   logout,
   resetPassword,
+  SESSION_EXPIRED_EVENT,
   UserRole,
 } from "@/lib/auth";
 import { listBoards } from "@/lib/api";
@@ -20,6 +21,8 @@ import { ManageUsersPage } from "@/components/ManageUsersPage";
 import { LoadingScreen } from "@/components/LoadingScreen";
 import { ReportsPage } from "@/components/ReportsPage";
 import { DashboardPage } from "@/components/DashboardPage";
+import { BidImportPage } from "@/components/BidImportPage";
+import { AppNav, type AppView } from "@/components/AppNav";
 
 export const ProtectedRoute = () => {
   const [username, setUsername] = useState<string | null>(null);
@@ -27,7 +30,7 @@ export const ProtectedRoute = () => {
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedBoardId, setSelectedBoardId] = useState<number | null>(null);
-  const [view, setView] = useState<"board" | "manage-users" | "reports" | "dashboard">("board");
+  const [view, setView] = useState<AppView>("board");
   const [authView, setAuthView] = useState<
     "login" | "signup" | "complete-signup" | "forgot-password" | "reset-password"
   >("login");
@@ -84,20 +87,27 @@ export const ProtectedRoute = () => {
         }
       } catch (err) {
         console.error("Failed to load boards", err);
-        // A stored token that expired (or was issued for another DB) 401s here;
-        // drop it and fall back to login instead of spinning forever.
-        if ((err as { status_code?: number }).status_code === 401) {
-          await logout();
-          const status = await getSetupStatus();
-          setNeedsSetup(status.needs_setup);
-          setUsername(null);
-          setRole(null);
-        }
       }
     };
 
     loadBoards();
   }, [username]);
+
+  // apiCall clears the stored session on a 401 and fires this event; drop the
+  // in-memory session too so the login screen shows (no redirect, so no loop).
+  useEffect(() => {
+    const onExpired = () => {
+      setUsername(null);
+      setRole(null);
+      setSelectedBoardId(null);
+      setView("board");
+      setNeedsSetup(false);
+      setAuthView("login");
+      setLoginNotice("Your session expired. Sign in again.");
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+  }, []);
 
   const handleAuthSuccess = (loggedInUsername: string, loggedInRole: UserRole) => {
     setUsername(loggedInUsername);
@@ -184,51 +194,24 @@ export const ProtectedRoute = () => {
 
   return (
     <div className="flex h-screen flex-col">
-      {/* Header with user info and logout */}
-      <div className="flex items-center justify-end gap-4 border-b border-[var(--stroke)] bg-white p-4">
-        <span className="text-sm text-[var(--gray-text)]">
-          Welcome, <span className="font-semibold text-[var(--navy-dark)]">{username}</span>
-        </span>
-        {view === "board" && (
-          <button
-            onClick={() => setView("dashboard")}
-            className="rounded-lg border border-[var(--stroke)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--navy-dark)] transition hover:border-[var(--primary-blue)]"
-          >
-            Dashboard
-          </button>
-        )}
-        {view === "board" && (
-          <button
-            onClick={() => setView("reports")}
-            className="rounded-lg border border-[var(--stroke)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--navy-dark)] transition hover:border-[var(--primary-blue)]"
-          >
-            Reports
-          </button>
-        )}
-        {role === "admin" && view === "board" && (
-          <button
-            onClick={() => setView("manage-users")}
-            className="rounded-lg border border-[var(--stroke)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--navy-dark)] transition hover:border-[var(--primary-blue)]"
-          >
-            Manage Users
-          </button>
-        )}
-        <button
-          onClick={handleLogout}
-          className="rounded-lg bg-[var(--accent-yellow)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--navy-dark)] transition hover:opacity-80"
-        >
-          Logout
-        </button>
-      </div>
+      <AppNav
+        view={view}
+        role={role}
+        username={username}
+        onNavigate={setView}
+        onLogout={handleLogout}
+      />
 
       {/* Kanban board with AI sidebar, or the admin's user management screen */}
       <div className="min-h-0 flex-1 overflow-auto">
         {view === "manage-users" ? (
-          <ManageUsersPage onBack={() => setView("board")} />
+          <ManageUsersPage />
         ) : view === "reports" ? (
-          <ReportsPage boardId={selectedBoardId} onBack={() => setView("board")} />
+          <ReportsPage boardId={selectedBoardId} />
+        ) : view === "import" && role === "admin" ? (
+          <BidImportPage boardId={selectedBoardId} />
         ) : view === "dashboard" ? (
-          <DashboardPage boardId={selectedBoardId} onBack={() => setView("board")} />
+          <DashboardPage boardId={selectedBoardId} />
         ) : (
           <KanbanWithSidebar boardId={selectedBoardId} role={role ?? "member"} />
         )}

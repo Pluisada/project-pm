@@ -4,7 +4,13 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { API_BASE_URL, E2E_ADMIN_PASSWORD, E2E_ADMIN_USERNAME } from "./helpers";
+import {
+  API_BASE_URL,
+  E2E_ADMIN_PASSWORD,
+  E2E_ADMIN_USERNAME,
+  E2E_MEMBER_USERNAME,
+  loginAsMember,
+} from "./helpers";
 
 
 test.describe("Setup flow", () => {
@@ -29,6 +35,7 @@ test.describe("Setup flow", () => {
     test.skip(!needs_setup, "Admin was already set up by an earlier test run");
 
     await page.goto("/");
+    await page.getByLabel("Setup key").fill(process.env.PM_E2E_SETUP_TOKEN ?? "");
     await page.getByLabel("Username").fill(E2E_ADMIN_USERNAME);
     await page.getByLabel("Password", { exact: true }).fill(E2E_ADMIN_PASSWORD);
     await page.getByLabel("Confirm Password").fill(E2E_ADMIN_PASSWORD);
@@ -44,6 +51,7 @@ test.describe("Login flow", () => {
   test.beforeAll(async ({ request }) => {
     // Make sure the e2e admin exists before the rest of this block runs.
     const setupResponse = await request.post(`${API_BASE_URL}/api/setup`, {
+      headers: { "X-Setup-Token": process.env.PM_E2E_SETUP_TOKEN ?? "" },
       data: { username: E2E_ADMIN_USERNAME, password: E2E_ADMIN_PASSWORD },
     });
     if (!setupResponse.ok()) {
@@ -151,6 +159,7 @@ test.describe("Login flow", () => {
 test.describe("Admin user management", () => {
   test.beforeEach(async ({ page, request }) => {
     const setupResponse = await request.post(`${API_BASE_URL}/api/setup`, {
+      headers: { "X-Setup-Token": process.env.PM_E2E_SETUP_TOKEN ?? "" },
       data: { username: E2E_ADMIN_USERNAME, password: E2E_ADMIN_PASSWORD },
     });
     if (!setupResponse.ok()) {
@@ -173,44 +182,46 @@ test.describe("Admin user management", () => {
     await expect(page.getByRole("button", { name: /manage users/i })).toBeVisible();
   });
 
-  test("admin can create a member user who can then log in", async ({ page }) => {
-    const memberUsername = `member_${Date.now()}`;
-    const memberPassword = "member_password123";
+  test("admin invites a member by email, who cannot log in until the email is verified", async ({ page }) => {
+    const inviteeEmail = `invitee_${Date.now()}@example.com`;
 
     await page.getByRole("button", { name: /manage users/i }).click();
     await expect(page.getByRole("heading", { name: "Manage Users" })).toBeVisible();
 
-    await page.getByLabel("Username", { exact: true }).fill(memberUsername);
-    await page.getByLabel("Password", { exact: true }).fill(memberPassword);
-    await page.getByRole("button", { name: /add user/i }).click();
+    await page.getByLabel("Email").fill(inviteeEmail);
+    await page.getByRole("button", { name: /invite user/i }).click();
 
-    const memberRow = page.getByRole("row", { name: new RegExp(memberUsername) });
+    const memberRow = page.getByRole("row", { name: new RegExp(inviteeEmail) });
     await expect(memberRow).toBeVisible();
-    await expect(
-      memberRow.getByRole("cell", { name: "member", exact: true })
-    ).toBeVisible();
+    await expect(memberRow.getByRole("cell", { name: "member", exact: true })).toBeVisible();
 
-    await page.getByRole("button", { name: /back to board/i }).click();
+    // The invitee has no usable password and no verified email: no guess logs in.
     await page.getByRole("button", { name: /logout/i }).click();
-
-    await page.getByLabel("Username").fill(memberUsername);
-    await page.getByLabel("Password").fill(memberPassword);
+    await page.getByLabel("Username").fill(inviteeEmail);
+    await page.getByLabel("Password").fill("Member_password123!");
     await page.getByRole("button", { name: /sign in/i }).click();
-
-    await expect(page.getByText(/welcome/i)).toBeVisible();
-    await expect(page.getByText(memberUsername)).toBeVisible();
-    // Members don't get the admin-only user management action.
-    await expect(page.getByRole("button", { name: /manage users/i })).toHaveCount(0);
+    await expect(page.getByText("Invalid username or password")).toBeVisible();
   });
 
-  test("creating a duplicate username shows an error", async ({ page }) => {
+  test("inviting the same email twice shows an error", async ({ page }) => {
+    const inviteeEmail = `duplicate_${Date.now()}@example.com`;
+
     await page.getByRole("button", { name: /manage users/i }).click();
     await expect(page.getByRole("heading", { name: "Manage Users" })).toBeVisible();
 
-    await page.getByLabel("Username", { exact: true }).fill(E2E_ADMIN_USERNAME);
-    await page.getByLabel("Password", { exact: true }).fill("whatever12345");
-    await page.getByRole("button", { name: /add user/i }).click();
+    await page.getByLabel("Email").fill(inviteeEmail);
+    await page.getByRole("button", { name: /invite user/i }).click();
+    await expect(page.getByRole("row", { name: new RegExp(inviteeEmail) })).toBeVisible();
 
+    await page.getByLabel("Email").fill(inviteeEmail);
+    await page.getByRole("button", { name: /invite user/i }).click();
     await expect(page.getByText(/already exists/i)).toBeVisible();
+  });
+
+  test("the provisioned e2e member logs in and has no admin actions", async ({ page, request }) => {
+    await loginAsMember(page, request);
+    await page.goto("/");
+    await expect(page.getByText(/welcome/i)).toContainText(E2E_MEMBER_USERNAME);
+    await expect(page.getByRole("button", { name: /manage users/i })).toHaveCount(0);
   });
 });

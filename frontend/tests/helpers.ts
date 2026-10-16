@@ -1,6 +1,8 @@
 /**
  * Shared e2e test helpers for bootstrapping an authenticated session.
  */
+import { execFileSync } from "node:child_process";
+import path from "node:path";
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 
 // Set by playwright.config.ts for the isolated E2E backend. No fallback: a
@@ -11,9 +13,9 @@ if (!configuredApiUrl) {
 }
 export const API_BASE_URL = configuredApiUrl;
 export const E2E_ADMIN_USERNAME = "e2e_admin";
-export const E2E_ADMIN_PASSWORD = "e2e_admin_password123";
+export const E2E_ADMIN_PASSWORD = "E2e_admin_password123!";
 export const E2E_MEMBER_USERNAME = "e2e_member";
-export const E2E_MEMBER_PASSWORD = "e2e_member_password123";
+export const E2E_MEMBER_PASSWORD = "E2e_member_password123!";
 
 /**
  * Ensure the e2e admin account exists (running first-run setup if this is a
@@ -21,6 +23,7 @@ export const E2E_MEMBER_PASSWORD = "e2e_member_password123";
  */
 async function getAdminToken(request: APIRequestContext): Promise<string> {
   const setupResponse = await request.post(`${API_BASE_URL}/api/setup`, {
+    headers: { "X-Setup-Token": process.env.PM_E2E_SETUP_TOKEN ?? "" },
     data: { username: E2E_ADMIN_USERNAME, password: E2E_ADMIN_PASSWORD },
   });
   if (setupResponse.ok()) {
@@ -56,16 +59,59 @@ export async function loginAsAdmin(page: Page, request: APIRequestContext): Prom
 }
 
 /**
- * Ensure the e2e member account exists (created via the admin API, ignoring
- * a 409 if a previous run already created it) and return a valid access
- * token for it.
+ * Run the operator CLI (backend/admin_cli.py) against the isolated E2E
+ * database. The CLI is the supported provisioning path: it takes the password
+ * on stdin, applies the password policy, creates the account email-verified
+ * and only accepts the reserved e2e_* usernames when PM_E2E=1. That mode makes
+ * the backend refuse any database outside the system temp directory, so this
+ * cannot reach pm.db or a commercial database. There is no HTTP bypass.
+ */
+function runAdminCli(args: string[], stdin?: string): { status: number; output: string } {
+  const dbPath = process.env.PM_E2E_DB_PATH;
+  const secretKey = process.env.PM_E2E_SECRET_KEY;
+  if (!dbPath || !secretKey) {
+    throw new Error("PM_E2E_DB_PATH / PM_E2E_SECRET_KEY are not set - run E2E tests through playwright.config.ts");
+  }
+  try {
+    const output = execFileSync("uv", ["run", "python", "admin_cli.py", ...args], {
+      cwd: path.resolve(__dirname, "../../backend"),
+      input: stdin,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, PM_E2E: "1", DATABASE_URL: `sqlite:///${dbPath}`, SECRET_KEY: secretKey },
+    });
+    return { status: 0, output };
+  } catch (err) {
+    const e = err as { status?: number; stdout?: string; stderr?: string };
+    return { status: e.status ?? 1, output: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+  }
+}
+
+let memberProvisioned = false;
+
+/**
+ * Ensure the e2e member account exists (verified, role member) and return a
+ * valid access token for it. The admin API only invites by email, so the
+ * account is created through the operator CLI instead (see runAdminCli): the
+ * CLI only creates admins, hence create-then-demote.
  */
 async function getMemberToken(request: APIRequestContext): Promise<string> {
-  const adminToken = await getAdminToken(request);
-  await request.post(`${API_BASE_URL}/api/users`, {
-    headers: { Authorization: `Bearer ${adminToken}` },
-    data: { username: E2E_MEMBER_USERNAME, password: E2E_MEMBER_PASSWORD },
-  });
+  await getAdminToken(request); // the database must be set up (an admin exists) first
+  if (!memberProvisioned) {
+    const created = runAdminCli(
+      ["create", "--username", E2E_MEMBER_USERNAME, "--password-stdin"],
+      `${E2E_MEMBER_PASSWORD}\n`
+    );
+    if (created.status === 0) {
+      const demoted = runAdminCli(["demote", "--username", E2E_MEMBER_USERNAME, "--yes"]);
+      if (demoted.status !== 0) {
+        throw new Error(`Could not demote the e2e member: ${demoted.output.trim()}`);
+      }
+    } else if (!/already exists/.test(created.output)) {
+      throw new Error(`Could not provision the e2e member: ${created.output.trim()}`);
+    }
+    memberProvisioned = true;
+  }
 
   const loginResponse = await request.post(`${API_BASE_URL}/api/login`, {
     data: { username: E2E_MEMBER_USERNAME, password: E2E_MEMBER_PASSWORD },
@@ -145,4 +191,13 @@ export async function dragCardToColumn(page: Page, card: Locator, targetColumn: 
   );
   await page.mouse.up();
   await waitForDropAnimation(page);
+}
+
+/** Open a card's details view, then its edit form (the only way to edit a card). */
+export async function openCardEditor(page: Page, title: string): Promise<Locator> {
+  await page.getByRole("button", { name: `Open details for ${title}` }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Edit", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: `Edit lead ${title}` });
+  await dialog.waitFor();
+  return dialog;
 }

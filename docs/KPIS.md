@@ -31,11 +31,11 @@ Every KPI here is computed by `backend/kpis.py` from `card_stage_events` (Part 1
 - **Stock:** the pipeline as it is at `as_of`, such as the stage distribution and aging. Stock numbers have no period and no comparison.
 
 **Money.**
-- Totals are always per currency: `{currency: {total, count}}`. They are summed as decimals and rounded to 2 places.
-- There is no conversion, and no total, average or comparison ever mixes currencies.
+- Deal Value is always US dollars (`lead_options.DEAL_CURRENCY`): the app tracks bids, not the official forecast, so there is no currency choice and no conversion. Money keeps the `{currency: {total, count}}` shape for API compatibility, but its only key is `"USD"`. Amounts are summed as decimals and rounded to 2 places. Legacy codes still stored in `cards.currency` (or in a snapshot's `deal_currency_snapshot`) are ignored on read, never used to group, and the numbers are read as USD unchanged. Bid revenue is a separate concept with its own `revenue_currency` and is not part of these totals.
+- **Annual Deal Value.** A card has `deal_value` (the amount for its `deal_year`), `deal_value_next_year` (for `deal_year + 1`), both in USD. Where the app totals live cards (the Reports page, `GET /boards/{id}/report`, the Dashboard's pipeline by stage, aging and "value today" comparison) it gives three measures: the current-year amount (the existing `*_totals` / `values` fields, unchanged), the next-year amount (`*_next_totals` / `next_year_values` / `current_next_year_values`) and their two-year total (`*_sum_totals` / `total_values` / `current_total_values`). A card whose `deal_value` was never entered is skipped by the current-year measure (unavailable, not 0) but counts its next-year amount in the next-year and total measures; a card with no amount for either year counts in none (a missing currency no longer excludes it: it is USD). Responses carry `deal_years`, the distinct `deal_year` of the cards included, which the UI uses for labels; more than one year means the year measures mix years and the page says so. Counts and rates are never affected. The snapshots below predate the split: they hold `deal_value` alone and are never recomputed, so closing values stay a single amount.
 - **Historical (closing) value versus current value (Part 20).** Every stage event records the card's `deal_value` and `currency` at that moment: `deal_value_snapshot`, `deal_currency_snapshot` and `value_snapshot_taken` = true. These are written in the same transaction as the stage change.
 - Won and lost money uses those snapshots, never the card's current value. Each value falls into exactly one bucket:
-  - **`values`**: the snapshot had a value and a currency;
+  - **`values`**: the snapshot had a value (counted as USD; its stored currency code is ignored);
   - **`without_value`**: the snapshot was taken, but the card had no value then;
   - **`value_unavailable`**: the event predates snapshots, so its value is unknown and **not** replaced by today's value.
 - The same cards' **current** values are reported separately as `current_values` / `current_without_value` (deleted cards have none), for comparison only.
@@ -45,7 +45,7 @@ Every KPI here is computed by `backend/kpis.py` from `card_stage_events` (Part 1
 
 ## 2. Baseline events
 
-A `baseline` (written once by `migrate_stage_events.py`) means only this: "when tracking started, the card was already in this stage".
+A `baseline` (written once by `migrate_stage_events.py`, or by the Salcomp Bid import for each card it creates) means only this: "when tracking started, the card was already in this stage".
 
 - It is **never** a move, a win or a loss. It never counts in won/lost, conversion or velocity.
 - It is not the date the card entered the stage. Time spent in that stage before tracking is unknown and never estimated.
@@ -81,7 +81,7 @@ Each stay is one of three kinds:
 | `won.events` | Number of `won` events in the period, every transition counted (won, reopened, won again = 2) |
 | `won.opportunities` | Number of distinct cards with at least one `won` event in the period (the sequence above = 1) |
 | `won.card_ids` | Those cards, sorted |
-| `won.values` | Per-currency totals of the **closing value**: the snapshot on each distinct card's **last** `won` event in the period, each card counted once. Example: won at 100, reopened, repriced to 140, won again gives 140 once |
+| `won.values` | USD total of the **closing value**: the snapshot on each distinct card's **last** `won` event in the period, each card counted once. Example: won at 100, reopened, repriced to 140, won again gives 140 once |
 | `won.without_value` / `won.value_unavailable` | Distinct cards whose last `won` event recorded no value / has no snapshot (unknown) |
 | `won.current_values` / `won.current_without_value` | The same cards at their value today, separate from the history |
 | `won.still_won` | How many of those distinct cards are in a `won` stage at `as_of` |

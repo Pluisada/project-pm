@@ -4,8 +4,17 @@ from typing import Optional
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from card_rules import InvalidCardUpdate, apply_card_updates, can_move_card, is_admin
-from lead_options import CURRENCIES, LEAD_SOURCES, PRODUCT_LINES
+from card_rules import (
+    CardPermissionDenied,
+    InvalidCardUpdate,
+    apply_card_updates,
+    audit_deletion,
+    audit_new_card_owner,
+    move_denial,
+    is_admin,
+    new_card_fields,
+)
+from lead_options import DEAL_CURRENCY, LEAD_SOURCES, PRODUCT_LINES
 from models import ConversationMessage, Card, BoardColumn as Column, User
 from schemas import BoardDetail, CardUpdate
 from stage_history import SOURCE_AI, set_stage_context
@@ -35,7 +44,7 @@ You MUST respond with valid JSON in this exact format:
   "response": "Your helpful message to the user",
   "actions": [
     {{"type": "create", "column_id": 1, "title": "Card title", "details": "Card details", "company": "Acme"}},
-    {{"type": "update", "card_id": 1, "title": "New title", "deal_value": 50000, "currency": "EUR"}},
+    {{"type": "update", "card_id": 1, "title": "New title", "deal_value": 50000}},
     {{"type": "move", "card_id": 1, "column_id": 2, "position": 0}},
     {{"type": "delete", "card_id": 1}}
   ],
@@ -44,8 +53,9 @@ You MUST respond with valid JSON in this exact format:
 
 Lead fields (all optional, on create and update; send null to clear one):
 - company, contact: text
-- deal_value: number >= 0, with currency one of: {", ".join(CURRENCIES)}
-- expected_close_date: "YYYY-MM-DD"
+- deal_value (current year) and deal_value_next_year (the following year): numbers >= 0, always in USD; never send another currency
+- expected_close_date: "YYYY-MM-DD" (when the sale is expected to close)
+- next_step_due: "YYYY-MM-DD" (Next Action Date); next_step: the Action, a short text of at most 100 characters
 - lead_source: one of: {", ".join(LEAD_SOURCES)}
 - product_line: one of: {", ".join(PRODUCT_LINES)}
 - salesperson_id: a user id from the "salespeople" list in the board state
@@ -88,7 +98,7 @@ async def get_board_context(db: Session, board_id: int) -> dict:
                         "company": c.company,
                         "contact": c.contact,
                         "deal_value": c.deal_value,
-                        "currency": c.currency,
+                        "currency": DEAL_CURRENCY,
                         "expected_close_date": (
                             c.expected_close_date.isoformat() if c.expected_close_date else None
                         ),
@@ -251,9 +261,14 @@ async def apply_board_actions(
                     # Set directly rather than via apply_card_updates: filling
                     # in a brand-new card isn't an edit to log in its history
                     # (same as the REST create route).
-                    card = Card(column_id=column_id, position=action.get("position", 0), **fields)
+                    card = Card(
+                        column_id=column_id,
+                        position=action.get("position", 0),
+                        **new_card_fields(current_user, fields),
+                    )
                     db.add(card)
                     db.flush()
+                    audit_new_card_owner(db, board_id, card, current_user)
                     undo_steps.append(undo_create(card))
                     results["successful"].append(
                         {"type": "create", "card_id": card.id}
@@ -273,7 +288,7 @@ async def apply_board_actions(
                         undo_step = undo_update(card, fields)
                         apply_card_updates(db, card, fields, current_user)
                         undo_steps.append(undo_step)
-                    except ValueError as e:
+                    except (ValueError, CardPermissionDenied) as e:
                         results["failed"].append({"action": action, "reason": str(e)})
                         continue
                     results["successful"].append({"type": "update", "card_id": card_id})
@@ -291,10 +306,9 @@ async def apply_board_actions(
                         )
                         continue
 
-                    if not can_move_card(current_user, card.column.position, column.position):
-                        results["failed"].append(
-                            {"action": action, "reason": "Members can only move cards forward, not back to an earlier column"}
-                        )
+                    denial = move_denial(current_user, card, column.position)
+                    if denial:
+                        results["failed"].append({"action": action, "reason": denial})
                         continue
 
                     undo_steps.append(undo_move(card, column.id))
@@ -318,6 +332,7 @@ async def apply_board_actions(
                         continue
 
                     undo_steps.append(undo_delete(card))
+                    audit_deletion(db, board_id, card, current_user)
                     db.delete(card)
                     results["successful"].append({"type": "delete", "card_id": card_id})
 

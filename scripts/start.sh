@@ -22,8 +22,19 @@ echo "✓ Docker is running"
 
 # Ensure the DB file exists before docker-compose bind-mounts it, otherwise
 # Docker creates a directory at that path instead of a file and SQLite fails.
-if [ ! -f pm.db ]; then
+# Only for the default development mount; a PM_DB_HOST_PATH deployment
+# (docs/DEPLOYMENT.md) mounts a directory that must already exist.
+if [ -z "${PM_DB_HOST_PATH:-}" ] && [ ! -f pm.db ]; then
   touch pm.db
+fi
+
+# Commercial database: fail here, before building, if the mounted directory is wrong.
+# (The app itself checks the file and its schema when it starts.)
+if [ -n "${PM_DB_HOST_PATH:-}" ]; then
+  if [ ! -d "$PM_DB_HOST_PATH" ]; then
+    echo "✗ PM_DB_HOST_PATH=$PM_DB_HOST_PATH is not an existing directory. See docs/DEPLOYMENT.md."
+    exit 1
+  fi
 fi
 
 # Build the Docker image

@@ -12,7 +12,7 @@ test("sends a reset link from the sign-in screen", async ({ page }) => {
     identifier = route.request().postDataJSON().identifier;
     await route.fulfill({
       status: 200,
-      json: { message: "Reset link sent", email: "member@example.com" },
+      json: { message: "If an account exists for that address, a reset link was sent" },
     });
   });
 
@@ -22,25 +22,9 @@ test("sends a reset link from the sign-in screen", async ({ page }) => {
   await page.getByLabel("Username or email").fill("member@example.com");
   await page.getByLabel("Username or email").press("Enter");
 
-  await expect(page.getByText("Reset link sent to")).toBeVisible();
-  await expect(page.getByText("member@example.com")).toBeVisible();
+  await expect(page.getByText("If an account exists for that username or email")).toBeVisible();
+  await expect(page.getByText("member@example.com")).toHaveCount(0);
   expect(identifier).toBe("member@example.com");
-});
-
-test("says when no account matches", async ({ page }) => {
-  await page.route("**/api/password/forgot", (route) =>
-    route.fulfill({
-      status: 404,
-      json: { detail: "No account found for that username or email" },
-    })
-  );
-
-  await page.goto("/");
-  await page.getByRole("button", { name: "Forgot my password?" }).click();
-  await page.getByLabel("Username or email").fill("nobody@example.com");
-  await page.getByRole("button", { name: "Send Reset Link" }).click();
-
-  await expect(page.getByText("No account found for that username or email")).toBeVisible();
 });
 
 test("sets a new password from the reset link and lands on sign-in", async ({ page }) => {

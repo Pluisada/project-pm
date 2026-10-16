@@ -1,7 +1,9 @@
 """Authentication module for PM backend."""
 import base64
+import functools
 import hashlib
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -26,7 +28,7 @@ class InsecureSecretKeyError(RuntimeError):
 def load_secret_key() -> str:
     """Read SECRET_KEY from the environment, refusing missing or unsafe values.
 
-    Every JWT (access tokens, signup and reset links) is signed with it, so a
+    Every access token is signed with it, so a
     guessable key lets anyone forge a login as any user. There is deliberately
     no fallback. The value itself is never included in the error.
     """
@@ -49,9 +51,14 @@ def load_secret_key() -> str:
 # uses auth can start with an unsafe key.
 SECRET_KEY = load_secret_key()
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 hours
+ACCESS_TOKEN_EXPIRE_MINUTES = 480  # 8 hours: the maximum session length
 SIGNUP_TOKEN_EXPIRE_HOURS = 24
 RESET_TOKEN_EXPIRE_MINUTES = 60
+# password_hash of an account with no usable password: not a bcrypt hash, so
+# verify_password always fails. Such an account can only be entered via a reset link.
+UNUSABLE_PASSWORD_HASH = "!"
+# Created by the Playwright suite with a password that is public in the repository.
+E2E_ONLY_USERNAMES = frozenset({"e2e_admin", "e2e_member"})
 # Where links in outgoing emails point: the Next dev server locally, the
 # FastAPI-served static export in Docker.
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:3000")
@@ -105,6 +112,26 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
+@functools.lru_cache(maxsize=1)
+def _dummy_password_hash() -> str:
+    # A real bcrypt hash at the production cost, built once on first use.
+    return hash_password(secrets.token_urlsafe(16))
+
+
+def verify_login_password(password: str, password_hash: Optional[str]) -> bool:
+    """Password check for login that costs one bcrypt verification in every case.
+
+    An unknown account (`password_hash` None) or one with no usable password
+    (UNUSABLE_PASSWORD_HASH) is checked against a dummy hash, so response time
+    does not reveal which usernames exist or which accounts are not activated.
+    The dummy can never match: its password is discarded.
+    """
+    if not password_hash or password_hash == UNUSABLE_PASSWORD_HASH:
+        verify_password(password, _dummy_password_hash())
+        return False
+    return verify_password(password, password_hash)
+
+
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Create JWT access token."""
     to_encode = data.copy()
@@ -125,8 +152,7 @@ def decode_access_token(token: str) -> Optional[dict]:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     except JWTError:
         return None
-    # Purpose-scoped tokens (e.g. signup links) share SECRET_KEY and a
-    # `sub`, so they must never be accepted as access tokens.
+    # Anything carrying a `purpose` claim is not an access token.
     if "purpose" in payload or payload.get("sub") is None:
         return None
     return payload
@@ -139,7 +165,9 @@ def verify_token(token: str) -> Optional[str]:
 
 
 def create_purpose_token(sub: str, purpose: str, expires: timedelta, **claims) -> str:
-    """Create a signed, expiring token for a single purpose (e.g. an email link).
+    """Create a signed, expiring token for a single non-session purpose (e.g. the
+    Bid import preview token). Signup and reset links are NOT these: they are
+    persistent, hashed and single-use (token_store.py).
 
     The `purpose` claim is what keeps these out of `verify_token`, so they can
     never be used as access tokens.
@@ -159,30 +187,20 @@ def decode_purpose_token(token: str, purpose: str) -> Optional[dict]:
     return payload
 
 
-def create_signup_token(email: str) -> str:
-    """Create the token embedded in a signup email link."""
-    return create_purpose_token(email, "signup", timedelta(hours=SIGNUP_TOKEN_EXPIRE_HOURS))
-
-
-def verify_signup_token(token: str) -> Optional[str]:
-    """Return the email a signup token was issued for, or None if invalid/expired."""
-    payload = decode_purpose_token(token, "signup")
-    return payload["sub"] if payload else None
-
-
 def create_user_access_token(user, expires_delta: Optional[timedelta] = None) -> str:
-    """Access token for `user`, bound to their current password via `pwh`."""
+    """Access token for `user`, bound to their current password (`pwh`) and
+    session version (`sv`). Either changing ends the session."""
     return create_access_token(
-        {"sub": user.username, "pwh": password_fingerprint(user.password_hash)},
+        {
+            "sub": user.username,
+            "pwh": password_fingerprint(user.password_hash),
+            "sv": user.session_version,
+        },
         expires_delta,
     )
 
 
 def password_fingerprint(password_hash: str) -> str:
-    """Short digest of the current password hash, embedded in reset tokens.
-
-    Resetting the password changes the hash, which invalidates every reset
-    link issued before it - that's what makes them single-use without
-    storing anything.
-    """
+    """Short digest of the current password hash, embedded in access tokens (`pwh`),
+    so changing the password ends every earlier session."""
     return hashlib.sha256(password_hash.encode()).hexdigest()[:16]

@@ -16,9 +16,11 @@ Event types (stage kinds come from the columns, never from titles):
 - lost      into the lost stage from any other stage
 - reopened  from won or lost back into an open stage
 - deleted   card deleted (to_* empty); the history is kept
-- baseline  written only by migrate_stage_events.py: the stage each existing
-            card was in when history tracking started - a reference point,
-            not an observed move
+- baseline  a reference point, not an observed move: the stage each existing
+            card was in when history tracking started (migrate_stage_events.py),
+            or the stage a card was imported into (a Card inserted while the
+            session's source is SOURCE_IMPORT gets "baseline" instead of
+            "created" - the import is not the opportunity's commercial creation)
 A reorder within the same column, or an edit of lead fields, is not a stage
 change and records nothing.
 
@@ -26,6 +28,7 @@ Every event also records the card's deal value and currency at that moment
 (deal_value_snapshot / deal_currency_snapshot, value_snapshot_taken = true),
 so historical KPIs never depend on the card's current value.
 """
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from sqlalchemy import event, func, inspect, select
@@ -39,6 +42,8 @@ SOURCE_AI = "ai"            # actions applied from the AI chat
 SOURCE_UNDO = "undo"        # a user's undo
 SOURCE_SEED = "seed"        # sample leads created with a new board
 SOURCE_MIGRATION = "migration"
+SOURCE_IMPORT = "import"    # cards created/updated by the Salcomp Bid import (bid_import_service.py)
+SOURCE_IMPORT_REVERT = "import_revert"  # compensating events of a reverted Bid import (bid_import_revert.py)
 SOURCE_SYSTEM = "system"    # anything else (scripts, tests) - no context set
 
 _CONTEXT_KEY = "stage_history_context"
@@ -52,6 +57,21 @@ def utcnow() -> datetime:
 def set_stage_context(db: Session, user=None, source: str = SOURCE_SYSTEM) -> None:
     """Attribute the stage events of this session's next flushes."""
     db.info[_CONTEXT_KEY] = {"user_id": user.id if user is not None else None, "source": source}
+
+
+@contextmanager
+def stage_context(db: Session, user=None, source: str = SOURCE_SYSTEM):
+    """set_stage_context for a block, restoring the session's previous context
+    afterwards (a request session keeps its own attribution)."""
+    previous = db.info.get(_CONTEXT_KEY)
+    set_stage_context(db, user, source)
+    try:
+        yield
+    finally:
+        if previous is None:
+            db.info.pop(_CONTEXT_KEY, None)
+        else:
+            db.info[_CONTEXT_KEY] = previous
 
 
 def transition_type(from_kind: str, to_kind: str) -> str:
@@ -111,9 +131,11 @@ def _allocate_card_ids(session: Session, flush_context, instances) -> None:
 def _record_stage_events(session: Session, flush_context) -> None:
     # (card, event_type, from_column_id, to_column_id)
     changes = []
+    context = session.info.get(_CONTEXT_KEY, {})
+    inserted = "baseline" if context.get("source") == SOURCE_IMPORT else "created"
     for obj in session.new:
         if isinstance(obj, Card):
-            changes.append((obj, "created", None, obj.column_id))
+            changes.append((obj, inserted, None, obj.column_id))
     for obj in session.dirty:
         if isinstance(obj, Card) and obj not in session.deleted:
             history = inspect(obj).attrs.column_id.history
@@ -129,7 +151,6 @@ def _record_stage_events(session: Session, flush_context) -> None:
         return
 
     columns = _column_info(session, {c for _, _, f, t in changes for c in (f, t) if c is not None})
-    context = session.info.get(_CONTEXT_KEY, {})
     now = utcnow()
     rows = []
     for card, event_type, from_column, to_column in changes:

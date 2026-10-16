@@ -4,7 +4,7 @@
  * coverage, and period filters.
  */
 import { expect, test, type Page } from "@playwright/test";
-import { dragCardToColumn, loginAsAdmin } from "./helpers";
+import { dragCardToColumn, loginAsAdmin, openCardEditor } from "./helpers";
 
 const columns = (page: Page) => page.locator('[data-testid^="column-"]');
 
@@ -20,10 +20,8 @@ async function wonCount(page: Page): Promise<number> {
 }
 
 async function setLeadValue(page: Page, title: string, value: string) {
-  await page.getByRole("button", { name: `Edit lead ${title}` }).click();
-  const dialog = page.getByRole("dialog", { name: `Edit lead ${title}` });
-  await dialog.getByLabel("Deal value").fill(value);
-  await dialog.getByLabel("Currency").selectOption("VND");
+  const dialog = await openCardEditor(page, title);
+  await dialog.getByLabel(/Deal value - current year/).fill(value);
   await dialog.getByRole("button", { name: "Save lead" }).click();
   await expect(dialog).toBeHidden();
 }
@@ -42,7 +40,7 @@ test("records a win at its closing value and keeps it after the card is edited",
 
   await openDashboard(page);
   const before = await wonCount(page);
-  await page.getByRole("button", { name: "Back to Board" }).click();
+  await page.getByRole("button", { name: "Board", exact: true }).click();
 
   const awardColumn = columns(page).nth(4);
   await dragCardToColumn(page, page.locator(`[data-testid^="card-"][data-title="${title}"]`), awardColumn);
@@ -54,7 +52,7 @@ test("records a win at its closing value and keeps it after the card is edited",
   await expect(wonRow).toContainText("12,345");
 
   // Edit the value after closing: history keeps 12,345; today's value is separate.
-  await page.getByRole("button", { name: "Back to Board" }).click();
+  await page.getByRole("button", { name: "Board", exact: true }).click();
   await setLeadValue(page, title, "99999");
   await openDashboard(page);
   const cells = page.getByTestId("closing-won").locator("td");

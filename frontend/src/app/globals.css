@@ -5,11 +5,24 @@
   --primary-blue: #209dd7;
   --secondary-purple: #753991;
   --navy-dark: #032147;
-  --gray-text: #888888;
+  --gray-text: #566170;
   --surface: #f7f8fb;
   --surface-strong: #ffffff;
   --stroke: rgba(3, 33, 71, 0.08);
   --shadow: 0 18px 40px rgba(3, 33, 71, 0.12);
+  /* Kanban stage tones: pale column background + stronger header accent. */
+  --stage-blue-bg: #e8f1fb;
+  --stage-blue-accent: #5b9bd5;
+  --stage-cyan-bg: #e4f5fa;
+  --stage-cyan-accent: #3fb5d3;
+  --stage-turquoise-bg: #e3f6f2;
+  --stage-turquoise-accent: #36b5a0;
+  --stage-lime-bg: #f0f7dc;
+  --stage-lime-accent: #9bc53d;
+  --stage-green-bg: #e1f4e5;
+  --stage-green-accent: #3fa75a;
+  --stage-red-bg: #fbe6e6;
+  --stage-red-accent: #d9534f;
 }
 
 @theme inline {
@@ -31,4 +44,23 @@ body {
 
 .font-display {
   font-family: var(--font-display), "Segoe UI", sans-serif;
+}
+
+@keyframes ai-launcher-float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+.ai-launcher {
+  animation: ai-launcher-float 3s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-launcher {
+    animation: none;
+  }
 }

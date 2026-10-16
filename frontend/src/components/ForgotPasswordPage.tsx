@@ -11,7 +11,7 @@ export const ForgotPasswordPage = ({ onBackToLogin }: ForgotPasswordPageProps) =
   const [identifier, setIdentifier] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [sentTo, setSentTo] = useState<string | null>(null);
+  const [sent, setSent] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -19,8 +19,8 @@ export const ForgotPasswordPage = ({ onBackToLogin }: ForgotPasswordPageProps) =
     setLoading(true);
 
     try {
-      const result = await requestPasswordReset(identifier);
-      setSentTo(result.email);
+      await requestPasswordReset(identifier);
+      setSent(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not send reset link. Please try again.");
     } finally {
@@ -50,12 +50,12 @@ export const ForgotPasswordPage = ({ onBackToLogin }: ForgotPasswordPageProps) =
           </div>
 
           <div className="rounded-[24px] border border-[var(--stroke)] bg-white/80 p-8 shadow-[var(--shadow)] backdrop-blur">
-            {sentTo ? (
+            {sent ? (
               <div className="text-center">
                 <h2 className="text-lg font-semibold text-[var(--navy-dark)]">Check your inbox</h2>
                 <p className="mt-3 text-sm text-[var(--gray-text)]">
-                  Reset link sent to <span className="font-semibold">{sentTo}</span>. The link
-                  expires in 1 hour.
+                  If an account exists for that username or email, a reset link was sent.
+                  The link expires in 1 hour and works once.
                 </p>
               </div>
             ) : (

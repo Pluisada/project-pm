@@ -23,6 +23,8 @@ import {
   type PeriodKpis,
 } from "@/lib/api";
 import {
+  annualLabels,
+  DEAL_CURRENCY,
   formatDateTime,
   formatDays,
   formatPeriodDates,
@@ -30,11 +32,10 @@ import {
   formatRate,
   moneyTotalsToNumbers,
 } from "@/lib/format";
-import { Section, StageBars, StatTile, Totals, selectClass, tdClass, thClass } from "@/components/ReportBlocks";
+import { AnnualLegend, AnnualTotals, Section, StageBars, StatTile, Totals, selectClass, tdClass, thClass } from "@/components/ReportBlocks";
 
 type DashboardPageProps = {
   boardId: number;
-  onBack: () => void;
 };
 
 const PRESETS: { value: KpiPeriodPreset; label: string }[] = [
@@ -100,8 +101,10 @@ const OutcomeRow = ({
   flow,
   previous,
   previousTracked,
+  years,
 }: {
   label: string;
+  years?: number[];
   flow: OutcomeFlow;
   previous?: OutcomeFlow;
   previousTracked?: boolean;
@@ -117,7 +120,16 @@ const OutcomeRow = ({
       {flow.value_unavailable}
     </td>
     <td className={clsx(tdClass, "text-[var(--gray-text)]")}>
-      {flow.opportunities === 0 ? "-" : <Totals totals={moneyTotalsToNumbers(flow.current_values)} />}
+      {flow.opportunities === 0 ? "-" : (
+          <AnnualTotals
+            measure={{
+              current: moneyTotalsToNumbers(flow.current_values),
+              next: moneyTotalsToNumbers(flow.current_next_year_values ?? {}),
+              sum: moneyTotalsToNumbers(flow.current_total_values ?? flow.current_values),
+            }}
+            years={years}
+          />
+        )}
     </td>
     {previous && (
       <td className={clsx(tdClass, "text-[var(--gray-text)]")}>
@@ -133,7 +145,7 @@ const OutcomeRow = ({
   </tr>
 );
 
-export const DashboardPage = ({ boardId, onBack }: DashboardPageProps) => {
+export const DashboardPage = ({ boardId }: DashboardPageProps) => {
   const [preset, setPreset] = useState<KpiPeriodPreset>("last_30_days");
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
@@ -189,26 +201,16 @@ export const DashboardPage = ({ boardId, onBack }: DashboardPageProps) => {
   const baselineAges = stock?.aging.opportunities.filter((row) => row.history !== "observed").length ?? 0;
 
   return (
-    <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-4 py-8 sm:px-6">
+    <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-4 py-5 sm:px-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
-            Salcomp Sales Pipeline
-          </p>
-          <h1 className="mt-3 font-display text-4xl font-semibold text-[var(--navy-dark)]">
+          <h1 className="font-display text-2xl font-semibold text-[var(--navy-dark)]">
             Executive Dashboard
           </h1>
           <p className="mt-2 text-sm text-[var(--gray-text)]">
-            Built only from recorded stage history. Values are per currency, without conversion.
+            Built only from recorded stage history. Deal Values are in USD.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onBack}
-          className="rounded-lg border border-[var(--stroke)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--navy-dark)] transition hover:border-[var(--primary-blue)]"
-        >
-          Back to Board
-        </button>
       </div>
 
       {/* Filters: one row above everything they affect */}
@@ -302,7 +304,9 @@ export const DashboardPage = ({ boardId, onBack }: DashboardPageProps) => {
             <p className="mb-3 text-xs text-[var(--gray-text)]">
               Closing value is the deal value recorded when the card was won or lost. A deal reopened and closed
               again counts once, at its latest closing value. Today&apos;s value is shown only for comparison and
-              never replaces a closing value that wasn&apos;t recorded.
+              never replaces a closing value that wasn&apos;t recorded. Closing values were recorded before Deal Value
+              was split by year, so they are the current-year amount at close and can&apos;t be divided by year;
+              only today&apos;s comparison shows both years.
             </p>
             <div className="overflow-x-auto">
               <table className="w-full">
@@ -318,8 +322,8 @@ export const DashboardPage = ({ boardId, onBack }: DashboardPageProps) => {
                   </tr>
                 </thead>
                 <tbody>
-                  <OutcomeRow label="Won" flow={kpis.won} previous={previous?.won} previousTracked={previousTracked} />
-                  <OutcomeRow label="Lost" flow={kpis.lost} previous={previous?.lost} previousTracked={previousTracked} />
+                  <OutcomeRow label="Won" flow={kpis.won} previous={previous?.won} previousTracked={previousTracked} years={stock?.pipeline.deal_years} />
+                  <OutcomeRow label="Lost" flow={kpis.lost} previous={previous?.lost} previousTracked={previousTracked} years={stock?.pipeline.deal_years} />
                 </tbody>
               </table>
             </div>
@@ -424,9 +428,22 @@ export const DashboardPage = ({ boardId, onBack }: DashboardPageProps) => {
             {openStages.length === 0 ? (
               <p className="text-sm text-[var(--gray-text)]">No open stages.</p>
             ) : (
+              <>
               <StageBars
-                stages={openStages.map((s) => ({ column_id: s.column_id, title: s.title, count: s.count, totals: moneyTotalsToNumbers(s.values) }))}
+                stages={openStages.map((s) => ({
+                  column_id: s.column_id,
+                  title: s.title,
+                  count: s.count,
+                  totals: moneyTotalsToNumbers(s.values),
+                  next_totals: moneyTotalsToNumbers(s.next_year_values ?? {}),
+                  sum_totals: moneyTotalsToNumbers(s.total_values ?? s.values),
+                }))}
+                years={stock.pipeline.deal_years}
               />
+              <div className="mt-4">
+                <AnnualLegend years={stock.pipeline.deal_years} />
+              </div>
+              </>
             )}
           </Section>
 
@@ -441,7 +458,7 @@ export const DashboardPage = ({ boardId, onBack }: DashboardPageProps) => {
                       <th className={thClass}>Opportunity</th>
                       <th className={thClass}>Stage</th>
                       <th className={thClass}>In stage for</th>
-                      <th className={thClass}>Value today</th>
+                      <th className={thClass}>Value today ({annualLabels(stock.pipeline.deal_years).total})</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -455,7 +472,21 @@ export const DashboardPage = ({ boardId, onBack }: DashboardPageProps) => {
                             : formatDays(row.age_days, row.history === "since_tracking_start")}
                         </td>
                         <td className={tdClass}>
-                          {row.deal_value !== null && row.currency ? formatMoney(row.deal_value, row.currency) : "-"}
+                          {row.deal_value_total != null ? (
+                            <>
+                              <div>{formatMoney(row.deal_value_total, DEAL_CURRENCY)}</div>
+                              {(row.deal_value_next_year ?? 0) > 0 && (
+                                <div className="text-xs text-[var(--gray-text)]">
+                                  {row.deal_year ?? "Current"} {row.deal_value != null ? formatMoney(row.deal_value, DEAL_CURRENCY) : "-"} ·{" "}
+                                  {row.deal_year != null ? row.deal_year + 1 : "Next"} {formatMoney(row.deal_value_next_year ?? 0, DEAL_CURRENCY)}
+                                </div>
+                              )}
+                            </>
+                          ) : row.deal_value !== null ? (
+                            formatMoney(row.deal_value, DEAL_CURRENCY)
+                          ) : (
+                            "-"
+                          )}
                         </td>
                       </tr>
                     ))}

@@ -1,0 +1,27 @@
+# Production override. Use it together with the base file and an explicit
+# environment file kept outside the repository (docs/DEPLOYMENT.md):
+#
+#   docker compose --env-file /secure/pm-commercial.env -p pm-commercial \
+#     -f docker-compose.yml -f docker-compose.prod.yml config
+#
+# It turns production mode on and removes every default that could select the
+# development database: the variables below have no fallback, so compose
+# refuses to run until the operator names the database, its mount and the
+# public URL. The app repeats the checks at startup (production_config.py).
+# SMTP_HOST and SMTP_FROM are required the same way (no invented defaults);
+# SMTP_PORT (default 587), SMTP_USER and SMTP_PASSWORD come from the base file
+# (user and password optional, but a user needs its password).
+services:
+  app:
+    environment:
+      - PM_ENV=production
+      - PM_REQUIRE_EXISTING_DB=1
+      - DATABASE_URL=${PM_DATABASE_URL:?PM_DATABASE_URL must name the commercial database, e.g. sqlite:////data/pm-commercial.db}
+      - APP_BASE_URL=${PM_PUBLIC_URL:?PM_PUBLIC_URL must be the public https origin}
+      - SMTP_HOST=${SMTP_HOST:?SMTP_HOST must be the SMTP server used for signup and password-reset emails}
+      - SMTP_FROM=${SMTP_FROM:?SMTP_FROM must be the sender address, e.g. PM <noreply@example.com>}
+    volumes:
+      # Same target as the base file, so this entry replaces its ./pm.db
+      # default instead of adding a second mount. PM_DB_HOST_PATH is a host
+      # directory (docs/DEPLOYMENT.md).
+      - ${PM_DB_HOST_PATH:?PM_DB_HOST_PATH must be the host directory that holds the commercial database}:${PM_DB_CONTAINER_PATH:?PM_DB_CONTAINER_PATH must be set, e.g. /data}

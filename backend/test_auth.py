@@ -1,4 +1,5 @@
 """Tests for authentication module."""
+from auth_test_utils import SETUP_HEADERS
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -44,10 +45,10 @@ def client(test_db):
     app.dependency_overrides.clear()
 
 
-def create_admin(client, username="admin", password="adminpass123"):
+def create_admin(client, username="admin", password="Adminpass123!"):
     """Run first-run setup, returning the admin's access token."""
     response = client.post(
-        "/api/setup", json={"username": username, "password": password}
+        "/api/setup", json={"username": username, "password": password}, headers=SETUP_HEADERS
     )
     assert response.status_code == 201
     return response.json()["access_token"]
@@ -100,12 +101,12 @@ class TestSetupEndpoint:
         """Test setup status reports needs_setup while no users exist."""
         response = client.get("/api/setup/status")
         assert response.status_code == 200
-        assert response.json() == {"needs_setup": True}
+        assert response.json() == {"needs_setup": True, "setup_enabled": True}
 
     def test_setup_creates_admin(self, client):
         """Test that setup creates the first user as admin."""
         response = client.post(
-            "/api/setup", json={"username": "admin", "password": "adminpass123"}
+            "/api/setup", json={"username": "admin", "password": "Adminpass123!"}, headers=SETUP_HEADERS
         )
         assert response.status_code == 201
         data = response.json()
@@ -117,20 +118,20 @@ class TestSetupEndpoint:
         """Test setup status reports completed after the first user exists."""
         create_admin(client)
         response = client.get("/api/setup/status")
-        assert response.json() == {"needs_setup": False}
+        assert response.json()["needs_setup"] is False
 
     def test_setup_twice_is_rejected(self, client):
         """Test that setup can only run once."""
         create_admin(client)
         response = client.post(
-            "/api/setup", json={"username": "someone_else", "password": "password123"}
+            "/api/setup", json={"username": "someone_else", "password": "Password123!"}, headers=SETUP_HEADERS
         )
         assert response.status_code == 409
 
     def test_setup_short_password_rejected(self, client):
         """Test that a too-short password fails validation."""
         response = client.post(
-            "/api/setup", json={"username": "admin", "password": "short"}
+            "/api/setup", json={"username": "admin", "password": "short"}, headers=SETUP_HEADERS
         )
         assert response.status_code == 422
 
@@ -140,9 +141,9 @@ class TestLoginEndpoint:
 
     def test_login_valid_credentials(self, client):
         """Test login with valid credentials."""
-        create_admin(client, "admin", "adminpass123")
+        create_admin(client, "admin", "Adminpass123!")
         response = client.post(
-            "/api/login", json={"username": "admin", "password": "adminpass123"}
+            "/api/login", json={"username": "admin", "password": "Adminpass123!"}
         )
         assert response.status_code == 200
         data = response.json()
@@ -153,7 +154,7 @@ class TestLoginEndpoint:
 
     def test_login_invalid_credentials(self, client):
         """Test login with invalid credentials."""
-        create_admin(client, "admin", "adminpass123")
+        create_admin(client, "admin", "Adminpass123!")
         response = client.post(
             "/api/login", json={"username": "admin", "password": "wrong"}
         )
@@ -169,7 +170,7 @@ class TestLoginEndpoint:
 
     def test_login_missing_username(self, client):
         """Test login with missing username."""
-        response = client.post("/api/login", json={"password": "password123"})
+        response = client.post("/api/login", json={"password": "Password123!"})
         assert response.status_code == 422  # Validation error
 
     def test_login_missing_password(self, client):
@@ -179,9 +180,9 @@ class TestLoginEndpoint:
 
     def test_login_response_format(self, client):
         """Test login response format is correct."""
-        create_admin(client, "admin", "adminpass123")
+        create_admin(client, "admin", "Adminpass123!")
         response = client.post(
-            "/api/login", json={"username": "admin", "password": "adminpass123"}
+            "/api/login", json={"username": "admin", "password": "Adminpass123!"}
         )
         data = response.json()
         assert "access_token" in data
@@ -259,6 +260,21 @@ class TestProtectedEndpoints:
         )
         assert response.status_code == 401
 
+    def test_default_access_token_lives_at_most_eight_hours(self, client, test_db):
+        """A login token must not outlive an 8-hour session."""
+        from datetime import datetime, timezone
+
+        from jose import jwt
+
+        import auth
+
+        create_admin(client)
+        admin = test_db.query(User).one()
+        token = create_user_access_token(admin)
+        exp = jwt.decode(token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])["exp"]
+        remaining = exp - datetime.now(timezone.utc).timestamp()
+        assert 0 < remaining <= 8 * 3600
+
     def test_get_user_for_deleted_or_unknown_user(self, client):
         """Test a token for a username that no longer/never existed."""
         token = create_access_token(data={"sub": "ghost", "pwh": "0" * 16})
@@ -288,7 +304,7 @@ class TestProtectedEndpoints:
     def test_login_and_setup_tokens_carry_pwh(self, client):
         setup_token = create_admin(client)
         login_token = client.post(
-            "/api/login", json={"username": "admin", "password": "adminpass123"}
+            "/api/login", json={"username": "admin", "password": "Adminpass123!"}
         ).json()["access_token"]
         for token in (setup_token, login_token):
             assert decode_access_token(token)["pwh"]
@@ -304,11 +320,11 @@ class TestAuthFlow:
     def test_complete_setup_login_logout_flow(self, client):
         """Test complete setup -> login -> access protected -> logout flow."""
         # 1. First-run setup
-        create_admin(client, "admin", "adminpass123")
+        create_admin(client, "admin", "Adminpass123!")
 
         # 2. Login
         login_response = client.post(
-            "/api/login", json={"username": "admin", "password": "adminpass123"}
+            "/api/login", json={"username": "admin", "password": "Adminpass123!"}
         )
         assert login_response.status_code == 200
         token = login_response.json()["access_token"]
@@ -325,11 +341,8 @@ class TestAuthFlow:
         )
         assert logout_response.status_code == 200
 
-        # 5. Try to access protected resource again with same token (still valid)
-        # Note: in a real system, we'd invalidate the token on logout
-        # For MVP, we just provide logout endpoint
+        # 5. The same token is revoked: logout bumps the user's session version
         user_response2 = client.get(
             "/api/user", headers={"Authorization": f"Bearer {token}"}
         )
-        # Token is still valid (would need token blacklist for true logout)
-        assert user_response2.status_code == 200
+        assert user_response2.status_code == 401

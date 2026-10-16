@@ -1,6 +1,7 @@
 """Card stage history (card_stage_events): every path that changes a card's
 stage, the transaction guarantees, undo, deletion, querying and the explicit
 migration. Databases are in-memory or pytest tmp_path files - never pm.db."""
+from auth_test_utils import SETUP_HEADERS, add_member
 import hashlib
 import sqlite3
 from datetime import datetime, timedelta
@@ -8,7 +9,6 @@ from datetime import datetime, timedelta
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -50,9 +50,9 @@ def auth(token):
 @pytest.fixture
 def env(client, test_db):
     """Setup (admin + seeded sales board) and a member; returns ids/headers."""
-    admin = client.post("/api/setup", json={"username": "boss", "password": "password123"}).json()["access_token"]
-    client.post("/api/users", json={"username": "rep", "password": "password123"}, headers=auth(admin))
-    member = client.post("/api/login", json={"username": "rep", "password": "password123"}).json()["access_token"]
+    admin = client.post("/api/setup", json={"username": "boss", "password": "Password123!"}, headers=SETUP_HEADERS).json()["access_token"]
+    add_member(client, "rep", "Password123!")
+    member = client.post("/api/login", json={"username": "rep", "password": "Password123!"}).json()["access_token"]
     board = client.get("/api/boards", headers=auth(admin)).json()[0]
     detail = client.get(f"/api/boards/{board['id']}", headers=auth(admin)).json()
     cols = {c["title"]: c["id"] for c in detail["columns"]}
@@ -151,7 +151,7 @@ class TestNoEvent:
         before = count(test_db)
         response = client.put(
             f"/api/boards/{env['board']}/cards/{card_id}",
-            json={"title": "Renamed", "company": "Acme", "deal_value": 10, "currency": "EUR"},
+            json={"title": "Renamed", "company": "Acme", "deal_value": 10, "currency": "USD"},
             headers=env["member"],
         )
         assert response.status_code == 200
@@ -187,8 +187,7 @@ class TestTransactions:
         card_id = create(client, env)
         test_db.execute(text("DROP TABLE card_stage_events"))
         test_db.commit()
-        with pytest.raises(OperationalError):
-            move(client, env, card_id, "RFI")
+        assert move(client, env, card_id, "RFI").status_code == 500
         test_db.rollback()
         test_db.expire_all()
         assert test_db.get(Card, card_id).column_id == env["cols"]["1st Contact"]
@@ -197,8 +196,12 @@ class TestTransactions:
         before = test_db.query(Card).count()
         test_db.execute(text("DROP TABLE card_stage_events"))
         test_db.commit()
-        with pytest.raises(OperationalError):
-            create(client, env, "Never saved")
+        response = client.post(
+            f"/api/boards/{env['board']}/cards",
+            json={"column_id": env["cols"]["1st Contact"], "title": "Never saved"},
+            headers=env["member"],
+        )
+        assert response.status_code == 500
         test_db.rollback()
         assert test_db.query(Card).count() == before
 

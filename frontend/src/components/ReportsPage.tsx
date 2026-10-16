@@ -10,15 +10,14 @@ import {
   type LeadOptions,
   type ReportGroup,
 } from "@/lib/api";
-import { formatDate, formatMoney, formatTotals } from "@/lib/format";
-import { Section, StageBars, StatTile, Totals, selectClass, tdClass, thClass } from "@/components/ReportBlocks";
+import { DEAL_CURRENCY, annualLines, formatDate, formatMoney, formatTotals, type AnnualMeasure } from "@/lib/format";
+import { AnnualLegend, AnnualTotals, Section, StageBars, StatTile, selectClass, tdClass, thClass } from "@/components/ReportBlocks";
 
 type ReportsPageProps = {
   boardId: number;
-  onBack: () => void;
 };
 
-const GroupTable = ({ label, groups }: { label: string; groups: ReportGroup[] }) =>
+const GroupTable = ({ label, groups, years }: { label: string; groups: ReportGroup[]; years?: number[] }) =>
   groups.length === 0 ? (
     <p className="text-sm text-[var(--gray-text)]">No leads.</p>
   ) : (
@@ -38,9 +37,13 @@ const GroupTable = ({ label, groups }: { label: string; groups: ReportGroup[] })
             <tr key={group.key} className="border-b border-[var(--stroke)] last:border-0">
               <td className={clsx(tdClass, "font-semibold")}>{group.key}</td>
               <td className={tdClass}>{group.open_count}</td>
-              <td className={tdClass}><Totals totals={group.open_totals} /></td>
+              <td className={tdClass}>
+                <AnnualTotals measure={{ current: group.open_totals, next: group.open_next_totals, sum: group.open_sum_totals }} years={years} compact />
+              </td>
               <td className={tdClass}>{group.won_count}</td>
-              <td className={tdClass}><Totals totals={group.won_totals} /></td>
+              <td className={tdClass}>
+                <AnnualTotals measure={{ current: group.won_totals, next: group.won_next_totals, sum: group.won_sum_totals }} years={years} compact />
+              </td>
             </tr>
           ))}
         </tbody>
@@ -48,7 +51,31 @@ const GroupTable = ({ label, groups }: { label: string; groups: ReportGroup[] })
     </div>
   );
 
-export const ReportsPage = ({ boardId, onBack }: ReportsPageProps) => {
+// Headline tiles: the per-year amounts under the two-year total (USD).
+const tileNote = (measure: AnnualMeasure, years?: number[]) => {
+  const lines = annualLines(measure, years, true);
+  return lines.length ? lines.map((line) => line.detail).join("\n") : undefined;
+};
+
+// A lead's value: both years added, with each year beneath when next year has an amount.
+const leadValue = (lead: BoardReport["closing_soon"][number]) => {
+  if (lead.deal_value_total == null) return "-";
+  const year = lead.deal_year;
+  const next = lead.deal_value_next_year ?? 0;
+  return (
+    <>
+      <div className="font-semibold">{formatMoney(lead.deal_value_total, DEAL_CURRENCY)}</div>
+      {next > 0 && (
+        <div className="text-xs text-[var(--gray-text)]">
+          {year ?? "Current"} {lead.deal_value != null ? formatMoney(lead.deal_value, DEAL_CURRENCY) : "-"} ·{" "}
+          {year != null ? year + 1 : "Next"} {formatMoney(next, DEAL_CURRENCY)}
+        </div>
+      )}
+    </>
+  );
+};
+
+export const ReportsPage = ({ boardId }: ReportsPageProps) => {
   const [options, setOptions] = useState<LeadOptions | null>(null);
   const [report, setReport] = useState<BoardReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -76,24 +103,14 @@ export const ReportsPage = ({ boardId, onBack }: ReportsPageProps) => {
   const kpis = report?.kpis;
 
   return (
-    <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-4 py-8 sm:px-6">
+    <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-4 py-5 sm:px-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
-            Salcomp Sales Pipeline
-          </p>
-          <h1 className="mt-3 font-display text-4xl font-semibold text-[var(--navy-dark)]">Reports</h1>
+          <h1 className="font-display text-2xl font-semibold text-[var(--navy-dark)]">Reports</h1>
           <p className="mt-2 text-sm text-[var(--gray-text)]">
-            Values are totaled per currency, without conversion.
+            All Deal Values are in USD.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onBack}
-          className="rounded-lg border border-[var(--stroke)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--navy-dark)] transition hover:border-[var(--primary-blue)]"
-        >
-          Back to Board
-        </button>
       </div>
 
       {/* Filters: one row above the charts */}
@@ -138,10 +155,20 @@ export const ReportsPage = ({ boardId, onBack }: ReportsPageProps) => {
         !error && <p className="text-sm text-[var(--gray-text)]">Loading report...</p>
       ) : (
         <>
+          <AnnualLegend years={report.deal_years} />
+
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-5" data-testid="report-kpis">
             <StatTile label="Open leads" lines={[String(kpis.open_count)]} />
-            <StatTile label="Open pipeline" lines={formatTotals(kpis.open_totals, true)} />
-            <StatTile label="Won" lines={[String(kpis.won_count), ...formatTotals(kpis.won_totals, true)]} />
+            <StatTile
+              label="Open pipeline"
+              lines={formatTotals(kpis.open_sum_totals ?? kpis.open_totals, true)}
+              note={tileNote({ current: kpis.open_totals, next: kpis.open_next_totals, sum: kpis.open_sum_totals }, report.deal_years)}
+            />
+            <StatTile
+              label="Won"
+              lines={[String(kpis.won_count), ...formatTotals(kpis.won_sum_totals ?? kpis.won_totals, true)]}
+              note={tileNote({ current: kpis.won_totals, next: kpis.won_next_totals, sum: kpis.won_sum_totals }, report.deal_years)}
+            />
             <StatTile label="Lost" lines={[String(kpis.lost_count)]} />
             <StatTile
               label="Win rate"
@@ -150,7 +177,7 @@ export const ReportsPage = ({ boardId, onBack }: ReportsPageProps) => {
           </div>
 
           <Section title="Leads by stage">
-            <StageBars stages={report.stages} />
+            <StageBars stages={report.stages} years={report.deal_years} />
           </Section>
 
           <Section title="Closing in the next 30 days or overdue">
@@ -182,7 +209,7 @@ export const ReportsPage = ({ boardId, onBack }: ReportsPageProps) => {
                         <td className={tdClass}>{lead.stage}</td>
                         <td className={tdClass}>{lead.salesperson_name ?? "Unassigned"}</td>
                         <td className={tdClass}>
-                          {lead.deal_value != null && lead.currency ? formatMoney(lead.deal_value, lead.currency) : "-"}
+                          {leadValue(lead)}
                         </td>
                       </tr>
                     ))}
@@ -193,14 +220,14 @@ export const ReportsPage = ({ boardId, onBack }: ReportsPageProps) => {
           </Section>
 
           <Section title="By salesperson">
-            <GroupTable label="Salesperson" groups={report.by_salesperson} />
+            <GroupTable label="Salesperson" groups={report.by_salesperson} years={report.deal_years} />
           </Section>
           <div className="grid gap-6 lg:grid-cols-2">
             <Section title="By product line">
-              <GroupTable label="Product line" groups={report.by_product_line} />
+              <GroupTable label="Product line" groups={report.by_product_line} years={report.deal_years} />
             </Section>
             <Section title="By lead source">
-              <GroupTable label="Source" groups={report.by_source} />
+              <GroupTable label="Source" groups={report.by_source} years={report.deal_years} />
             </Section>
           </div>
         </>

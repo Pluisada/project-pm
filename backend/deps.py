@@ -5,8 +5,8 @@ from typing import Optional
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
-from auth import decode_access_token, password_fingerprint
-from database import get_db
+from auth import E2E_ONLY_USERNAMES, decode_access_token, password_fingerprint
+from database import E2E_MODE, get_db
 from models import User, UserRole
 from stage_history import SOURCE_API, set_stage_context
 
@@ -58,6 +58,24 @@ def get_current_user(
     if not isinstance(pwh, str) or not hmac.compare_digest(
         pwh, password_fingerprint(user.password_hash)
     ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Logout and password changes bump session_version; a token issued under an
+    # older value is revoked. Also mandatory: a token without `sv` is rejected.
+    sv = payload.get("sv")
+    if type(sv) is not int or sv != user.session_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    # Defence in depth: nobody gets in without a verified email, and the public
+    # test accounts only work in the isolated E2E backend.
+    if user.email_verified_at is None or (user.username in E2E_ONLY_USERNAMES and not E2E_MODE):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",

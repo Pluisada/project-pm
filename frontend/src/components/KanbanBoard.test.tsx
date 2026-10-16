@@ -1,3 +1,4 @@
+import { describe, expect, it } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { KanbanBoard } from "@/components/KanbanBoard";
@@ -36,15 +37,13 @@ describe("KanbanBoard", () => {
 
     await userEvent.click(within(column).getByRole("button", { name: /add card/i }));
 
-    expect(within(column).getByDisplayValue("New card")).toBeInTheDocument();
+    expect(within(column).getByText("New card")).toBeInTheDocument();
 
     const deleteButton = within(column).getByRole("button", {
       name: /delete new card/i,
     });
     await userEvent.click(deleteButton);
 
-    // Title lives in an input's value, not text content - queryByText would
-    // find nothing regardless of whether the card was actually removed.
-    expect(within(column).queryByDisplayValue("New card")).not.toBeInTheDocument();
+    expect(within(column).queryByText("New card")).not.toBeInTheDocument();
   });
 });

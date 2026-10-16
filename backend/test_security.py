@@ -19,10 +19,11 @@ import admin_cli
 import auth
 import routes
 from ai_kanban import apply_board_actions
-from auth import create_signup_token, create_user_access_token, hash_password, verify_password
+from auth import create_access_token, create_user_access_token, hash_password, verify_password
 from database import get_db
 from main import app
 from models import Base, Board, Column, User, UserRole
+from auth_test_utils import SETUP_HEADERS, VERIFIED, create_signup_token
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -51,7 +52,7 @@ def client(test_db):
 
 
 def _user(db, username, role):
-    user = User(username=username, password_hash=hash_password("password123"), role=role)
+    user = User(email_verified_at=VERIFIED, username=username, password_hash=hash_password("Password123!"), role=role)
     db.add(user)
     db.commit()
     return user
@@ -273,6 +274,7 @@ class TestSecretKeyStartup:
         claims = {
             "sub": "rep",
             "pwh": auth.password_fingerprint(user.password_hash),
+            "sv": user.session_version,
             "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
         }
         headers = lambda key: {"Authorization": "Bearer " + jwt.encode(claims, key, algorithm="HS256")}
@@ -291,20 +293,20 @@ class TestNoPublicAdmin:
     def test_signup_ignores_role(self, client, admin, test_db):
         response = client.post(
             "/api/signup/complete",
-            json={"token": create_signup_token("x@example.com"), "password": "password123", "role": "admin"},
+            json={"token": create_signup_token(test_db, "x@example.com"), "password": "Password123!", "role": "admin"},
         )
         assert response.status_code == 201
         assert test_db.query(User).filter(User.username == "x@example.com").one().role == "member"
 
     def test_admin_created_users_are_members_even_if_asked(self, client, admin, test_db):
         response = client.post(
-            "/api/users", json={"username": "newbie", "password": "password123", "role": "admin"}, headers=admin
+            "/api/users", json={"email": "newbie@example.com", "role": "admin"}, headers=admin
         )
         assert response.status_code == 201
         assert response.json()["role"] == "member"
 
     def test_setup_cannot_run_twice(self, client, admin):
-        response = client.post("/api/setup", json={"username": "intruder", "password": "password123"})
+        response = client.post("/api/setup", json={"username": "intruder", "password": "Password123!"}, headers=SETUP_HEADERS)
         assert response.status_code == 409
 
 
@@ -338,7 +340,7 @@ def _stored(db, username):
 
 class TestAdminProvisioning:
     def test_create_admin_with_prompted_password(self, test_db, factory, capsys):
-        secret = "s3cure-pass-for-test"
+        secret = "S3cure-pass-for-test!"
         assert _run_cli(["create", "--username", "alice"], factory, [secret, secret]) == 0
         user = test_db.query(User).filter(User.username == "alice").one()
         assert user.role == "admin"
@@ -348,9 +350,9 @@ class TestAdminProvisioning:
 
     def test_create_admin_from_stdin(self, test_db, factory):
         assert _run_cli(
-            ["create", "--username", "bob", "--password-stdin"], factory, stdin_text="piped-pass-123\n"
+            ["create", "--username", "bob", "--password-stdin"], factory, stdin_text="Piped-pass-123!\n"
         ) == 0
-        assert verify_password("piped-pass-123", test_db.query(User).filter(User.username == "bob").one().password_hash)
+        assert verify_password("Piped-pass-123!", test_db.query(User).filter(User.username == "bob").one().password_hash)
 
     def test_mismatched_passwords_refused(self, test_db, factory):
         assert _run_cli(["create", "--username", "carol"], factory, ["one-password", "another-one"]) == 1
@@ -386,7 +388,7 @@ class TestAdminProvisioning:
     def test_replace_test_admin_procedure(self, test_db, factory):
         """The documented swap: create a real admin, then demote the old one."""
         _user(test_db, "e2e_admin", UserRole.ADMIN.value)
-        assert _run_cli(["create", "--username", "owner"], factory, ["owner-pass-123"] * 2) == 0
+        assert _run_cli(["create", "--username", "owner"], factory, ["Owner-pass-123!"] * 2) == 0
         assert _run_cli(["demote", "--username", "e2e_admin", "--yes"], factory) == 0
         assert _stored(test_db, "e2e_admin").role == "member"
         assert _stored(test_db, "owner").role == "admin"
@@ -430,3 +432,27 @@ class TestAiTestEndpoint:
         response = client.post("/api/ai/test", headers=admin)
         assert response.status_code == 200
         assert len(openrouter_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# POST /api/boards/{id}/ai: internal errors are not echoed to the client
+# ---------------------------------------------------------------------------
+
+def test_ai_chat_internal_error_does_not_leak_details(client, test_db, monkeypatch):
+    admin = User(email_verified_at=VERIFIED, username="admin", password_hash=hash_password("Password123!"), role=UserRole.ADMIN.value)
+    test_db.add(admin)
+    test_db.commit()
+    board = Board(user_id=admin.id, title="B")
+    test_db.add(board)
+    test_db.commit()
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("secret detail: /srv/pm/data/pm.db SELECT * FROM users")
+
+    monkeypatch.setattr(routes, "get_board_context", boom)
+    headers = {"Authorization": f"Bearer {create_user_access_token(admin)}"}
+    response = client.post(f"/api/boards/{board.id}/ai", json={"message": "hi"}, headers=headers)
+
+    assert response.status_code == 500
+    assert "secret detail" not in response.text
+    assert "SELECT" not in response.text

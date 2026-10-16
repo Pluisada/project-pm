@@ -1,30 +1,27 @@
-import { useState } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import clsx from "clsx";
 import type { Card } from "@/lib/kanban";
-import { formatDate, formatMoney } from "@/lib/format";
+import { DEAL_CURRENCY, formatDate, formatMoney } from "@/lib/format";
 
 type KanbanCardProps = {
   card: Card;
   canDelete: boolean;
   onDelete: (cardId: string) => void;
-  // Resolves false on failure (e.g. a blank title rejected by the backend),
-  // so the field can be reverted instead of being left showing an unsaved,
-  // invalid value.
-  onUpdate: (cardId: string, title: string, details: string) => Promise<boolean>;
   onOpenHistory: (cardId: string) => void;
-  // API-backed board only: opens the lead fields editor.
-  onEditLead?: (cardId: string) => void;
+  // API-backed board only: opens the read-first details view. Without it
+  // (the local demo board) the card is a plain summary.
+  onOpenDetails?: (cardId: string) => void;
 };
 
+// A compact, read-only summary. Everything editable lives in the details
+// view and its edit form, so nothing here can be changed by a stray click.
 export const KanbanCard = ({
   card,
   canDelete,
   onDelete,
-  onUpdate,
   onOpenHistory,
-  onEditLead,
+  onOpenDetails,
 }: KanbanCardProps) => {
   const lead = card.lead;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -35,45 +32,78 @@ export const KanbanCard = ({
     transition,
   };
 
-  // Edited locally and only committed (via onUpdate) on blur, so typing
-  // doesn't fire an API call - and a member edit history entry - per
-  // keystroke. KanbanColumn keys this component by card.id, so a genuinely
-  // different card mounts fresh rather than needing a resync effect here.
-  const [title, setTitle] = useState(card.title);
-  const [details, setDetails] = useState(card.details);
+  const hasValue = lead?.dealValue != null;
+  const deadlineOverdue = !!lead?.nextStepOverdue;
 
-  const commitIfChanged = async () => {
-    if (title === card.title && details === card.details) return;
-    const succeeded = await onUpdate(card.id, title, details);
-    if (!succeeded) {
-      // Revert to the last known-good server value instead of leaving the
-      // field showing an unsaved (and possibly invalid) edit indefinitely.
-      setTitle(card.title);
-      setDetails(card.details);
-    }
-  };
+  const summary = (
+    <>
+      <span className="line-clamp-2 break-words font-display text-sm font-semibold leading-5 text-[var(--navy-dark)]">
+        {card.title}
+      </span>
+      {card.details && (
+        <span
+          className="mt-0.5 line-clamp-3 whitespace-pre-wrap break-words text-xs leading-4 text-[var(--gray-text)]"
+          data-testid="card-details-text"
+        >
+          {card.details}
+        </span>
+      )}
+      {lead?.company && (
+        <span className="mt-0.5 block truncate text-xs text-[var(--gray-text)]">{lead.company}</span>
+      )}
+      {(lead?.salespersonName || hasValue) && (
+        <span className="mt-1.5 flex items-baseline justify-between gap-2 text-xs">
+          <span className="min-w-0 truncate text-[var(--gray-text)]">{lead?.salespersonName ?? ""}</span>
+          {hasValue && (
+            <span className="ml-auto shrink-0 whitespace-nowrap font-semibold text-[var(--navy-dark)]">
+              {formatMoney(lead!.dealValue!, DEAL_CURRENCY)}
+            </span>
+          )}
+        </span>
+      )}
+      {(lead?.nextStep || lead?.nextStepDue) && (
+        <span
+          className="mt-1.5 flex items-baseline gap-1 text-xs leading-4 text-[var(--gray-text)]"
+          title={[lead.nextStep, lead.nextStepDue && formatDate(lead.nextStepDue)].filter(Boolean).join(" - ")}
+        >
+          <span className="shrink-0 font-semibold text-[var(--navy-dark)]">Next:</span>
+          {lead.nextStep && <span className="min-w-0 truncate">{lead.nextStep}</span>}
+          {lead.nextStepDue && (
+            <span className={clsx("shrink-0 whitespace-nowrap", deadlineOverdue && "font-semibold text-red-700")}>
+              {lead.nextStep ? "by " : ""}
+              {formatDate(lead.nextStepDue)}
+            </span>
+          )}
+        </span>
+      )}
+      {(deadlineOverdue || (!lead?.nextStep && lead?.overdue)) && (
+        <span className="mt-1.5 inline-block rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-red-700">
+          {deadlineOverdue ? "Next action overdue" : "Close date overdue"}
+        </span>
+      )}
+      {lead?.sourceCode && (
+        <span className="mt-1.5 block truncate text-[10px] uppercase tracking-[0.1em] text-[var(--gray-text)]">
+          Ref {lead.sourceCode}
+        </span>
+      )}
+    </>
+  );
 
   return (
     <article
       ref={setNodeRef}
       style={style}
       className={clsx(
-        "rounded-2xl border border-transparent bg-white px-4 py-4 shadow-[0_12px_24px_rgba(3,33,71,0.08)]",
+        "rounded-xl border border-[rgba(3,33,71,0.1)] bg-white px-3 py-2.5 shadow-[0_1px_2px_rgba(3,33,71,0.06)]",
         "transition-all duration-150",
-        isDragging && "opacity-60 shadow-[0_18px_32px_rgba(3,33,71,0.16)]"
+        isDragging && "opacity-60 shadow-[0_8px_16px_rgba(3,33,71,0.12)]"
       )}
       data-testid={`card-${card.id}`}
       data-title={card.title}
     >
-      {/* A slim action row above the content, rather than beside it, so
-          title/details always get the card's full width to work with -
-          narrow columns would otherwise squeeze the text down to nothing
-          alongside the drag handle and delete button. */}
       <div className="flex items-center justify-between gap-2">
-        {/* Title/details are editable text, so the drag gesture lives on its
-            own handle rather than the whole card - otherwise picking up the
-            card would fight with clicking into a field to edit or select
-            text. */}
+        {/* The drag gesture lives on its own handle, so clicking the summary
+            to open the details never competes with picking the card up. */}
         <button
           type="button"
           {...attributes}
@@ -108,62 +138,19 @@ export const KanbanCard = ({
           )}
         </div>
       </div>
-      <input
-        value={title}
-        onChange={(event) => setTitle(event.target.value)}
-        onBlur={commitIfChanged}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") event.currentTarget.blur();
-        }}
-        className="mt-1 w-full bg-transparent font-display text-base font-semibold text-[var(--navy-dark)] outline-none"
-        aria-label="Card title"
-      />
-      <textarea
-        value={details}
-        onChange={(event) => setDetails(event.target.value)}
-        onBlur={commitIfChanged}
-        placeholder="Nothing here yet"
-        rows={2}
-        className="mt-2 w-full resize-none bg-transparent text-sm leading-6 text-[var(--gray-text)] outline-none"
-        aria-label="Card details"
-      />
-      {onEditLead && (
-        <div className="mt-2 border-t border-[var(--stroke)] pt-2 text-xs leading-5 text-[var(--gray-text)]">
-          {(lead?.company || lead?.contact) && (
-            <p className="font-semibold text-[var(--navy-dark)]">
-              {[lead.company, lead.contact].filter(Boolean).join(" - ")}
-            </p>
-          )}
-          {lead?.dealValue != null && lead.currency && (
-            <p className="text-sm font-semibold text-[var(--navy-dark)]">
-              {formatMoney(lead.dealValue, lead.currency)}
-            </p>
-          )}
-          {lead?.expectedCloseDate && (
-            <p className={clsx(lead.overdue && "font-semibold text-red-700")}>
-              Close {formatDate(lead.expectedCloseDate)}
-              {lead.overdue && " (overdue)"}
-            </p>
-          )}
-          {lead?.salespersonName && <p>{lead.salespersonName}</p>}
-          <div className="mt-2 flex items-center justify-between gap-2">
-            {lead?.productLine ? (
-              <span className="whitespace-nowrap rounded-full bg-[var(--surface)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--secondary-purple)]">
-                {lead.productLine}
-              </span>
-            ) : (
-              <span />
-            )}
-            <button
-              type="button"
-              onClick={() => onEditLead(card.id)}
-              className="shrink-0 whitespace-nowrap rounded-full border border-[var(--stroke)] px-3 py-0.5 text-[11px] font-semibold text-[var(--primary-blue)] transition hover:border-[var(--primary-blue)]"
-              aria-label={`Edit lead ${card.title}`}
-            >
-              Edit lead
-            </button>
-          </div>
-        </div>
+      {onOpenDetails ? (
+        <button
+          type="button"
+          onClick={() => onOpenDetails(card.id)}
+          className="mt-1 block w-full rounded-lg px-1 py-0.5 text-left transition hover:bg-[var(--surface)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--primary-blue)]"
+          aria-label={`Open details for ${card.title}`}
+          aria-haspopup="dialog"
+          data-open-details
+        >
+          {summary}
+        </button>
+      ) : (
+        <div className="mt-1 px-1 py-0.5">{summary}</div>
       )}
     </article>
   );

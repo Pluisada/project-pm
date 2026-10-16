@@ -8,6 +8,7 @@ from sqlalchemy.pool import StaticPool
 from ai_kanban import apply_board_actions
 from auth import hash_password
 from models import Base, User, UserRole, Board, Column, Card, CardEditHistory
+from auth_test_utils import VERIFIED
 
 
 @pytest.fixture
@@ -20,8 +21,8 @@ def db():
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine)()
 
-    member = User(username="member", password_hash=hash_password("pw"), role=UserRole.MEMBER.value)
-    admin = User(username="admin", password_hash=hash_password("pw"), role=UserRole.ADMIN.value)
+    member = User(email_verified_at=VERIFIED, username="member", password_hash=hash_password("pw"), role=UserRole.MEMBER.value)
+    admin = User(email_verified_at=VERIFIED, username="admin", password_hash=hash_password("pw"), role=UserRole.ADMIN.value)
     session.add_all([member, admin])
     session.commit()
 
@@ -85,7 +86,7 @@ async def test_admin_delete_action_succeeds(db):
 async def test_member_backward_move_action_is_rejected(db):
     board = db.query(Board).first()
     columns = _columns(db, board.id)
-    card = Card(column_id=columns[2].id, title="Task", details="", position=0)
+    card = Card(column_id=columns[2].id, title="Task", details="", position=0, salesperson_id=_member(db).id)
     db.add(card)
     db.commit()
 
@@ -102,7 +103,7 @@ async def test_member_backward_move_action_is_rejected(db):
 async def test_member_forward_move_action_succeeds(db):
     board = db.query(Board).first()
     columns = _columns(db, board.id)
-    card = Card(column_id=columns[0].id, title="Task", details="", position=0)
+    card = Card(column_id=columns[0].id, title="Task", details="", position=0, salesperson_id=_member(db).id)
     db.add(card)
     db.commit()
 
@@ -116,7 +117,7 @@ async def test_member_forward_move_action_succeeds(db):
 async def test_member_update_action_creates_history_and_admin_does_not(db):
     board = db.query(Board).first()
     columns = _columns(db, board.id)
-    card = Card(column_id=columns[0].id, title="Old", details="", position=0)
+    card = Card(column_id=columns[0].id, title="Old", details="", position=0, salesperson_id=_member(db).id)
     db.add(card)
     db.commit()
 
