@@ -2,6 +2,7 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import clsx from "clsx";
 import type { Card } from "@/lib/kanban";
+import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { DEAL_CURRENCY, formatDate, formatMoney } from "@/lib/format";
 
 type KanbanCardProps = {
@@ -74,6 +75,11 @@ export const KanbanCard = ({
               {formatDate(lead.nextStepDue)}
             </span>
           )}
+        </span>
+      )}
+      {lead?.confidenceLevel && (
+        <span className="mt-1.5 block">
+          <ConfidenceBadge level={lead.confidenceLevel} />
         </span>
       )}
       {(deadlineOverdue || (!lead?.nextStep && lead?.overdue)) && (

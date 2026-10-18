@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
+import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import type { CardResponse, StageKind } from "@/lib/api";
 import { DEAL_CURRENCY, formatCents, formatDate, formatMoney, isValidIsoDate } from "@/lib/format";
 
@@ -14,7 +15,7 @@ type CardDetailsModalProps = {
   onClose: () => void;
 };
 
-type Row = { label: string; value: string | null | undefined };
+type Row = { label: string; value: ReactNode };
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -117,6 +118,7 @@ export const CardDetailsModal = ({
     { label: "Stage", value: `${stageTitle}${stageKind === "open" ? "" : ` (${stageKind})`}` },
     { label: "Lead source", value: card.lead_source },
     { label: "Product line", value: card.product_line },
+    { label: "Probability level", value: <ConfidenceBadge level={card.confidence_level} showUnassigned /> },
     { label: "Details", value: card.details },
   ];
 
@@ -179,7 +181,6 @@ export const CardDetailsModal = ({
               <Section
                 title="Bid: forecast"
                 rows={[
-                  { label: "Confidence", value: bid.confidence == null ? null : `${bid.confidence}%` },
                   { label: "Volume, current year", value: number(bid.volume_current_year) },
                   { label: "Volume, next year", value: number(bid.volume_next_year) },
                   { label: "Production start", value: showDate(bid.production_start_date) },
@@ -223,7 +224,6 @@ export const CardDetailsModal = ({
               title="Source reference"
               rows={[
                 { label: "Source code", value: source.source_code },
-                { label: "Source confidence", value: source.source_confidence },
               ]}
             />
           )}

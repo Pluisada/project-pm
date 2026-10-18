@@ -89,3 +89,29 @@ describe("KanbanCard Next Action", () => {
     expect(screen.queryByText("Next:")).toBeNull();
   });
 });
+
+describe("KanbanCard probability level", () => {
+  const lead = (confidenceLevel: "LOW" | "MEDIUM" | "HIGH" | null): Card["lead"] => ({
+    company: null, contact: null, dealValue: null, expectedCloseDate: null, productLine: null,
+    confidenceLevel, salespersonName: null, overdue: false, nextStep: null, nextStepDue: null,
+    nextStepOverdue: false, sourceCode: null,
+  });
+
+  it.each([["LOW"], ["MEDIUM"], ["HIGH"]] as const)("shows %s as a coloured indicator with its text", (level) => {
+    show("", lead(level));
+    const badge = screen.getByTestId("confidence-badge");
+    expect(badge).toHaveTextContent(level);
+    expect(badge).toHaveAttribute("data-level", level);
+    expect(badge.className).toContain(`--conf-${level.toLowerCase()}-`);
+  });
+
+  it("shows no indicator when no level is assigned", () => {
+    show("", lead(null));
+    expect(screen.queryByTestId("confidence-badge")).toBeNull();
+  });
+
+  it("shows no indicator on the local demo card (no lead)", () => {
+    show("");
+    expect(screen.queryByTestId("confidence-badge")).toBeNull();
+  });
+});

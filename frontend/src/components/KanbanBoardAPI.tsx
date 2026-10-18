@@ -446,6 +446,7 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
                     dealValue: dealValueTotal(c.deal_value, c.deal_value_next_year),
                     expectedCloseDate: c.expected_close_date,
                     productLine: c.product_line,
+                    confidenceLevel: c.confidence_level,
                     salespersonName: c.salesperson_name,
                     overdue:
                       isValidIsoDate(c.expected_close_date) &&

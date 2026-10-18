@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import clsx from "clsx";
 import type { CardResponse, CardUpdatePayload, LeadFields, LeadOptions } from "@/lib/api";
-import { getErrorMessage } from "@/lib/api";
+import { CONFIDENCE_LEVELS, getErrorMessage } from "@/lib/api";
 
 type LeadEditModalProps = {
   card: CardResponse;
@@ -35,6 +35,7 @@ const toForm = (card: CardResponse): FormState => ({
   expected_close_date: card.expected_close_date ?? "",
   lead_source: card.lead_source ?? "",
   product_line: card.product_line ?? "",
+  confidence_level: card.confidence_level ?? "",
   salesperson_id: card.salesperson_id != null ? String(card.salesperson_id) : "",
   next_step_due: card.bid_details?.next_step_due ?? "",
   next_step: card.bid_details?.next_step ?? "",
@@ -239,6 +240,15 @@ export const LeadEditModal = ({ card, options, onSave, onClose }: LeadEditModalP
               <option value="">Unassigned</option>
               {options.salespeople.map((person) => (
                 <option key={person.id} value={String(person.id)}>{person.username}</option>
+              ))}
+            </select>
+          </label>
+          <label className={labelClass}>
+            Probability level
+            <select value={form.confidence_level} onChange={set("confidence_level")} className={inputClass}>
+              <option value="">Not assigned</option>
+              {CONFIDENCE_LEVELS.map((level) => (
+                <option key={level} value={level}>{level}</option>
               ))}
             </select>
           </label>

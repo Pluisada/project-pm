@@ -23,6 +23,19 @@
   --stage-green-accent: #3fa75a;
   --stage-red-bg: #fbe6e6;
   --stage-red-accent: #d9534f;
+  /* Probability level (LOW red, MEDIUM yellow, HIGH green): badge background, text, border and dot, light theme. */
+  --conf-low-bg: #fde8e8;
+  --conf-low-ink: #9b1c1c;
+  --conf-low-line: #f5b5b5;
+  --conf-low-dot: #dc2626;
+  --conf-medium-bg: #fef3c7;
+  --conf-medium-ink: #7a3e06;
+  --conf-medium-line: #f2d57a;
+  --conf-medium-dot: #eab308;
+  --conf-high-bg: #dcfce7;
+  --conf-high-ink: #14532d;
+  --conf-high-line: #9bd9b0;
+  --conf-high-dot: #16a34a;
 }
 
 @theme inline {

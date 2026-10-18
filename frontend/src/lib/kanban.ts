@@ -1,3 +1,5 @@
+import type { ConfidenceLevel } from "@/lib/api";
+
 export type Card = {
   id: string;
   title: string;
@@ -14,6 +16,7 @@ export type LeadSummary = {
   dealValue: number | null;
   expectedCloseDate: string | null; // YYYY-MM-DD
   productLine: string | null;
+  confidenceLevel?: ConfidenceLevel | null;
   salespersonName: string | null;
   // Close date has passed while the lead is still open (not won/lost)
   overdue: boolean;

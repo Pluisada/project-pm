@@ -129,6 +129,7 @@ export interface LeadFields {
   expected_close_date: string | null; // YYYY-MM-DD
   lead_source: string | null;
   product_line: string | null;
+  confidence_level: ConfidenceLevel | null;
   salesperson_id: number | null;
 }
 
@@ -140,7 +141,6 @@ export interface BidDetails {
   product_category: string | null;
   product: string | null;
   solution_type: string | null;
-  confidence: number | null;
   volume_current_year: number | null;
   volume_next_year: number | null;
   production_start_date: string | null; // YYYY-MM-DD
@@ -158,7 +158,6 @@ export interface BidDetails {
 
 export interface SourceRef {
   source_code: string;
-  source_confidence: string | null;
 }
 
 export interface CardResponse extends LeadFields {

@@ -12,7 +12,7 @@ const card = (details: string, extra: Partial<CardResponse> = {}): CardResponse 
   id: 1, column_id: 1, title: "Opp", details, position: 0, has_member_edits: false,
   company: null, contact: null, deal_value: null, currency: null,
   expected_close_date: null, lead_source: null, product_line: null,
-  salesperson_id: null, salesperson_name: null, created_at: "", updated_at: "", ...extra,
+  confidence_level: null, salesperson_id: null, salesperson_name: null, created_at: "", updated_at: "", ...extra,
 });
 
 const open = (details: string, extra: Partial<CardResponse> = {}) => {
@@ -152,5 +152,46 @@ describe("LeadEditModal Next Action Date and Action", () => {
     await userEvent.clear(action());
     await save();
     expect(onSave).toHaveBeenCalledWith({ next_step: null });
+  });
+});
+
+describe("LeadEditModal probability level", () => {
+  const select = () => screen.getByLabelText("Probability level") as HTMLSelectElement;
+  const save = () => userEvent.click(screen.getByRole("button", { name: "Save lead" }));
+
+  it("offers Not assigned, LOW, MEDIUM and HIGH and shows the saved value", () => {
+    open("x", { confidence_level: "MEDIUM" });
+    expect(Array.from(select().options).map((o) => [o.value, o.text])).toEqual([
+      ["", "Not assigned"], ["LOW", "LOW"], ["MEDIUM", "MEDIUM"], ["HIGH", "HIGH"],
+    ]);
+    expect(select().value).toBe("MEDIUM");
+  });
+
+  it("shows Not assigned for a card without a level", () => {
+    open("x");
+    expect(select().value).toBe("");
+  });
+
+  it("saves a chosen level as the only changed field", async () => {
+    const { onSave } = open("x");
+    await userEvent.selectOptions(select(), "HIGH");
+    await save();
+    expect(onSave).toHaveBeenCalledWith({ confidence_level: "HIGH" });
+  });
+
+  it("clears the level by sending null", async () => {
+    const { onSave } = open("x", { confidence_level: "LOW" });
+    await userEvent.selectOptions(select(), "");
+    await save();
+    expect(onSave).toHaveBeenCalledWith({ confidence_level: null });
+  });
+
+  it("omits the level when another field is edited, so it is never cleared by accident", async () => {
+    const { onSave, field } = open("old", { confidence_level: "LOW" });
+    await userEvent.clear(field);
+    await userEvent.type(field, "new");
+    await save();
+    expect(onSave).toHaveBeenCalledWith({ details: "new" });
+    expect(onSave.mock.calls[0][0]).not.toHaveProperty("confidence_level");
   });
 });

@@ -16,12 +16,15 @@ const FIELD_LABELS: Record<string, string> = {
   next_step: "Action",
   lead_source: "Lead source",
   product_line: "Product line",
+  confidence_level: "Probability level",
   salesperson: "Salesperson",
 };
 
 // 0 is a real deal value, so only null/blank count as empty.
-const showValue = (value: string | number | null) =>
-  value === null || value === "" ? "(empty)" : value;
+const showValue = (value: string | number | null, field?: string) =>
+  value === null || value === ""
+    ? field === "confidence_level" ? "Not assigned" : "(empty)"
+    : value;
 
 const formatTimestamp = (isoString: string) =>
   new Date(isoString).toLocaleString(undefined, {
@@ -102,9 +105,9 @@ export const CardHistoryModal = ({ cardTitle, entries, isLoading, onClose }: Car
                           {FIELD_LABELS[field] || field}
                         </dt>
                         <dd className="mt-1 text-sm leading-6 text-[var(--navy-dark)]">
-                          <span className="text-[var(--gray-text)] line-through">{showValue(old)}</span>
+                          <span className="text-[var(--gray-text)] line-through">{showValue(old, field)}</span>
                           {" -> "}
-                          {showValue(newValue)}
+                          {showValue(newValue, field)}
                         </dd>
                       </div>
                     ))}
