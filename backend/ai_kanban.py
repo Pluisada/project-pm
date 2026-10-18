@@ -59,6 +59,7 @@ Lead fields (all optional, on create and update; send null to clear one):
 - next_step_due: "YYYY-MM-DD" (Next Action Date); next_step: the Action, a short text of at most 100 characters
 - lead_source: one of: {", ".join(LEAD_SOURCES)}
 - product_line: one of the "product_lines" listed in the board state
+- confidence_level: exactly "LOW", "MEDIUM" or "HIGH" (upper case), or null for not assigned. Set it only when the user states the level explicitly; never infer it from other fields, notes or imported data
 - salesperson_id: a user id from the "salespeople" list in the board state
 
 Rules:
@@ -106,6 +107,7 @@ async def get_board_context(db: Session, board_id: int) -> dict:
                         ),
                         "lead_source": c.lead_source,
                         "product_line": c.product_line,
+                        "confidence_level": c.confidence_level,
                         "salesperson_id": c.salesperson_id,
                         "salesperson_name": c.salesperson_name,
                     }
