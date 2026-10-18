@@ -16,7 +16,6 @@ const BID = {
   product_category: "Chargers",
   product: "65W GaN",
   solution_type: "Turnkey",
-  confidence: 10,
   volume_current_year: 12000,
   volume_next_year: 480000,
   production_start_date: "2027-03-15",
@@ -74,7 +73,7 @@ test("the card is a compact read-only summary with no editable fields", async ({
     expected_close_date: "2099-01-31",
     salesperson_name: "e2e_admin",
     bid_details: BID,
-    source_ref: { source_code: "OPP-0042", source_confidence: "LOW (10%)" },
+    source_ref: { source_code: "OPP-0042" },
   });
 
   const card = page.locator(`[data-testid^="card-"][data-title="${title}"]`);
@@ -98,8 +97,9 @@ test("the details view groups general, Bid and source data and keeps their meani
     deal_value: 75000,
     currency: "EUR",
     expected_close_date: "2099-01-31",
+    confidence_level: "HIGH",
     bid_details: BID,
-    source_ref: { source_code: "OPP-0042", source_confidence: "LOW (10%)" },
+    source_ref: { source_code: "OPP-0042" },
   });
 
   await page.getByRole("button", { name: `Open details for ${title}` }).click();
@@ -117,15 +117,21 @@ test("the details view groups general, Bid and source data and keeps their meani
   await expect(dialog.getByText("Jan 1, 2020")).toBeVisible();
   await expect(dialog.getByText("Mar 15, 2027")).toBeVisible();
 
-  await expect(dialog.getByText("10%", { exact: true })).toBeVisible();
+  // The obsolete Bid confidence rows no longer exist.
+  await expect(dialog.getByText("Confidence", { exact: true })).toHaveCount(0);
+  await expect(dialog.getByText("Source confidence")).toHaveCount(0);
+  await expect(dialog.getByText("10%", { exact: true })).toHaveCount(0);
   await expect(dialog.getByText("Project lead (source)")).toBeVisible();
   await expect(dialog.getByText("CPM (source)")).toBeVisible();
   // Null Bid fields are not shown.
   await expect(dialog.getByText("Close reason")).toHaveCount(0);
 
-  // The original confidence label is shown, not an inferred number.
+  // Probability level is the card's own field; the removed Bid percentage and source label are gone.
+  await expect(dialog.getByText("Probability level")).toBeVisible();
+  await expect(dialog.getByTestId("confidence-badge")).toHaveText("HIGH");
+  // The source code stays; the old confidence label is gone.
   await expect(dialog.getByText("OPP-0042")).toBeVisible();
-  await expect(dialog.getByText("LOW (10%)")).toBeVisible();
+  await expect(dialog.getByText("LOW (10%)")).toHaveCount(0);
 });
 
 test("a card without Bid data shows a neutral note and no invented values", async ({ page }) => {
