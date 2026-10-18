@@ -360,8 +360,20 @@ export async function getLeadOptions(): Promise<LeadOptions> {
 /** Money totals keyed by currency code - never summed across currencies. */
 export type CurrencyTotals = Record<string, number>;
 
+/** Bid report revenue (integer cents, the bid's own currency). Never added to Deal Value; NULL years are not counted. */
+export interface BidRevenueMeasure {
+  currency: string;
+  current_cents: number;
+  current_count: number;
+  next_cents: number;
+  next_count: number;
+}
+
 export interface ReportGroup {
+  /** Display label. */
   key: string;
+  /** Stable id, only in by_salesperson (null: unassigned); equal labels can have different ids. */
+  salesperson_id?: number | null;
   open_count: number;
   /** *_totals: current-year amounts (deal_value); *_next_totals: next year; *_sum_totals: both. */
   open_totals: CurrencyTotals;
@@ -383,6 +395,8 @@ export interface BoardReport {
     won_totals: CurrencyTotals;
     won_next_totals?: CurrencyTotals;
     won_sum_totals?: CurrencyTotals;
+    open_bid_revenue?: BidRevenueMeasure[];
+    won_bid_revenue?: BidRevenueMeasure[];
     lost_count: number;
     win_rate: number | null;
   };
@@ -394,6 +408,7 @@ export interface BoardReport {
     totals: CurrencyTotals;
     next_totals?: CurrencyTotals;
     sum_totals?: CurrencyTotals;
+    bid_revenue?: BidRevenueMeasure[];
   }[];
   /** Years the amounts were entered for (the cards' stored deal_year); several = totals span years. */
   deal_years?: number[];
@@ -599,6 +614,7 @@ export interface KpiPipeline {
     without_value: number;
     next_year_values?: MoneyTotals;
     total_values?: MoneyTotals;
+    bid_revenue?: BidRevenueMeasure[];
   })[];
   deal_years?: number[];
 }

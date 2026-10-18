@@ -13,6 +13,7 @@ import {
   type ReportGroup,
 } from "@/lib/api";
 import { DEAL_CURRENCY, annualLines, formatDate, formatMoney, formatTotals, type AnnualMeasure } from "@/lib/format";
+import { BidRevenueTable } from "@/components/BidRevenueTable";
 import { AnnualLegend, AnnualTotals, Section, StageBars, StatTile, selectClass, tdClass, thClass } from "@/components/ReportBlocks";
 
 type ReportsPageProps = {
@@ -36,7 +37,7 @@ const GroupTable = ({ label, groups, years }: { label: string; groups: ReportGro
         </thead>
         <tbody>
           {groups.map((group) => (
-            <tr key={group.key} className="border-b border-[var(--stroke)] last:border-0">
+            <tr key={`${group.key}:${group.salesperson_id ?? ""}`} className="border-b border-[var(--stroke)] last:border-0">
               <td className={clsx(tdClass, "font-semibold")}>{group.key}</td>
               <td className={tdClass}>{group.open_count}</td>
               <td className={tdClass}>
@@ -198,6 +199,8 @@ export const ReportsPage = ({ boardId }: ReportsPageProps) => {
           <Section title="Leads by stage">
             <StageBars stages={report.stages} years={report.deal_years} />
           </Section>
+
+          <BidRevenueTable rows={report.stages} testId="report-bid-revenue" />
 
           <Section title="Closing in the next 30 days or overdue">
             {report.closing_soon.length === 0 ? (

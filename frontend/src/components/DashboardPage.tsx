@@ -32,6 +32,7 @@ import {
   formatRate,
   moneyTotalsToNumbers,
 } from "@/lib/format";
+import { BidRevenueTable } from "@/components/BidRevenueTable";
 import { AnnualLegend, AnnualTotals, Section, StageBars, StatTile, Totals, selectClass, tdClass, thClass } from "@/components/ReportBlocks";
 
 type DashboardPageProps = {
@@ -446,6 +447,8 @@ export const DashboardPage = ({ boardId }: DashboardPageProps) => {
               </>
             )}
           </Section>
+
+          <BidRevenueTable rows={stock.pipeline.stages} testId="pipeline-bid-revenue" />
 
           <Section title="Aging of open opportunities (now)">
             {stock.aging.opportunities.length === 0 ? (
