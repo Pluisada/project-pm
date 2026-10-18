@@ -75,7 +75,7 @@ def test_admin_context_for_every_active_company(e):
     for slug in COMPANY_SLUGS:
         c = ctx(e, "admin@example.com", slug)
         assert (c.user_id, c.is_global_admin, c.company_slug, c.role, c.read_only) == (
-            e.admin, True, slug, "admin", False)
+            e.admin, True, slug, "super_admin", False)
 
 
 def test_member_and_visitor_contexts(e):
@@ -312,4 +312,96 @@ def test_only_company_modules_import_central_deps():
         if not p.name.startswith("test_") and p.name != "central_deps.py"
         and any(f"{kw} central_deps" in p.read_text() for kw in ("import", "from"))
     ]
-    assert sorted(callers) == ["company_routes.py", "company_runtime.py"]
+    assert sorted(callers) == ["central_routes.py", "company_routes.py", "company_runtime.py"]
+
+
+def test_role_predicates_keep_only_the_global_admin_administrative():
+    from identity_service import can_review, is_admin_level, is_super, read_only
+
+    roles = ("super_admin", "sales_member", "visitor")
+    assert [is_super(r) for r in roles] == [True, False, False]
+    assert [is_admin_level(r) for r in roles] == [True, False, False]
+    assert [can_review(r) for r in roles] == [True, False, False]
+    assert [read_only(r) for r in roles] == [False, False, True]
+    # the reserved company-Admin string grants nothing in Phase 1
+    assert not (is_super("admin") or is_admin_level("admin") or can_review("admin") or read_only("admin"))
+
+
+def test_card_rules_is_admin_judges_context_by_identity_flag_and_legacy_by_role():
+    from types import SimpleNamespace
+    from card_rules import is_admin
+
+    assert is_admin(cd.CompanyContext(1, True, "lity", "super_admin", False))
+    assert not is_admin(cd.CompanyContext(2, False, "lity", "admin", False))  # reserved string, no privilege
+    assert not is_admin(cd.CompanyContext(3, False, "lity", "sales_member", False))
+    assert not is_admin(cd.CompanyContext(4, False, "lity", "visitor", True))
+    assert is_admin(SimpleNamespace(role="admin")) and not is_admin(SimpleNamespace(role="member"))
+
+
+def test_member_management_and_admin_grant_policies():
+    from identity_service import can_grant_admin, can_manage_members
+
+    roles = ("super_admin", "sales_member", "visitor", "admin")
+    assert [can_manage_members(r) for r in roles] == [True, False, False, False]
+    assert [can_grant_admin(r) for r in roles] == [False, False, False, False]  # not even the Super Admin yet
+
+
+@pytest.mark.parametrize("role", [None, "", "ADMIN", "Super_Admin", " super_admin", "owner", 1, ["super_admin"]])
+def test_malformed_roles_fail_closed(role):
+    from identity_service import can_grant_admin, can_manage_members, can_review, is_admin_level, is_super, read_only
+
+    assert not any(f(role) for f in (is_super, is_admin_level, can_review, can_manage_members, can_grant_admin))
+    assert not read_only(role) or role == "visitor"
+
+
+def test_context_policy_properties_by_role():
+    def props(role, flag=False):
+        c = cd.CompanyContext(1, flag, "lity", role, role == "visitor")
+        return (c.is_super, c.is_admin_level, c.can_review, c.can_manage_members, c.can_grant_admin, c.read_only)
+
+    assert props("super_admin", True) == (True, True, True, True, False, False)
+    assert props("sales_member") == (False, False, False, False, False, False)
+    assert props("visitor") == (False, False, False, False, False, True)
+    assert props("admin") == (False, False, False, False, False, False)
+    # the role string, not the flag, drives the context properties; a stray flag on a member grants nothing here
+    assert props("sales_member", True)[:5] == (False,) * 5
+
+
+def test_company_admin_membership_is_fail_closed(e):
+    uid = e.member("boss@example.com")
+    e.update(IdentityMembership, IdentityMembership.user_id == uid, role="admin")  # directly, as no service can
+    c = ctx(e, "boss@example.com")
+    assert c.role == "admin" and not c.is_global_admin and not c.read_only
+    assert not (c.is_super or c.is_admin_level or c.can_review or c.can_manage_members or c.can_grant_admin)
+    assert not cd.can_modify_opportunity(c, None) and not cd.can_modify_opportunity(c, 999)
+    assert cd.can_modify_opportunity(c, uid) is False  # the reserved role is not even a Sales Member
+
+
+def test_admin_in_one_company_has_nothing_in_another(e):
+    uid = e.member("boss@example.com", slug="lity")
+    e.update(IdentityMembership, IdentityMembership.user_id == uid, role="admin")
+    with pytest.raises(cd.CompanyAccessDenied):
+        ctx(e, "boss@example.com", slug="salcomp")
+    other = [s for s in COMPANY_SLUGS if s != "lity"][0]
+    with pytest.raises(cd.CompanyAccessDenied):
+        ctx(e, "boss@example.com", slug=other)
+
+
+def test_inactive_admin_membership_and_invitation_paths_fail_closed(e):
+    uid = e.member("boss@example.com")
+    e.update(IdentityMembership, IdentityMembership.user_id == uid, role="admin", is_active=False)
+    with pytest.raises(cd.CompanyAccessDenied):
+        ctx(e, "boss@example.com")
+    for role in ("admin", "super_admin", "ADMIN", ""):
+        with pytest.raises(svc.IdentityServiceError):
+            svc.create_invitation(e.session, e.admin, "new@example.com", "lity", role)
+
+
+def test_policy_ignores_legacy_role_strings():
+    from types import SimpleNamespace
+
+    from card_rules import is_admin
+
+    assert is_admin(SimpleNamespace(role="admin"))  # legacy mode unchanged
+    ctx_admin_string = cd.CompanyContext(5, False, "lity", "admin", False)
+    assert not is_admin(ctx_admin_string) and not ctx_admin_string.can_manage_members

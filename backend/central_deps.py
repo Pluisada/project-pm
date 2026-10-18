@@ -24,9 +24,12 @@ from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
 from central_auth import AuthenticationFailed, user_for_token
-from identity_service import ADMIN_ROLE, IdentityServiceError, company_access
+from identity_service import (
+    SUPER_ADMIN_ROLE, IdentityServiceError, assignable_user_ids, can_grant_admin, can_manage_boards, can_manage_cards, can_manage_imports, can_manage_members, can_manage_products, can_review,
+    company_access, is_admin_level, is_super, read_only, sync_company_user,
+)
 
-ROLE_ADMIN = ADMIN_ROLE
+ROLE_SUPER_ADMIN = SUPER_ADMIN_ROLE
 ROLE_SALES_MEMBER = "sales_member"
 ROLE_VISITOR = "visitor"
 
@@ -38,8 +41,49 @@ class CompanyContext:
     user_id: int  # canonical identity_users.id
     is_global_admin: bool
     company_slug: str
-    role: str  # "admin" | "sales_member" | "visitor"
+    role: str  # "super_admin" | "sales_member" | "visitor"
     read_only: bool
+
+    @property
+    def is_super(self) -> bool:
+        return is_super(self.role)
+
+    @property
+    def is_admin_level(self) -> bool:
+        return is_admin_level(self.role)
+
+    @property
+    def can_review(self) -> bool:
+        return can_review(self.role)
+
+    @property
+    def can_manage_members(self) -> bool:
+        return can_manage_members(self.role)
+
+    @property
+    def can_grant_admin(self) -> bool:
+        return can_grant_admin(self.role)
+
+    @property
+    def can_manage_imports(self) -> bool:
+        return can_manage_imports(self.role)
+
+    @property
+    def can_manage_cards(self) -> bool:
+        return can_manage_cards(self.role)
+
+    @property
+    def can_manage_boards(self) -> bool:
+        return can_manage_boards(self.role)
+
+    @property
+    def can_manage_products(self) -> bool:
+        return can_manage_products(self.role)
+
+    @property
+    def id(self) -> int:
+        """The actor id card_rules and stage_history read (`user.id`): the canonical central id."""
+        return self.user_id
 
 
 class CompanyAccessDenied(IdentityServiceError):
@@ -63,21 +107,21 @@ def resolve_company_context(session: Session, token: str, company_slug: str) -> 
         raise CompanyAccessDenied()
     return CompanyContext(
         user_id=access.user_id,
-        is_global_admin=access.role == ROLE_ADMIN,
+        is_global_admin=is_super(access.role),
         company_slug=access.company_slug,
         role=access.role,
-        read_only=access.role == ROLE_VISITOR,
+        read_only=read_only(access.role),
     )
 
 
 def can_modify_opportunity(context: CompanyContext, assigned_user_id: int | None) -> bool:
     """Coarse write gate only: the business rules (stage transitions, assignment) stay in card_rules.
 
-    Admins may modify any opportunity, a Sales Member only one assigned to them
+    Administrators may modify any opportunity, a Sales Member only one assigned to them
     (company membership alone grants nothing over others' opportunities, and
     unassigned ones are admin-only), a Visitor none.
     """
-    if context.role == ROLE_ADMIN:
+    if context.is_admin_level:
         return True
     return context.role == ROLE_SALES_MEMBER and assigned_user_id is not None and assigned_user_id == context.user_id
 
@@ -122,6 +166,8 @@ def company_context_dependency(
 
 __all__ = [
     "CompanyContext", "CompanyAccessDenied", "resolve_company_context", "can_modify_opportunity",
-    "bearer_token", "company_context_dependency",
-    "ROLE_ADMIN", "ROLE_SALES_MEMBER", "ROLE_VISITOR",
+    "bearer_token", "company_context_dependency", "assignable_user_ids", "sync_company_user", "IdentityServiceError",
+    "ROLE_SUPER_ADMIN", "ROLE_SALES_MEMBER", "ROLE_VISITOR",
+    # re-exported so the company routes never import identity_service directly (test_identity_service guard)
+    "can_manage_cards", "can_manage_imports", "company_access", "read_only",
 ]

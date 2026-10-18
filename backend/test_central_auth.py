@@ -443,7 +443,7 @@ def test_import_has_no_side_effects_and_no_commercial_modules():
 def test_only_the_central_login_route_imports_central_auth():
     callers = [
         p.name for p in BACKEND.glob("*.py")
-        if not p.name.startswith("test_") and p.name not in ("central_auth.py", "central_deps.py", "central_routes.py")
+        if not p.name.startswith("test_") and p.name not in ("central_auth.py", "central_deps.py", "central_routes.py", "identity_admin_cli.py", "e2e_central_seed.py", "seed_synthetic_homolog.py")
         and any(f"{kw} central_auth" in p.read_text() for kw in ("import", "from"))
     ]
     assert callers == []

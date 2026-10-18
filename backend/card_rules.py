@@ -13,6 +13,9 @@ from models import AuditEvent, Card, CardEditHistory, User, UserRole
 
 
 def is_admin(user: User) -> bool:
+    # A central CompanyContext carries is_global_admin; its role string is never judged here.
+    if hasattr(user, "is_global_admin"):
+        return user.is_global_admin
     return user.role == UserRole.ADMIN.value
 
 

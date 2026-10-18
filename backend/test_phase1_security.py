@@ -359,6 +359,14 @@ class TestMailerLogging:
         assert main._RedactLinkTokens().filter(record)
         assert "abc123" not in record.getMessage() and "reset_token=[redacted]&x=1" in record.getMessage()
 
+    def test_access_log_filter_redacts_central_invitation_tokens(self):
+        record = logging.LogRecord("uvicorn.access", logging.INFO, "", 0, '%s - "%s %s HTTP/%s" %d',
+                                   ("1.2.3.4:1", "GET", "/?central_invite_token=abc123&central_reset_token=def456", "1.1", 200), None)
+        assert main._RedactLinkTokens().filter(record)
+        message = record.getMessage()
+        assert "abc123" not in message and "def456" not in message
+        assert "central_invite_token=[redacted]&central_reset_token=[redacted]" in message
+
 
 # --- password policy -------------------------------------------------------------
 

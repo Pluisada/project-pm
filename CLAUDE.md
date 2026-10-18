@@ -75,6 +75,7 @@ Parts 1-21 complete. Part 22 (Bid import) is implemented end to end: schema, mig
 - Frontend: always use `API_BASE_URL`; keep the `col-${id}` / `card-${id}` dnd-kit id prefixes; drag listeners only on the handle button; card/column titles commit on blur, not per keystroke; match cards in tests via `data-title` / `getByDisplayValue`; keep `pointerWithin` + `closestCenter` fallback collision detection and the Undo bar's `overflow-clip`.
 - Tests: in-memory SQLite needs `StaticPool` + `check_same_thread=False`; E2E has no fallback backend URL, and drags wait for the `drag-overlay` testid to detach.
 - openpyxl is pinned (3.1.5); re-run `test_bid_excel_reader.py` on upgrade.
+- Central `card_rules.is_admin` must recognize a `CompanyContext` through its `is_global_admin` property, never by comparing its role string to `"admin"` (the global administrator's role is `"super_admin"`; `"admin"` is reserved and grants nothing in Phase 1). The legacy `User.role == "admin"` branch stays for the single-database mode.
 
 ## Coding standards
 

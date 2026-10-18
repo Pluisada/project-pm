@@ -59,7 +59,84 @@ from identity_models import (
 from models import CompanyUser
 
 INVITATION_TTL = timedelta(days=7)
-ADMIN_ROLE = "admin"  # what company_access reports for a global admin; never a membership role
+SUPER_ADMIN_ROLE = "super_admin"  # what company_access reports for a global admin; never a membership role
+ADMIN_ROLE = "admin"  # reserved for the future company-scoped Admin; grants nothing in Phase 1
+VISITOR_ROLE = "visitor"
+
+
+# Role predicates over the role company_access reports. Every authorization site goes through these, so the
+# Super Admin / company Admin split (a later phase) changes them in one place. Today only the global
+# administrator is administrative: is_admin_level and can_review are equal to is_super.
+def is_super(role: str) -> bool:
+    """The global administrator (IdentityUser.is_global_admin), reported as SUPER_ADMIN_ROLE."""
+    return role == SUPER_ADMIN_ROLE
+
+
+def is_admin_level(role: str) -> bool:
+    """May run company administrative operations (boards, delete, move back, assign, import, invite)."""
+    return is_super(role)
+
+
+def can_review(role: str) -> bool:
+    """May see and clear audit review state. Nothing is reviewable yet; kept equal to is_admin_level."""
+    return is_admin_level(role)
+
+
+def can_manage_members(role: str) -> bool:
+    """May invite, change or remove company members. Only the global administrator; company Admin may not yet."""
+    return is_super(role)
+
+
+def can_grant_admin(role: str) -> bool:
+    """May create or promote a company Admin membership or invitation. Nobody: ADMIN_ROLE is not in
+    COMPANY_ROLES, so no service path assigns it, whoever asks. Enabling it is a later phase."""
+    return False
+
+
+def can_manage_products(role: str) -> bool:
+    """May create, rename and delete the products of the company the role was resolved for (Phase 2E, part 1).
+
+    The Super Admin and a company Admin. The role comes from company_access for one slug, so an Admin
+    membership elsewhere never counts. Nothing else is enabled for the Admin yet.
+    """
+    return is_super(role) or role == ADMIN_ROLE
+
+
+def can_manage_boards(role: str) -> bool:
+    """May create boards and create or edit columns of the company the role was resolved for (Phase 2E, part 2).
+
+    The Super Admin and a company Admin; deliberately its own predicate, not can_manage_products. Deleting a
+    column (which deletes its cards, unaudited) is not included: it stays Super Admin only.
+    """
+    return is_super(role) or role == ADMIN_ROLE
+
+
+def can_manage_cards(role: str) -> bool:
+    """May assign/reassign, move backward and delete opportunities of the company the role was resolved for, and
+    edit any of its cards (Phase 2E, part 3). The Super Admin and a company Admin. AI, undo/revert and imports do
+    not use it yet; Sales Member and Visitor never do.
+    """
+    return is_super(role) or role == ADMIN_ROLE
+
+
+def can_manage_imports(role: str) -> bool:
+    """May preview, confirm, list and revert Bid imports of the company the role was resolved for (Phase 2E, part 5).
+
+    The Super Admin and a company Admin. Its own predicate, separate from cards: the import services run against
+    the company database the request was authorized for, so a batch of another company cannot be named.
+    """
+    return is_super(role) or role == ADMIN_ROLE
+
+
+def read_only(role: str) -> bool:
+    """A role that may never write (Visitor). The reserved company Admin is not read-only (Phase 2B), but it is
+    no administrator either: every admin-level predicate is false for it, so it acts at most as a Sales Member."""
+    return role == VISITOR_ROLE
+
+
+def can_view_members(role: str) -> bool:
+    """May list a company's members and pending invitations: the Super Admin and a company Admin (read only)."""
+    return is_super(role) or role == ADMIN_ROLE
 
 
 class IdentityServiceError(Exception):
@@ -97,7 +174,7 @@ class LocalSyncError(IdentityServiceError):
 class CompanyAccess:
     user_id: int
     company_slug: str
-    role: str  # "admin" | "sales_member" | "visitor"
+    role: str  # "super_admin" | "sales_member" | "visitor"
 
 
 @dataclass(frozen=True)
@@ -134,7 +211,7 @@ def normalize_email(email: str) -> str:
 
 
 def _check_role(role: str) -> str:
-    if role not in COMPANY_ROLES:  # "admin" is global, never a company role
+    if role not in COMPANY_ROLES:  # the global administrator is never a company role
         raise InvalidInput("the company role is not valid")
     return role
 
@@ -216,7 +293,7 @@ def company_access(session: Session, user_id: int, slug: str) -> CompanyAccess |
     if user is None or not user.is_active or not company.is_active:
         return None
     if user.is_global_admin:
-        return CompanyAccess(user.id, slug, ADMIN_ROLE)
+        return CompanyAccess(user.id, slug, SUPER_ADMIN_ROLE)
     membership = session.scalar(select(IdentityMembership).where(
         IdentityMembership.user_id == user_id, IdentityMembership.company_id == company.id,
         IdentityMembership.is_active.is_(True),
@@ -224,8 +301,31 @@ def company_access(session: Session, user_id: int, slug: str) -> CompanyAccess |
     return CompanyAccess(user.id, slug, membership.role) if membership else None
 
 
+def assignable_user_ids(session: Session, slug: str) -> list[int]:
+    """Ids of the active users who may be assigned opportunities in a company, from the central database only.
+
+    Eligible: an active user who is a global admin, or who holds an active `sales_member` membership in the
+    company. Visitors are read-only and never eligible. Legacy lead-options listed every user, admins
+    included, and card_rules never restricted who an admin may assign, so admins stay eligible. An inactive
+    company yields nobody. Read-only, ordered by id; creates no company-local reference.
+    """
+    company = get_company(session, slug)
+    if not company.is_active:
+        return []
+    member = select(IdentityMembership.user_id).where(
+        IdentityMembership.company_id == company.id,
+        IdentityMembership.role == "sales_member",
+        IdentityMembership.is_active.is_(True),
+    )
+    return list(session.scalars(
+        select(IdentityUser.id)
+        .where(IdentityUser.is_active.is_(True), IdentityUser.is_global_admin.is_(True) | IdentityUser.id.in_(member))
+        .order_by(IdentityUser.id)
+    ))
+
+
 def require_company_role(session: Session, user_id: int, slug: str, allowed: tuple[str, ...]) -> CompanyAccess:
-    """Access to `slug` with one of the `allowed` roles (ADMIN_ROLE counts when listed), or NotAuthorized."""
+    """Access to `slug` with one of the `allowed` roles (SUPER_ADMIN_ROLE counts when listed), or NotAuthorized."""
     access = company_access(session, user_id, slug)
     if access is None or access.role not in allowed:
         raise NotAuthorized("the user has no permitted role in this company")
@@ -234,10 +334,20 @@ def require_company_role(session: Session, user_id: int, slug: str, allowed: tup
 
 # --- invitations ---------------------------------------------------------
 
+def _may_invite(session: Session, user_id: int, company_slug: str) -> bool:
+    """Whether the user, read from the central database now, may issue invitations for this company.
+
+    Goes through company_access and can_manage_members, never a stored role string or a token claim. Today
+    only the global administrator qualifies: a company Admin role is not in COMPANY_ROLES and grants nothing.
+    """
+    access = company_access(session, user_id, company_slug)
+    return access is not None and can_manage_members(access.role)
+
+
 def create_invitation(
     session: Session, admin_user_id: int, email: str, company_slug: str, role: str, *, now: datetime | None = None
 ) -> IssuedInvitation:
-    """Invite `email` to one company with one company role. Global admins only.
+    """Invite `email` to one company with one company role. Only a current Super Admin (can_manage_members).
 
     An open invitation for the same email and company that has expired is closed
     (revoked); one that is still valid is a Conflict. Refused if the email already
@@ -246,8 +356,10 @@ def create_invitation(
     email, role = normalize_email(email), _check_role(role)
     now = now or _now()
     with _Transaction(session):
-        admin = _active_admin(session, admin_user_id)
         company = get_company(session, company_slug)
+        if not _may_invite(session, admin_user_id, company_slug):
+            raise NotAuthorized("administrator access is required")
+        admin = session.get(IdentityUser, admin_user_id)
         if not company.is_active:
             raise Conflict("the company is not active")
         existing_user = session.scalar(select(IdentityUser).where(IdentityUser.email == email))
@@ -395,13 +507,17 @@ def claim_invitation(session: Session, raw_token: str, *, user_id: int | None, n
     ).values(consumed_at=now).returning(IdentityAuthToken.invitation_id)).first()
     if claimed is None:
         raise InvitationInvalid()
-    invitation = session.get(IdentityInvitation, claimed[0])
-    company = session.get(IdentityCompany, invitation.company_id)
-    inviter = session.get(IdentityUser, invitation.invited_by_user_id)
+    invitation = session.get(IdentityInvitation, claimed[0]) if claimed[0] is not None else None
+    company = session.get(IdentityCompany, invitation.company_id) if invitation is not None else None
+    if invitation is None or company is None or company.slug not in COMPANY_SLUGS:
+        raise InvitationInvalid()
+    # Re-checked now, from the central database: an invitation is only as good as its inviter's current
+    # authority, and it never grants a role outside COMPANY_ROLES (the schema also stores the reserved admin).
     if (
         invitation.accepted_at is not None or invitation.revoked_at is not None
         or invitation.expires_at <= now or not company.is_active
-        or not inviter.is_active or not inviter.is_global_admin
+        or invitation.role not in COMPANY_ROLES or can_grant_admin(invitation.role)
+        or not _may_invite(session, invitation.invited_by_user_id, company.slug)
     ):
         raise InvitationInvalid()
     if user_id is not None:
@@ -418,8 +534,8 @@ def claim_invitation(session: Session, raw_token: str, *, user_id: int | None, n
         raise InvitationInvalid()
     membership = session.scalar(select(IdentityMembership).where(
         IdentityMembership.user_id == user.id, IdentityMembership.company_id == company.id))
-    if membership is not None and membership.is_active:
-        raise InvitationInvalid()  # a second membership is never created; the invitation stays unaccepted
+    if membership is not None and (membership.is_active or membership.role not in COMPANY_ROLES):
+        raise InvitationInvalid()  # no second active membership, no reactivated admin one
     closed = session.execute(update(IdentityInvitation).where(
         IdentityInvitation.id == invitation.id,
         IdentityInvitation.accepted_at.is_(None), IdentityInvitation.revoked_at.is_(None),
@@ -436,6 +552,155 @@ def claim_invitation(session: Session, raw_token: str, *, user_id: int | None, n
     _audit(session, "invitation_accepted", actor=user.id, target=user.id, company_id=company.id,
            role=invitation.role, invitation_id=invitation.id)
     return Acceptance(user.id, company.slug, invitation.role)
+
+
+# --- membership management (Phase 2D) ------------------------------------
+#
+# Authority: the Super Admin manages any supported company (list, deactivate, change roles). A company Admin
+# (an active `admin` membership, read from the central database now) may list members and pending invitations
+# and deactivate Sales Member / Visitor memberships of its own company only; it never touches an Admin
+# (itself included), never changes a role and never invites. This grants nothing in general company operations:
+# is_admin_level stays Super-Admin only. Only the identity database is opened.
+# Writes take SQLite's write lock first, then re-read authority, so a concurrent role change or deactivation
+# serializes and the later one sees the earlier one's result.
+
+ASSIGNABLE_ROLES = (*COMPANY_ROLES, ADMIN_ROLE)  # what a Super Admin may set on an existing membership
+
+
+def _begin_write(session: Session) -> None:
+    """Take the write lock now (a no-op UPDATE) and drop cached rows, so everything read afterwards is current."""
+    session.execute(update(IdentityMembership).where(IdentityMembership.id == 0).values(role=IdentityMembership.role))
+    session.expire_all()
+
+
+def _manager(session: Session, actor_id: int, slug: str) -> CompanyAccess:
+    """The actor's current access if it may view/manage members of this company, else NotAuthorized."""
+    try:
+        access = company_access(session, actor_id, slug)
+    except IdentityServiceError:  # unsupported or unregistered company: same answer as no access
+        access = None
+    if access is None or not can_view_members(access.role):
+        raise NotAuthorized("member management is not permitted")
+    return access
+
+
+def list_members(session: Session, actor_id: int, slug: str) -> list[dict]:
+    """Every membership (active or not) of one company, from the central database only. No secrets."""
+    access = _manager(session, actor_id, slug)
+    company = get_company(session, access.company_slug)
+    rows = session.execute(
+        select(IdentityMembership, IdentityUser)
+        .join(IdentityUser, IdentityUser.id == IdentityMembership.user_id)
+        .where(IdentityMembership.company_id == company.id)
+        .order_by(IdentityMembership.id)
+    ).all()
+    return [{
+        "user_id": user.id, "email": user.email, "role": m.role, "is_active": bool(m.is_active),
+        "user_is_active": bool(user.is_active), "email_verified": user.email_verified_at is not None,
+        "joined_at": m.created_at,
+    } for m, user in rows]
+
+
+def list_pending_invitations(session: Session, actor_id: int, slug: str, *, now: datetime | None = None) -> list[dict]:
+    """Open, unexpired invitations of one company. Never a token or its hash."""
+    now = now or _now()
+    access = _manager(session, actor_id, slug)
+    company = get_company(session, access.company_slug)
+    rows = session.scalars(select(IdentityInvitation).where(
+        IdentityInvitation.company_id == company.id,
+        IdentityInvitation.accepted_at.is_(None), IdentityInvitation.revoked_at.is_(None),
+        IdentityInvitation.expires_at > now,
+    ).order_by(IdentityInvitation.id)).all()
+    return [{"invitation_id": i.id, "email": i.email, "role": i.role, "invited_by_user_id": i.invited_by_user_id,
+             "created_at": i.created_at, "expires_at": i.expires_at} for i in rows]
+
+
+def _close_open_invitations_by(session: Session, user_id: int, company_id: int, now: datetime) -> int:
+    ids = session.scalars(select(IdentityInvitation.id).where(
+        IdentityInvitation.invited_by_user_id == user_id, IdentityInvitation.company_id == company_id,
+        IdentityInvitation.accepted_at.is_(None), IdentityInvitation.revoked_at.is_(None),
+    )).all()
+    for invitation_id in ids:
+        _close_invitation(session, session.get(IdentityInvitation, invitation_id), now)
+    return len(ids)
+
+
+def _target_membership(session: Session, actor_id: int, slug: str, target_user_id: int):
+    """(company, target membership) after the checks common to deactivation and role changes."""
+    company = get_company(session, slug)
+    target = session.get(IdentityUser, target_user_id)
+    if target is None:
+        raise NotFound("the member does not exist")
+    if target.id == actor_id:
+        raise NotAuthorized("members cannot change their own membership")
+    if target.is_global_admin:
+        raise NotAuthorized("the global administrator cannot be changed here")
+    membership = session.scalar(select(IdentityMembership).where(
+        IdentityMembership.user_id == target.id, IdentityMembership.company_id == company.id))
+    if membership is None:
+        raise NotFound("the member does not exist")
+    return company, membership
+
+
+def deactivate_membership(
+    session: Session, actor_id: int, slug: str, target_user_id: int, *, now: datetime | None = None
+) -> None:
+    """Soft-deactivate one company membership (the row, the user and other companies are untouched).
+
+    Super Admin: any membership but its own. Company Admin: a Sales Member or Visitor of its own company.
+    A deactivated Admin's open invitations are closed. Company-local rows are never touched.
+    """
+    now = now or _now()
+    with _Transaction(session):
+        _begin_write(session)
+        access = _manager(session, actor_id, slug)
+        company, membership = _target_membership(session, actor_id, access.company_slug, target_user_id)
+        if not is_super(access.role) and membership.role not in COMPANY_ROLES:
+            raise NotAuthorized("only the Super Admin may change an Admin")
+        if not membership.is_active:
+            raise Conflict("the membership is already inactive")
+        role = membership.role
+        result = session.execute(update(IdentityMembership).where(
+            IdentityMembership.id == membership.id, IdentityMembership.is_active.is_(True),
+            IdentityMembership.role == role,
+        ).values(is_active=False))
+        if result.rowcount != 1:
+            raise Conflict("the membership changed; retry")
+        closed = _close_open_invitations_by(session, target_user_id, company.id, now)
+        _audit(session, "membership_deactivated", actor=actor_id, target=target_user_id, company_id=company.id,
+               role=role, invitations_closed=closed)
+
+
+def change_membership_role(
+    session: Session, actor_id: int, slug: str, target_user_id: int, new_role: str, *, now: datetime | None = None
+) -> None:
+    """Super Admin only: set an active membership to sales_member, visitor or admin (exact values).
+
+    Demoting an Admin closes the invitations it issued. Other companies' memberships are never touched.
+    """
+    if not isinstance(new_role, str) or new_role not in ASSIGNABLE_ROLES:
+        raise InvalidInput("the company role is not valid")
+    now = now or _now()
+    with _Transaction(session):
+        _begin_write(session)
+        access = _manager(session, actor_id, slug)
+        if not can_manage_members(access.role):
+            raise NotAuthorized("only the Super Admin may change roles")
+        company, membership = _target_membership(session, actor_id, access.company_slug, target_user_id)
+        if not membership.is_active:
+            raise Conflict("the membership is inactive")
+        old_role = membership.role
+        if old_role == new_role:
+            raise Conflict("the member already has this role")
+        result = session.execute(update(IdentityMembership).where(
+            IdentityMembership.id == membership.id, IdentityMembership.is_active.is_(True),
+            IdentityMembership.role == old_role,
+        ).values(role=new_role))
+        if result.rowcount != 1:
+            raise Conflict("the membership changed; retry")
+        closed = _close_open_invitations_by(session, target_user_id, company.id, now) if old_role == ADMIN_ROLE else 0
+        _audit(session, "membership_role_changed", actor=actor_id, target=target_user_id, company_id=company.id,
+               old_role=old_role, new_role=new_role, invitations_closed=closed)
 
 
 # --- company-local reference --------------------------------------------

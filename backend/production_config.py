@@ -163,7 +163,12 @@ def problems() -> list[str]:
     if public and base and public.rstrip("/").lower() != base.rstrip("/").lower():
         found.append("PM_PUBLIC_URL and APP_BASE_URL are both set and differ; set one value (docker-compose maps PM_PUBLIC_URL to APP_BASE_URL)")
 
-    found.extend(database_problems())
+    import auth_mode  # lazy: auth_mode itself imports nothing from here
+
+    if auth_mode.auth_mode() == auth_mode.LEGACY:
+        found.extend(database_problems())
+    # Central mode has no legacy database: auth_mode.validate_config() requires the identity and company
+    # databases explicitly, and database_targets validates each one before it is opened.
     found.extend(smtp_problems())
 
     # Imported here to avoid a circular import (http_security uses is_production).

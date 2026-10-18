@@ -8,13 +8,14 @@ fallback. There is deliberately no URL-string helper or public engine constructo
 from collections.abc import Callable, Iterator
 from urllib.parse import quote
 
-from sqlalchemy import Engine, create_engine, event, inspect
+from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from database_targets import identity_database_path
 from identity_models import IdentityBase
+from identity_schema import IDENTITY_SCHEMA_VERSION, schema_problems
 
 IDENTITY_DATABASE_URL_ENV = "IDENTITY_DATABASE_URL"
 
@@ -57,9 +58,6 @@ def create_identity_session_factory(engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
-IDENTITY_SCHEMA_VERSION = 1  # stored in SQLite's PRAGMA user_version
-
-
 class IdentitySchemaVersionError(RuntimeError):
     """The identity database does not carry the schema version this code expects."""
 
@@ -95,22 +93,24 @@ def create_identity_schema(engine: Engine) -> None:
 def require_identity_schema_version(engine: Engine) -> None:
     """Refuse a database that is not the recognized identity schema; read-only.
 
-    Needs PRAGMA user_version == IDENTITY_SCHEMA_VERSION and every identity table.
-    (PRAGMA application_id is deliberately not used: stamping it on existing
-    databases would be a separate explicit migration step, deferred.)
+    Needs PRAGMA user_version == IDENTITY_SCHEMA_VERSION and a schema that matches the models: every table,
+    both role CHECK constraints, AUTOINCREMENT, every index (including the partial unique open-invitation
+    index) and no foreign-key violation. A database from an older version is refused, not upgraded:
+    migrate_identity_v2.py does that, explicitly. (PRAGMA application_id is deliberately not used: stamping
+    it on existing databases would be a separate explicit migration step, deferred.)
     """
     with engine.connect() as connection:
         found = connection.exec_driver_sql("PRAGMA user_version").scalar()
         if found != IDENTITY_SCHEMA_VERSION:
             raise IdentitySchemaVersionError(
                 f"identity schema version {found} found, {IDENTITY_SCHEMA_VERSION} expected; "
-                "the application never stamps or migrates it"
+                "the application never stamps or migrates it (see migrate_identity_v2.py)"
             )
-        missing = set(IdentityBase.metadata.tables) - set(inspect(connection).get_table_names())
-    if missing:
+        problems = schema_problems(connection.connection.driver_connection)
+    if problems:
         raise IdentitySchemaVersionError(
-            f"the database is marked version {IDENTITY_SCHEMA_VERSION} but is missing identity tables "
-            f"({len(missing)}); it is not an identity database and is never repaired"
+            f"the database is marked version {IDENTITY_SCHEMA_VERSION} but does not match that schema "
+            f"({'; '.join(problems)}); it is never repaired"
         )
 
 

@@ -42,6 +42,7 @@ from auth import (
     verify_login_password,
     verify_password,
 )
+from database_targets import COMPANY_SLUGS
 from identity_models import IdentityAuthToken, IdentityUser
 from identity_service import (
     Acceptance,
@@ -49,12 +50,21 @@ from identity_service import (
     IdentityServiceError,
     InvalidInput,
     InvitationInvalid,
+    NotAuthorized,
     NotFound,
     _active_admin,
     _audit,
     _now,
     _Transaction,
+    accept_invitation,
     claim_invitation,
+    company_access,
+    change_membership_role,
+    create_invitation,
+    deactivate_membership,
+    list_members,
+    list_pending_invitations,
+    get_company,
     hash_token,
     normalize_email,
 )
@@ -141,6 +151,17 @@ def authenticate(session: Session, email: str, password: str) -> AuthSession:
     if not password_ok or not _usable(user):
         raise AuthenticationFailed()
     return AuthSession(user.id, _issue_access_token(user))
+
+
+def join_invitation(session: Session, raw_token: str, email: str, password: str) -> int:
+    """An existing account accepts an invitation addressed to its own email. Returns the user id.
+
+    Authenticates first (AuthenticationFailed, same single failure as login), then claims the single-use token
+    for exactly that user (InvitationInvalid for every invitation-side problem, including someone else's token).
+    """
+    user_id = authenticate(session, email, password).user_id
+    accept_invitation(session, raw_token, user_id=user_id)
+    return user_id
 
 
 def user_for_token(session: Session, token: str) -> IdentityUser:
@@ -304,4 +325,22 @@ __all__ = [
     "AuthenticationFailed", "ResetTokenInvalid", "WeakPassword", "AuthSession",
     "authenticate", "user_for_token", "logout", "accept_invitation_with_password",
     "issue_password_reset", "reset_password", "change_password", "deactivate_user",
+    "list_company_access", "create_invitation", "NotAuthorized", "NotFound", "Conflict", "IdentityServiceError",
+    "list_members", "list_pending_invitations", "deactivate_membership", "change_membership_role",
 ]
+
+
+# --- read models for the central routes ----------------------------------
+
+def list_company_access(session: Session, user: IdentityUser) -> list[dict]:
+    """Every active company the user may enter, with the effective role. Central database only."""
+    found = []
+    for slug in COMPANY_SLUGS:
+        try:
+            access = company_access(session, user.id, slug)
+            company = get_company(session, slug)
+        except IdentityServiceError:  # a company not registered centrally
+            continue
+        if access is not None:
+            found.append({"slug": slug, "name": company.name, "role": access.role})
+    return found

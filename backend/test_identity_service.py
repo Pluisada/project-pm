@@ -313,8 +313,9 @@ def test_company_roles_are_isolated(e):
     with pytest.raises(svc.NotAuthorized):
         svc.require_company_role(e.session, uid, "valor-log", ("sales_member", "visitor"))
     with pytest.raises(svc.NotAuthorized):
-        svc.require_company_role(e.session, uid, "lity", (svc.ADMIN_ROLE,))
-    assert svc.require_company_role(e.session, e.admin, "valor-log", (svc.ADMIN_ROLE,)).role == "admin"
+        svc.require_company_role(e.session, uid, "lity", (svc.SUPER_ADMIN_ROLE,))
+    assert svc.require_company_role(e.session, e.admin, "valor-log", (svc.SUPER_ADMIN_ROLE,)).role == "super_admin"
+    assert svc.SUPER_ADMIN_ROLE == "super_admin" and svc.ADMIN_ROLE == "admin"
 
 
 def test_deactivated_users_and_memberships_lose_access(e):
@@ -402,7 +403,7 @@ def test_no_foreign_key_crosses_the_databases():
 
 def test_identity_schema_is_untouched(e):
     assert set(inspect(e.engine).get_table_names()) >= set(IdentityBase.metadata.tables)
-    assert e.session.execute(text("PRAGMA user_version")).scalar() == 1
+    assert e.session.execute(text("PRAGMA user_version")).scalar() == 2
 
 
 def test_importing_has_no_side_effects(tmp_path):
@@ -422,7 +423,128 @@ def test_importing_has_no_side_effects(tmp_path):
 def test_nothing_in_the_application_imports_the_service():
     callers = [
         p.name for p in BACKEND.glob("*.py")
-        if not p.name.startswith("test_") and p.name not in ("identity_service.py", "central_auth.py", "central_deps.py")
+        if not p.name.startswith("test_") and p.name not in ("identity_service.py", "central_auth.py", "central_deps.py", "identity_admin_cli.py", "e2e_central_seed.py", "seed_synthetic_homolog.py")
         and any(f"{kw} identity_service" in p.read_text() for kw in ("import", "from"))
     ]
     assert callers == []
+
+
+# --- Phase 2C: invitation authority is re-read, never assumed ---
+
+def _force_admin_invitation(e, issued, role="admin"):
+    """The schema stores the reserved admin role; only a direct write can plant one."""
+    e.session.execute(text("UPDATE identity_invitations SET role = :r WHERE id = :i"), {"r": role, "i": issued.invitation_id})
+    e.session.commit()
+
+
+def test_super_admin_issues_both_supported_roles_and_no_role_grants_admin(e):
+    assert invite(e, "a@example.com", role="sales_member").role == "sales_member"
+    assert invite(e, "b@example.com", role="visitor").role == "visitor"
+    for role in (svc.SUPER_ADMIN_ROLE, svc.ADMIN_ROLE, "sales_member", "visitor", ""):
+        assert svc.can_grant_admin(role) is False
+    for role in ("admin", "super_admin", "owner", "Admin"):
+        with pytest.raises(svc.InvalidInput):
+            invite(e, "c@example.com", role=role)
+    assert e.session.query(IdentityInvitation).count() == 2
+
+
+def test_company_admin_membership_cannot_invite(e):
+    uid = svc.create_user(e.session, "ca@example.com").id
+    e.session.add(IdentityMembership(
+        user_id=uid, company_id=svc.get_company(e.session, "lity").id, role="admin", created_at=svc._now()))
+    e.session.commit()
+    assert svc.can_manage_members(svc.company_access(e.session, uid, "lity").role) is False
+    with pytest.raises(svc.NotAuthorized):
+        svc.create_invitation(e.session, uid, "x@example.com", "lity", "visitor")
+    assert e.session.query(IdentityInvitation).count() == 0
+
+
+def test_inviter_demoted_or_deactivated_cannot_issue(e):
+    e.session.execute(text("UPDATE identity_users SET is_global_admin = 0 WHERE id = :i"), {"i": e.admin})
+    e.session.commit()
+    with pytest.raises(svc.NotAuthorized):
+        invite(e)
+    assert e.session.query(IdentityInvitation).count() == 0
+
+
+def test_acceptance_fails_after_inviter_is_deactivated_and_nothing_is_claimed(e):
+    issued = invite(e)
+    e.session.execute(text("UPDATE identity_users SET is_active = 0 WHERE id = :i"), {"i": e.admin})
+    e.session.commit()
+    with pytest.raises(svc.InvitationInvalid):
+        svc.accept_invitation(e.session, issued.token)
+    assert e.session.query(IdentityMembership).count() == 0
+    assert e.session.scalar(select(IdentityInvitation.accepted_at)) is None
+    assert e.session.scalar(select(IdentityAuthToken.consumed_at)) is None
+    assert e.session.query(IdentityUser).count() == 2  # no user was created for the invitee
+
+
+@pytest.mark.parametrize("role", ["admin"])
+def test_a_planted_admin_invitation_is_never_accepted(e, role):
+    issued = invite(e)
+    _force_admin_invitation(e, issued, role)
+    with pytest.raises(svc.InvitationInvalid):
+        svc.accept_invitation(e.session, issued.token)
+    assert e.session.query(IdentityMembership).count() == 0
+
+
+def test_a_lapsed_admin_membership_is_not_reactivated_by_an_invitation(e):
+    uid = svc.create_user(e.session, "old@example.com").id
+    e.session.add(IdentityMembership(
+        user_id=uid, company_id=svc.get_company(e.session, "lity").id, role="admin", is_active=False,
+        created_at=svc._now()))
+    e.session.commit()
+    issued = invite(e, "old@example.com")
+    with pytest.raises(svc.InvitationInvalid):
+        svc.accept_invitation(e.session, issued.token, user_id=uid)
+    membership = e.session.scalar(select(IdentityMembership))
+    assert membership.role == "admin" and membership.is_active is False
+
+
+def test_company_mismatch_and_dangling_references_fail_closed(e):
+    issued = invite(e)
+    other = svc.get_company(e.session, "valor-log")
+    # a token that points at no invitation, and an invitation whose company is not a supported slug
+    e.session.execute(text("PRAGMA foreign_keys = OFF"))
+    e.session.execute(text("UPDATE identity_companies SET slug = 'rogue' WHERE id = :i"), {"i": other.id})
+    e.session.execute(text("UPDATE identity_invitations SET company_id = :c WHERE id = :i"),
+                      {"c": other.id, "i": issued.invitation_id})
+    e.session.commit()
+    with pytest.raises(svc.InvitationInvalid):
+        svc.accept_invitation(e.session, issued.token)
+    assert e.session.query(IdentityMembership).count() == 0
+
+
+def test_failed_acceptances_reveal_nothing_about_accounts(e):
+    issued = invite(e, "known@example.com")
+    errors = set()
+    for token, uid in [("nope", None), (issued.token, e.plain), (issued.token, 9999), (issued.token, e.admin)]:
+        with pytest.raises(svc.InvitationInvalid) as exc:
+            svc.accept_invitation(e.session, token, user_id=uid)
+        errors.add(str(exc.value))
+    assert errors == {"the invitation is not valid"}
+    svc.accept_invitation(e.session, issued.token)  # the rightful acceptance still works after the failures
+
+
+def test_concurrent_acceptance_after_revoked_authority_creates_nothing(e):
+    issued = invite(e)
+    e.session.execute(text("UPDATE identity_users SET is_global_admin = 0 WHERE id = :i"), {"i": e.admin})
+    e.session.commit()
+    outcomes, barrier = [], threading.Barrier(3)
+
+    def run():
+        session = e.factory()
+        try:
+            barrier.wait()
+            svc.accept_invitation(session, issued.token)
+            outcomes.append("ok")
+        except svc.InvitationInvalid:
+            outcomes.append("invalid")
+        finally:
+            session.close()
+
+    threads = [threading.Thread(target=run) for _ in range(3)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert outcomes == ["invalid"] * 3
+    assert e.session.query(IdentityMembership).count() == 0

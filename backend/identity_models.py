@@ -40,7 +40,12 @@ from sqlalchemy.orm import declarative_base
 
 IdentityBase = declarative_base()
 
+# Roles the service layer may assign today.
 COMPANY_ROLES = ("sales_member", "visitor")
+# Roles the v2 schema stores in memberships and invitations. "admin" is reserved for the future company-scoped
+# Admin: the CHECK constraints accept it, but COMPANY_ROLES (what the service validates) does not, so nothing can
+# create such a membership or invitation yet and it grants no privilege.
+SCHEMA_ROLES = (*COMPANY_ROLES, "admin")
 TOKEN_PURPOSES = ("invitation", "password_reset")
 
 _AUTOINCREMENT = {"sqlite_autoincrement": True}
@@ -111,7 +116,7 @@ class IdentityMembership(IdentityBase):
     __tablename__ = "identity_memberships"
     __table_args__ = (
         UniqueConstraint("user_id", "company_id", name="uq_identity_memberships_user_company"),
-        CheckConstraint(_in("role", COMPANY_ROLES), name="ck_identity_memberships_role"),
+        CheckConstraint(_in("role", SCHEMA_ROLES), name="ck_identity_memberships_role"),
         CheckConstraint("is_active IN (0, 1)", name="ck_identity_memberships_is_active_bool"),
         Index("ix_identity_memberships_company_id", "company_id"),
         _AUTOINCREMENT,
@@ -139,7 +144,7 @@ class IdentityInvitation(IdentityBase):
             "email = lower(email) AND length(email) > 0 AND length(email) <= 320",
             name="ck_identity_invitations_email_lower",
         ),
-        CheckConstraint(_in("role", COMPANY_ROLES), name="ck_identity_invitations_role"),
+        CheckConstraint(_in("role", SCHEMA_ROLES), name="ck_identity_invitations_role"),
         CheckConstraint("expires_at > created_at", name="ck_identity_invitations_expiry"),
         CheckConstraint(
             "NOT (accepted_at IS NOT NULL AND revoked_at IS NOT NULL)", name="ck_identity_invitations_one_outcome"

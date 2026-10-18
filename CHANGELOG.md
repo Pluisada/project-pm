@@ -2,6 +2,12 @@
 
 User-facing changes, newest first. For design decisions, test results and known gaps behind each entry, see the matching part in `docs/PLAN.md`.
 
+## 2026-10-17
+
+- **Company membership management (Feature Phase 2D, development only, backend).** The Super Admin can list a company's members and pending invitations, deactivate memberships and change roles between Sales Member, Visitor and Admin; a company Admin can list its own company and deactivate its Sales Members and Visitors. No screen yet. An Admin membership still grants no extra privilege (no administrator operations): company Admin privileges stay disabled.
+
+- **Identity schema v2 (Feature Phase 2A, development only).** Memberships and invitations can store the reserved `admin` role; nobody can be assigned it and it grants nothing. New identity databases are created at v2 and a stricter validator checks the role constraints, indexes and foreign keys on open. Existing v1 identity databases are refused until upgraded with the explicit `migrate_identity_v2.py` (dry run by default; rehearsed only on synthetic databases so far).
+
 ## 2026-10-16
 
 - **Login no longer reveals which usernames exist by timing.** Unknown usernames and accounts without a usable password now cost one bcrypt check against a dummy hash, like a wrong password (`auth.verify_login_password`).

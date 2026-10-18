@@ -40,6 +40,7 @@ from models import User, UserRole
 from routes import router as api_router
 from import_routes import REVERT_RETRY_AFTER_SECONDS, router as import_router
 from bid_import_revert import is_lock_error
+import auth_mode
 from central_routes import central_router
 from central_runtime import central_runtime
 from company_routes import company_router
@@ -56,12 +57,13 @@ from schemas import (
 app = FastAPI(title="PM Backend", version="0.1.0", **production_config.docs_kwargs())
 logger = logging.getLogger(__name__)
 
-_LINK_TOKEN = re.compile(r"((?:signup|reset)_token=)[^&\s\"]+")
+_LINK_TOKEN = re.compile(r"((?:signup|reset|invite)_token=)[^&\s\"]+")
 
 
 class _RedactLinkTokens(logging.Filter):
     """Uvicorn's access log prints the full request path, and the emailed links
-    open `/?signup_token=...` / `/?reset_token=...`; keep those tokens out of it."""
+    open `/?signup_token=...` / `/?reset_token=...` (central: `central_reset_token`, `central_invite_token`);
+    keep those tokens out of it."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.args, tuple):
@@ -96,7 +98,9 @@ async def startup_event():
     signup_policy.validate_config()
     ai_limits.validate_config()
     http_security.validate_config()
-    init_db()
+    auth_mode.validate_config()
+    if auth_mode.auth_mode() == auth_mode.LEGACY:  # central mode has no legacy database
+        init_db()
 
 
 @app.on_event("shutdown")
@@ -119,6 +123,7 @@ app.add_middleware(
     allow_methods=http_security.CORS_METHODS,
     allow_headers=http_security.CORS_HEADERS,
 )
+app.add_middleware(auth_mode.AuthModeMiddleware)
 app.add_middleware(http_security.SecurityHeadersMiddleware)
 
 
@@ -187,6 +192,12 @@ async def logout(current_user: User = Depends(get_current_user), db: Session = D
     _bump_session_version(db, current_user.id)
     db.commit()
     return {"message": "Logged out successfully", "username": current_user.username}
+
+
+@app.get("/api/mode")
+async def mode():
+    """Which sign-in flow the frontend must use (unauthenticated; reveals nothing but the mode)."""
+    return {"auth": auth_mode.auth_mode()}
 
 
 # API health check endpoint

@@ -26,6 +26,7 @@ from identity_database import (
     identity_db_dependency,
     IdentitySchemaVersionError,
 )
+from identity_schema import IDENTITY_SCHEMA_VERSION
 from identity_models import (
     IdentityAuditEvent,
     IdentityAuthToken,
@@ -247,10 +248,12 @@ def test_membership_unique_per_user_and_company(db):
     db.commit()
 
 
-def test_membership_role_limited_to_company_roles(db):
+def test_membership_role_limited_to_the_schema_roles(db):
     user, company = add_user(db), add_company(db)
-    for role in ("admin", "global_admin", "", "Visitor"):
+    for role in ("super_admin", "global_admin", "", "Visitor", "Admin"):
         rejected(db, IdentityMembership(user_id=user.id, company_id=company.id, role=role))
+    db.add(IdentityMembership(user_id=user.id, company_id=company.id, role="admin"))  # v2: reserved, accepted by the schema
+    db.commit()
 
 
 # --- invitations ------------------------------------------------------------
@@ -272,7 +275,11 @@ def test_one_open_invitation_per_email_and_company(db):
 def test_invitation_constraints(db):
     admin, company = add_user(db, "admin@example.com", is_global_admin=True), add_company(db)
     base = dict(company_id=company.id, invited_by_user_id=admin.id, created_at=NOW, expires_at=NOW + timedelta(days=1))
-    rejected(db, IdentityInvitation(email="x@example.com", role="admin", **base))
+    rejected(db, IdentityInvitation(email="x@example.com", role="super_admin", **base))
+    db.add(IdentityInvitation(email="x@example.com", role="admin", **base))  # v2: reserved, accepted by the schema
+    db.commit()
+    db.query(IdentityInvitation).delete()
+    db.commit()
     rejected(db, IdentityInvitation(email="X@example.com", role="visitor", **base))
     rejected(db, IdentityInvitation(
         email="x@example.com", role="visitor", **{**base, "expires_at": NOW}))  # not after created_at
@@ -696,16 +703,16 @@ def test_create_schema_is_idempotent_on_a_recognized_database(tmp_path):
     try:
         create_identity_schema(eng)
         with eng.connect() as conn:
-            assert conn.exec_driver_sql("PRAGMA user_version").scalar() == 1
+            assert conn.exec_driver_sql("PRAGMA user_version").scalar() == IDENTITY_SCHEMA_VERSION
     finally:
         eng.dispose()
 
 
-def test_foreign_file_with_user_version_1_is_refused_and_unchanged(tmp_path):
+def test_foreign_file_with_the_current_user_version_is_refused_and_unchanged(tmp_path):
     path = tmp_path / "foreign.db"
     conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE other (id INTEGER)")
-    conn.execute("PRAGMA user_version = 1")
+    conn.execute(f"PRAGMA user_version = {IDENTITY_SCHEMA_VERSION}")
     conn.commit()
     conn.close()
     before = path.read_bytes()
@@ -714,11 +721,11 @@ def test_foreign_file_with_user_version_1_is_refused_and_unchanged(tmp_path):
     assert path.read_bytes() == before
 
 
-def test_partial_identity_schema_with_version_1_is_refused(tmp_path):
+def test_partial_identity_schema_with_the_current_version_is_refused(tmp_path):
     path = tmp_path / "partial.db"
     conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE identity_users (id INTEGER)")
-    conn.execute("PRAGMA user_version = 1")
+    conn.execute(f"PRAGMA user_version = {IDENTITY_SCHEMA_VERSION}")
     conn.commit()
     conn.close()
     with pytest.raises(IdentitySchemaVersionError):
