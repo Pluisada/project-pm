@@ -4,15 +4,33 @@ Aggregated in Python: boards are small, and the groupings (per currency,
 won/lost/open by the column's stage_kind) are clearer here than in SQL.
 """
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import date, timedelta
 from typing import Optional
 
 from sqlalchemy.orm import Session, selectinload
 
 from lead_options import DEAL_CURRENCY, STAGE_LOST, STAGE_WON
-from models import Card, Column
+from models import Card, Column, CompanyUser
 
 CLOSING_SOON_DAYS = 30
+FORMER_USER_LABEL = "Former user"
+
+
+def user_labels(db: Session, user_ids: Iterable[int | None]) -> dict[int, str]:
+    """Display label for each user id, read from the session's own `users` table only.
+
+    The label is CompanyUser.username. An id with no local row maps to
+    FORMER_USER_LABEL. None (no assignment) is skipped, so a caller still tells
+    "unassigned" (id None, absent here) from "assigned to a missing user" (id
+    present, FORMER_USER_LABEL). Ids are the key, never labels, so equal labels
+    stay separate. Read-only; consults no central state and creates no rows.
+    """
+    ids = {user_id for user_id in user_ids if user_id is not None}
+    if not ids:
+        return {}
+    found = dict(db.query(CompanyUser.id, CompanyUser.username).filter(CompanyUser.id.in_(ids)).all())
+    return {user_id: found.get(user_id, FORMER_USER_LABEL) for user_id in ids}
 
 
 def annual_amounts(card) -> Optional[tuple]:
@@ -53,23 +71,25 @@ def money_fields(money: dict, prefix: str = "") -> dict:
     return {f"{prefix}totals": money["current"], f"{prefix}next_totals": money["next"], f"{prefix}sum_totals": money["sum"]}
 
 
-def _group(cards: list[Card], key_of) -> list[dict]:
+def _group(cards: list[Card], key_of, id_of=None) -> list[dict]:
+    """Breakdown rows. With id_of, rows are grouped by (key, id): equal display keys with different ids stay apart."""
     groups = defaultdict(lambda: {"open_count": 0, "open": new_money(), "won_count": 0, "won": new_money()})
     for card in cards:
         stage_kind = card.column.stage_kind
         if stage_kind == STAGE_LOST:
             continue
-        group = groups[key_of(card)]
+        group = groups[(key_of(card), id_of(card) if id_of else None)]
         kind = "won" if stage_kind == STAGE_WON else "open"
         group[f"{kind}_count"] += 1
         add_money(group[kind], card)
     return [
         {
             "key": key,
+            "salesperson_id": person_id,
             "open_count": values["open_count"], **money_fields(values["open"], "open_"),
             "won_count": values["won_count"], **money_fields(values["won"], "won_"),
         }
-        for key, values in sorted(groups.items())
+        for (key, person_id), values in sorted(groups.items(), key=lambda item: (item[0][0], item[0][1] is not None, item[0][1] or 0))
     ]
 
 
@@ -91,13 +111,15 @@ def build_board_report(
         db.query(Card)
         .join(Column)
         .filter(Column.board_id == board_id)
-        .options(selectinload(Card.salesperson), selectinload(Card.column))
+        .options(selectinload(Card.column))
     )
     if salesperson_id is not None:
         query = query.filter(Card.salesperson_id == salesperson_id)
     if product_line is not None:
         query = query.filter(Card.product_line == product_line)
     cards = query.all()
+    # Unassigned (salesperson_id None) is told apart from assigned to a user with no local row (FORMER_USER_LABEL).
+    labels = user_labels(db, (card.salesperson_id for card in cards))
 
     stages = {
         col.id: {"column_id": col.id, "title": col.title, "stage_kind": col.stage_kind, "count": 0, "money": new_money()}
@@ -128,7 +150,7 @@ def build_board_report(
                     "title": card.title,
                     "company": card.company,
                     "stage": card.column.title,
-                    "salesperson_name": card.salesperson_name,
+                    "salesperson_name": labels.get(card.salesperson_id),
                     "deal_value": card.deal_value,
                     "deal_value_next_year": card.deal_value_next_year or 0,
                     "deal_value_total": (annual_amounts(card) or (None, None, None))[2],
@@ -153,7 +175,7 @@ def build_board_report(
         # Years the amounts above were entered for (cards' stored deal_year):
         # one entry normally; several mean the totals span more than one year.
         "deal_years": sorted({c.deal_year for c in cards if annual_amounts(c) is not None}),
-        "by_salesperson": _group(cards, lambda c: c.salesperson_name or "Unassigned"),
+        "by_salesperson": _group(cards, lambda c: labels.get(c.salesperson_id) or "Unassigned", lambda c: c.salesperson_id),
         "by_product_line": _group(cards, lambda c: c.product_line or "Not set"),
         "by_source": _group(cards, lambda c: c.lead_source or "Not set"),
         "closing_soon": closing_soon,
