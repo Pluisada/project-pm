@@ -44,6 +44,7 @@ from central_deps import (
 from central_runtime import central_runtime
 from company_runtime import CompanyRuntime, company_runtime
 from models import Board, Card, Column, CompanyUser, UndoEntry
+from lead_options import ConfidenceFilter
 from routes import (
     board_ai_chat_payload,
     _check_stage_kind,
@@ -412,9 +413,10 @@ def build_company_router(
         board_id: int,
         salesperson_id: Optional[int] = None,
         product_line: Optional[str] = None,
+        confidence_level: Optional[ConfidenceFilter] = None,
         db: Session = Depends(get_company_db),
     ):
-        return board_report_payload(db, board_id, salesperson_id, product_line)
+        return board_report_payload(db, board_id, salesperson_id, product_line, confidence_level)
 
     @router.get("/boards/{board_id}/cards/{card_id}/history", response_model=List[CardEditHistoryEntry])
     def get_company_card_history(board_id: int, card_id: int, db: Session = Depends(get_company_db)):

@@ -39,3 +39,7 @@ Currency = Literal[tuple(CURRENCIES)]
 LeadSource = Literal[tuple(LEAD_SOURCES)]
 ProductLine = Literal[tuple(PRODUCT_LINES)]
 ConfidenceLevel = Literal[tuple(CONFIDENCE_LEVELS)]
+# Report filter value for "no level assigned" (a real NULL cannot travel in a query string); the three levels pass as is.
+CONFIDENCE_UNASSIGNED = "UNASSIGNED"
+ConfidenceFilter = Literal[tuple(CONFIDENCE_LEVELS + [CONFIDENCE_UNASSIGNED])]
+CONFIDENCE_UNASSIGNED_LABEL = "Not assigned"

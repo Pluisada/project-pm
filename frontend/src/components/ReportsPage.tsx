@@ -3,10 +3,12 @@
 import { useEffect, useState } from "react";
 import clsx from "clsx";
 import {
+  CONFIDENCE_LEVELS,
   getBoardReport,
   getErrorMessage,
   getLeadOptions,
   type BoardReport,
+  type ConfidenceFilter,
   type LeadOptions,
   type ReportGroup,
 } from "@/lib/api";
@@ -81,6 +83,7 @@ export const ReportsPage = ({ boardId }: ReportsPageProps) => {
   const [error, setError] = useState<string | null>(null);
   const [salespersonId, setSalespersonId] = useState("");
   const [productLine, setProductLine] = useState("");
+  const [confidence, setConfidence] = useState<ConfidenceFilter | "">("");
 
   useEffect(() => {
     getLeadOptions()
@@ -92,13 +95,14 @@ export const ReportsPage = ({ boardId }: ReportsPageProps) => {
     getBoardReport(boardId, {
       salespersonId: salespersonId ? Number(salespersonId) : undefined,
       productLine: productLine || undefined,
+      confidenceLevel: confidence || undefined,
     })
       .then((data) => {
         setReport(data);
         setError(null);
       })
       .catch((err: unknown) => setError(getErrorMessage(err, "Failed to load report")));
-  }, [boardId, salespersonId, productLine]);
+  }, [boardId, salespersonId, productLine, confidence]);
 
   const kpis = report?.kpis;
 
@@ -141,6 +145,21 @@ export const ReportsPage = ({ boardId }: ReportsPageProps) => {
             {options?.product_lines.map((line) => (
               <option key={line} value={line}>{line}</option>
             ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.15em] text-[var(--gray-text)]">
+          Probability level
+          <select
+            value={confidence}
+            onChange={(e) => setConfidence(e.target.value as ConfidenceFilter | "")}
+            className={selectClass}
+            aria-label="Filter by probability level"
+          >
+            <option value="">All</option>
+            {CONFIDENCE_LEVELS.map((level) => (
+              <option key={level} value={level}>{level}</option>
+            ))}
+            <option value="UNASSIGNED">Not assigned</option>
           </select>
         </label>
       </div>
@@ -230,6 +249,11 @@ export const ReportsPage = ({ boardId }: ReportsPageProps) => {
               <GroupTable label="Source" groups={report.by_source} years={report.deal_years} />
             </Section>
           </div>
+          {report.by_confidence_level && (
+            <Section title="By probability level">
+              <GroupTable label="Probability level" groups={report.by_confidence_level} years={report.deal_years} />
+            </Section>
+          )}
         </>
       )}
     </div>

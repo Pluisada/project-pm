@@ -388,6 +388,8 @@ class BoardReport(BaseModel):
     by_salesperson: List[ReportGroup]
     by_product_line: List[ReportGroup]
     by_source: List[ReportGroup]
+    # Always four rows in this order: LOW, MEDIUM, HIGH, "Not assigned" (zeros included).
+    by_confidence_level: List[ReportGroup] = []
     closing_soon: List[ClosingSoonLead]
     # Years the amounts were entered for (the cards' stored deal_year).
     deal_years: List[int] = []

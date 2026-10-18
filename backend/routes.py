@@ -21,7 +21,7 @@ from card_rules import (
 )
 from database import get_db
 from deps import get_current_user, require_admin
-from lead_options import CURRENCIES, LEAD_SOURCES, PRODUCT_LINES, STAGE_OPEN
+from lead_options import CURRENCIES, ConfidenceFilter, LEAD_SOURCES, PRODUCT_LINES, STAGE_OPEN
 from bid_revenue import add_revenue, new_revenue, revenue_rows
 from models import Board, Column, Card, CardBidDetails, CardEditHistory, User, UserRole, ConversationMessage, UndoEntry
 import ai_limits
@@ -789,13 +789,14 @@ async def get_lead_options(
 
 def board_report_payload(
     db: Session, board_id: int, salesperson_id: Optional[int], product_line: Optional[str],
+    confidence_level: Optional[str] = None,
 ):
     if not db.query(Board).filter(Board.id == board_id).first():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Board not found",
         )
-    return build_board_report(db, board_id, salesperson_id, product_line)
+    return build_board_report(db, board_id, salesperson_id, product_line, confidence_level=confidence_level)
 
 
 @router.get("/boards/{board_id}/report", response_model=BoardReport)
@@ -803,13 +804,16 @@ async def get_board_report(
     board_id: int,
     salesperson_id: Optional[int] = None,
     product_line: Optional[str] = None,
+    confidence_level: Optional[ConfidenceFilter] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Sales report over the board's leads, optionally filtered.
 
+    confidence_level: LOW, MEDIUM or HIGH (exact, upper case), or UNASSIGNED for cards with no level; anything else is a
+    422. Omitted = no filter. Combines (AND) with the other filters.
     """
-    return board_report_payload(db, board_id, salesperson_id, product_line)
+    return board_report_payload(db, board_id, salesperson_id, product_line, confidence_level)
 
 
 # ============================================================================

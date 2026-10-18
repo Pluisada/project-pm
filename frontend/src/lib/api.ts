@@ -114,6 +114,12 @@ export interface ColumnResponse {
   cards?: CardResponse[];
 }
 
+/** The sales team's own assessment of an opportunity; null = not assigned. Exact upper case, as the API stores it. */
+export type ConfidenceLevel = "LOW" | "MEDIUM" | "HIGH";
+/** Report filter token: a level, or UNASSIGNED for cards with no level (never "" or "NULL"). */
+export const CONFIDENCE_LEVELS: readonly ConfidenceLevel[] = ["LOW", "MEDIUM", "HIGH"];
+export type ConfidenceFilter = ConfidenceLevel | "UNASSIGNED";
+
 /** Sales lead fields on a card; every one is optional (null when unset). */
 export interface LeadFields {
   company: string | null;
@@ -394,6 +400,8 @@ export interface BoardReport {
   by_salesperson: ReportGroup[];
   by_product_line: ReportGroup[];
   by_source: ReportGroup[];
+  /** Always LOW, MEDIUM, HIGH, "Not assigned" in this order, zeros included. */
+  by_confidence_level?: ReportGroup[];
   closing_soon: {
     card_id: number;
     title: string;
@@ -413,6 +421,7 @@ export interface BoardReport {
 export interface ReportFilters {
   salespersonId?: number;
   productLine?: string;
+  confidenceLevel?: ConfidenceFilter;
 }
 
 export async function getBoardReport(
@@ -422,6 +431,7 @@ export async function getBoardReport(
   const params = new URLSearchParams();
   if (filters.salespersonId !== undefined) params.set("salesperson_id", String(filters.salespersonId));
   if (filters.productLine) params.set("product_line", filters.productLine);
+  if (filters.confidenceLevel) params.set("confidence_level", filters.confidenceLevel);
   const query = params.toString();
   return apiCall<BoardReport>(`/api/boards/${boardId}/report${query ? `?${query}` : ""}`);
 }

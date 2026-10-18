@@ -11,7 +11,9 @@ from typing import Optional
 from sqlalchemy.orm import Session, selectinload
 
 from bid_revenue import add_revenue, new_revenue, revenue_rows
-from lead_options import DEAL_CURRENCY, STAGE_LOST, STAGE_WON
+from lead_options import (
+    CONFIDENCE_LEVELS, CONFIDENCE_UNASSIGNED, CONFIDENCE_UNASSIGNED_LABEL, DEAL_CURRENCY, STAGE_LOST, STAGE_WON,
+)
 from models import Card, Column, CompanyUser
 
 CLOSING_SOON_DAYS = 30
@@ -94,12 +96,28 @@ def _group(cards: list[Card], key_of, id_of=None) -> list[dict]:
     ]
 
 
+def _confidence_groups(cards: list[Card]) -> list[dict]:
+    """LOW, MEDIUM, HIGH, then Not assigned: always these four rows in this order, zeros included.
+
+    Same row shape and open/won measures as _group (lost cards are left out the same way); a card falls in exactly one row.
+    """
+    rows = {level: _group([c for c in cards if c.confidence_level == level], lambda c: level) for level in CONFIDENCE_LEVELS}
+    rows[None] = _group([c for c in cards if c.confidence_level is None], lambda c: CONFIDENCE_UNASSIGNED_LABEL)
+    empty = {"salesperson_id": None, "open_count": 0, "won_count": 0, **money_fields(new_money(), "open_"),
+             **money_fields(new_money(), "won_")}
+    return [
+        rows[level][0] if rows[level] else {**empty, "key": CONFIDENCE_UNASSIGNED_LABEL if level is None else level}
+        for level in (*CONFIDENCE_LEVELS, None)
+    ]
+
+
 def build_board_report(
     db: Session,
     board_id: int,
     salesperson_id: Optional[int] = None,
     product_line: Optional[str] = None,
     today: Optional[date] = None,
+    confidence_level: Optional[str] = None,
 ) -> dict:
     today = today or date.today()
     columns = (
@@ -118,6 +136,10 @@ def build_board_report(
         query = query.filter(Card.salesperson_id == salesperson_id)
     if product_line is not None:
         query = query.filter(Card.product_line == product_line)
+    if confidence_level == CONFIDENCE_UNASSIGNED:
+        query = query.filter(Card.confidence_level.is_(None))
+    elif confidence_level is not None:
+        query = query.filter(Card.confidence_level == confidence_level)
     cards = query.all()
     # Unassigned (salesperson_id None) is told apart from assigned to a user with no local row (FORMER_USER_LABEL).
     labels = user_labels(db, (card.salesperson_id for card in cards))
@@ -184,5 +206,6 @@ def build_board_report(
         "by_salesperson": _group(cards, lambda c: labels.get(c.salesperson_id) or "Unassigned", lambda c: c.salesperson_id),
         "by_product_line": _group(cards, lambda c: c.product_line or "Not set"),
         "by_source": _group(cards, lambda c: c.lead_source or "Not set"),
+        "by_confidence_level": _confidence_groups(cards),
         "closing_soon": closing_soon,
     }
