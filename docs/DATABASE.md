@@ -754,6 +754,10 @@ uv run python migrate_bid_cpm.py --database "$PWD/pm.db" --apply    # backup + m
 ```
 It runs one `ALTER TABLE ... ADD COLUMN`, then verifies that every row of every table and every other schema object is unchanged, `foreign_key_check` is clean and the new column is all NULL.
 
+#### Legacy Bid confidence columns (migration `migrate_legacy_bid_confidence.py`)
+
+A legacy single-database file that still has `card_bid_details.confidence` and `card_source_refs.source_confidence` (or lacks `cards.confidence_level`) is refused at startup by the import-schema guard. The tool adds `cards.confidence_level VARCHAR(6)` (NULL everywhere; nothing is inferred) and drops the two obsolete columns, whose values are deliberately discarded. `--database` is an absolute path (no `DATABASE_URL` fallback); the default is a dry run; `--apply` also needs `--expect-sha256`. Under the write lock it re-checks the file's identity and hash, writes `<name>-pre-bid-confidence-<time>.db.bak` exclusively and verifies it against the approved content (including the dropped columns); a failed backup is kept as `*.UNVERIFIED.db.bak` and nothing is migrated. Any later failure rolls back and keeps the verified backup. Company databases use `migrate_confidence_level.py` instead. Before running either on a real database follow `docs/MIGRATION_PROTOCOL_BID_CONFIDENCE.md`.
+
 #### HTTP endpoints (Part 22E)
 
 All admin-only (401/403 otherwise), in `backend/import_routes.py`:

@@ -398,13 +398,14 @@ def _serialized_sha256(conn) -> str:
     return hashlib.sha256(conn.serialize()).hexdigest()
 
 
-def _backup_approved_state(path: str, identity: tuple[int, int], fd: int, expected_sha256: str, locked, source: dict) -> str:
+def _backup_approved_state(path: str, identity: tuple[int, int], fd: int, expected_sha256: str, locked, source: dict,
+                           tag: str = "confidence-level") -> str:
     """Under the write lock: copy through a read-only connection, verify it, confirm the source still is the approved
     state. Returns the verified backup's path. Any failure quarantines the new artifact and raises MigrationError
     naming it; the database has not been changed at that point."""
     reader = open_readonly(path)  # SQLite's backup hangs on the connection that holds the write lock; a reader may read
     try:
-        backup_path = backup_database(reader, path, "confidence-level", exclusive=True)
+        backup_path = backup_database(reader, path, tag, exclusive=True)
     except BackupError as exc:
         raise MigrationError(f"{exc}; {_quarantine(exc.path)}; the database was not changed") from exc
     except BaseException as exc:  # KeyboardInterrupt etc. after the file was created (it carries backup_artifact), or a refusal

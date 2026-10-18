@@ -8,6 +8,8 @@ User-facing changes, newest first. For design decisions, test results and known 
 
 - **Identity schema v2 (Feature Phase 2A, development only).** Memberships and invitations can store the reserved `admin` role; nobody can be assigned it and it grants nothing. New identity databases are created at v2 and a stricter validator checks the role constraints, indexes and foreign keys on open. Existing v1 identity databases are refused until upgraded with the explicit `migrate_identity_v2.py` (dry run by default; rehearsed only on synthetic databases so far).
 
+- **Legacy database: Bid confidence columns removal (development only).** `migrate_legacy_bid_confidence.py` upgrades a legacy single-database file to the probability-level schema (adds the empty `cards.confidence_level`, drops the old Bid confidence columns, whose values are discarded on purpose). Dry run by default; `--apply` needs the approved file's SHA-256, writes an exclusive backup that is verified against the approved content before anything changes (a failed one is kept as `*.UNVERIFIED.db.bak`), and rolls back on any failure. Never applied to a real database; see `docs/MIGRATION_PROTOCOL_BID_CONFIDENCE.md`.
+
 ## 2026-10-16
 
 - **Login no longer reveals which usernames exist by timing.** Unknown usernames and accounts without a usable password now cost one bcrypt check against a dummy hash, like a wrong password (`auth.verify_login_password`).
