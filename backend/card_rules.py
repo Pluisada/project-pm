@@ -9,7 +9,8 @@ import json
 from datetime import date, datetime, timezone
 
 from lead_options import DEAL_CURRENCY
-from models import AuditEvent, Card, CardEditHistory, User, UserRole
+from product_catalog import ProductError, check_product_line
+from models import AuditEvent, Card, CardEditHistory, CompanyUser, User, UserRole
 
 
 def is_admin(user: User) -> bool:
@@ -19,15 +20,21 @@ def is_admin(user: User) -> bool:
     return user.role == UserRole.ADMIN.value
 
 
-def move_denial(user: User, card: Card, to_position: int) -> str | None:
+def _admin(user: User, admin: bool | None) -> bool:
+    """The caller's card-administration authority: `admin` when the caller decided it (the company routes pass a
+    company-scoped decision, Phase 2E part 3), otherwise is_admin(user), which AI, undo and legacy use unchanged."""
+    return is_admin(user) if admin is None else admin
+
+
+def move_denial(user: User, card: Card, to_position: int, *, admin: bool | None = None) -> str | None:
     """Why `user` may not move `card` to a column at `to_position`, or None if they may.
 
     Admins move any card anywhere. Members move only cards assigned to them
     (never unassigned ones), and only forward or within the same column.
     Judged on the card's current database state."""
-    if is_admin(user):
+    if _admin(user, admin):
         return None
-    if not can_edit_card(user, card):
+    if not can_edit_card(user, card, admin=admin):
         return "You can only move opportunities assigned to you"
     if to_position < card.column.position:
         return "Members can only move cards forward, not back to an earlier column"
@@ -38,10 +45,15 @@ class CardPermissionDenied(PermissionError):
     """The user may not make this change to this card (routes answer 403)."""
 
 
-def can_edit_card(user: User, card: Card) -> bool:
+def can_edit_card(user: User, card: Card, *, admin: bool | None = None) -> bool:
     """Admins edit every card; members only cards assigned to them. An unassigned
-    card is editable by admins alone. Judged on the card's current database state."""
-    return is_admin(user) or (card.salesperson_id is not None and card.salesperson_id == user.id)
+    card is editable by admins alone. A read-only role (a company Visitor) edits nothing,
+    even a card assigned to it. Judged on the card's current database state."""
+    if _admin(user, admin):
+        return True
+    if getattr(user, "role", None) == "visitor":
+        return False
+    return card.salesperson_id is not None and card.salesperson_id == user.id
 
 
 def record_audit(db, board_id: int, card_id: int | None, actor: User, action: str, details: dict) -> None:
@@ -58,7 +70,7 @@ def record_audit(db, board_id: int, card_id: int | None, actor: User, action: st
 
 def _assignment_details(db, card: Card, old_id, new_id) -> dict:
     def name(user_id):
-        user = db.get(User, user_id) if user_id is not None else None
+        user = db.get(CompanyUser, user_id) if user_id is not None else None
         return user.username if user else None
 
     return {"title": card.title, "from_id": old_id, "from": name(old_id), "to_id": new_id, "to": name(new_id)}
@@ -109,7 +121,7 @@ def diff_card_changes(db, card: Card, updates: dict) -> dict:
         if new == old:
             continue
         if field == "salesperson_id":
-            new_user = db.get(User, new) if new is not None else None
+            new_user = db.get(CompanyUser, new) if new is not None else None
             changes["salesperson"] = {
                 "old": card.salesperson_name,
                 "new": new_user.username if new_user else None,
@@ -119,7 +131,7 @@ def diff_card_changes(db, card: Card, updates: dict) -> dict:
     return changes
 
 
-def apply_card_updates(db, card: Card, updates: dict, user: User) -> dict:
+def apply_card_updates(db, card: Card, updates: dict, user: User, *, admin: bool | None = None) -> dict:
     """Apply a validated partial update to a card, logging member edits.
 
     The single update path for both the REST route and the AI sidebar.
@@ -127,14 +139,18 @@ def apply_card_updates(db, card: Card, updates: dict, user: User) -> dict:
     change of salesperson, is an admin), and InvalidCardUpdate for a
     salesperson_id that isn't a user. A change of salesperson is audited.
     """
-    if not can_edit_card(user, card):
+    if not can_edit_card(user, card, admin=admin):
         raise CardPermissionDenied("You can only edit opportunities assigned to you")
     reassigns = "salesperson_id" in updates and updates["salesperson_id"] != card.salesperson_id
-    if reassigns and not is_admin(user):
+    if reassigns and not _admin(user, admin):
         raise CardPermissionDenied("Only an administrator can assign or reassign opportunities")
     salesperson_id = updates.get("salesperson_id")
-    if salesperson_id is not None and db.get(User, salesperson_id) is None:
+    if salesperson_id is not None and db.get(CompanyUser, salesperson_id) is None:
         raise InvalidCardUpdate("Salesperson not found")
+    try:
+        check_product_line(db, updates, card.product_line)
+    except ProductError as exc:
+        raise InvalidCardUpdate(str(exc))
 
     previous_owner = card.salesperson_id
     changes = diff_card_changes(db, card, updates)
@@ -142,7 +158,8 @@ def apply_card_updates(db, card: Card, updates: dict, user: User) -> dict:
         setattr(card, field, value)
     if updates.keys() & {"deal_value", "deal_value_next_year", "currency"}:
         card.currency = DEAL_CURRENCY  # Deal Value is always USD; not a logged change
-    record_member_edit(db, card, user, changes)
+    record_member_edit(db, card, user, changes, admin=admin)
+    audit_admin_edit(db, card, user, changes, admin=admin, owner=previous_owner)
     if reassigns:
         record_audit(
             db, card.column.board_id, card.id, user, "assign",
@@ -151,13 +168,29 @@ def apply_card_updates(db, card: Card, updates: dict, user: User) -> dict:
     return changes
 
 
-def record_member_edit(db, card: Card, user: User, changes: dict) -> None:
+def audit_admin_edit(db, card: Card, user: User, changes: dict, *, admin: bool | None, owner: int | None) -> None:
+    """Audit a company Admin's content edit of a card owned by someone else (Phase 2E remediation M2).
+
+    Only the company routes pass an explicit admin decision, and only a company Admin has it without being a global
+    administrator, so the Super Admin, members and the legacy path are untouched. A reassignment is already
+    audited as "assign" and is left out here. Field names only, never values: the audit row is in the same
+    transaction as the edit (the caller commits both or neither) and is not a CardEditHistory row, so the "M" badge
+    keeps meaning "a member changed this".
+    """
+    if admin is not True or getattr(user, "is_global_admin", True) or owner is None or owner == user.id:
+        return
+    fields = sorted(field for field in changes if field != "salesperson")
+    if fields:
+        record_audit(db, card.column.board_id, card.id, user, "edit", {"title": card.title, "fields": fields})
+
+
+def record_member_edit(db, card: Card, user: User, changes: dict, *, admin: bool | None = None) -> None:
     """Log a CardEditHistory row for a member's tracked content change.
 
     Admin edits are intentionally not logged here - this is what backs the
     "M" badge, which only ever means "a member changed this."
     """
-    if changes and not is_admin(user):
+    if changes and not _admin(user, admin):
         db.add(CardEditHistory(
             card_id=card.id,
             user_id=user.id,

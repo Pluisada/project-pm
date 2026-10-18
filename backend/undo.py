@@ -69,9 +69,16 @@ def undo_create(card: Card) -> dict:
     return {"op": "delete", "card_id": card.id, "expect": {"column_id": card.column_id, **card_fields(card)}}
 
 
+UNRESTORABLE = {"op": "unrestorable"}
+
+
 def undo_delete(card: Card) -> dict:
     """Step recreating `card` (call before deleting it). Its edit history,
-    which cascades with the card, isn't restored."""
+    which cascades with the card, isn't restored. A card carrying Bid details, a Bid source reference or import
+    history cannot be recreated faithfully (those cascade away with it), so its deletion is not undoable:
+    record_undo then records nothing and drops the caller's previous entry."""
+    if card.bid_details is not None or card.source_ref is not None or card.import_changes:
+        return UNRESTORABLE
     return {"op": "create", "column_id": card.column_id, "position": card.position, "fields": card_fields(card)}
 
 
@@ -81,6 +88,8 @@ def record_undo(db, user: User, board_id: int, description: str, steps: list) ->
     if not steps:
         return
     db.query(UndoEntry).filter(UndoEntry.user_id == user.id).delete()
+    if UNRESTORABLE in steps:
+        return  # part of this change cannot be reversed, so none of it is offered (no partial undo)
     db.add(UndoEntry(user_id=user.id, board_id=board_id, description=description, steps=json.dumps(steps)))
 
 
@@ -129,21 +138,26 @@ def _check_unchanged_since(db, board_id: int, steps: list) -> None:
             )
 
 
-def apply_undo(db, user: User, board_id: int) -> str:
+def apply_undo(db, user: User, board_id: int, *, admin: bool | None = None) -> str:
     """Reverse `user`'s last change on the board; returns its description.
 
     All steps are checked before any is applied, so a change that can no
     longer be undone (e.g. someone deleted the card since) leaves the board
-    untouched. Either way the entry is used up. Caller commits.
+    untouched. Either way the entry is used up. Caller commits. `admin` is the company routes' explicit
+    card-administration decision (None: is_admin(user)); the entry is still the caller's own.
     """
     entry = get_undo(db, user, board_id)
     if entry is None:
+        raise UndoError("Nothing to undo")
+    # Claim the entry first: the DELETE takes SQLite's write lock, so of two simultaneous undos only one finds the
+    # row and applies it; the other waits, then finds nothing (instead of re-applying the steps).
+    claimed = db.query(UndoEntry).filter(UndoEntry.id == entry.id).delete(synchronize_session=False)
+    if claimed != 1:
         raise UndoError("Nothing to undo")
     # Moves, deletions and re-creations made by the undo are new, compensating
     # stage events; the events of the change being undone are kept.
     set_stage_context(db, user, SOURCE_UNDO)
     steps = list(reversed(json.loads(entry.steps)))
-    db.delete(entry)
 
     for step in steps:
         if "card_id" in step and step["op"] != "delete" and _board_card(db, board_id, step["card_id"]) is None:
@@ -156,7 +170,7 @@ def apply_undo(db, user: User, board_id: int) -> str:
         op = step["op"]
         if op == "move":
             card = _board_card(db, board_id, step["card_id"])
-            if not can_edit_card(user, card):
+            if not can_edit_card(user, card, admin=admin):
                 raise UndoError("Can't undo: you can only move opportunities assigned to you")
             card.column_id = step["column_id"]
             card.position = step["position"]
@@ -170,13 +184,13 @@ def apply_undo(db, user: User, board_id: int) -> str:
                 # e.g. an imported Action longer than the 100-character edit limit
                 raise UndoError("Can't undo: the previous value is no longer valid")
             try:
-                apply_card_updates(db, card, fields, user)
+                apply_card_updates(db, card, fields, user, admin=admin)
             except CardPermissionDenied as exc:
                 raise UndoError(f"Can't undo: {exc}")
         elif op == "delete":
             card = _board_card(db, board_id, step["card_id"])
             if card is not None:  # already gone: nothing to remove
-                if not can_edit_card(user, card):
+                if not can_edit_card(user, card, admin=admin):
                     raise UndoError("Can't undo: you can only change opportunities assigned to you")
                 audit_deletion(db, board_id, card, user)
                 db.delete(card)

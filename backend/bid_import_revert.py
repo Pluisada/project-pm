@@ -506,7 +506,11 @@ def _log(event: str, batch_id: int, plan: RevertPlan | None = None, **extra) -> 
 
 # --- execution ------------------------------------------------------------------------------------
 
-def execute_revert(db: Session, batch_id: int, user, plan_fingerprint: str) -> RevertOutcome:
+class RevertNotAuthorized(Exception):
+    """The caller's authority was revoked before the commit; the revert was rolled back."""
+
+
+def execute_revert(db: Session, batch_id: int, user, plan_fingerprint: str, before_commit=None) -> RevertOutcome:
     """Revert the batch in one transaction, or change nothing. See the module docstring."""
     if db.new or db.dirty or db.deleted:
         raise ValueError("The session has unsaved changes; revert an import in a clean session")
@@ -523,6 +527,12 @@ def execute_revert(db: Session, batch_id: int, user, plan_fingerprint: str) -> R
             raise
         _log("failed", batch_id, error=type(exc).__name__)
         raise
+    if before_commit is not None:
+        try:
+            before_commit()  # last look at the caller's authority
+        except BaseException:
+            _rollback(db)
+            raise
     try:
         db.commit()
     except BaseException as exc:

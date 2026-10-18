@@ -29,11 +29,13 @@ from pathlib import Path
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from company_schema import COMPANY_SCHEMA_VERSION, CompanySchemaError, validate_company_schema
 from create_identity_db import _remove_created_file
 from database_targets import COMPANY_SLUGS, DatabaseTargetError, company_database_path
 from models import CompanyBase
+from product_catalog import initialize_catalog
 
 
 class CompanyDatabaseError(Exception):
@@ -81,6 +83,9 @@ def create_company_database(slug: str, environ=None) -> Path:
                 cursor.close()
 
         CompanyBase.metadata.create_all(engine)
+        with Session(engine) as session:  # a new company starts with the default products
+            initialize_catalog(session)
+            session.commit()
         with engine.begin() as connection:
             connection.exec_driver_sql(f"PRAGMA user_version = {COMPANY_SCHEMA_VERSION}")
         _check_foreign_keys(engine)

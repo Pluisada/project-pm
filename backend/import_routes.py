@@ -39,12 +39,15 @@ from starlette.formparsers import MultiPartException, MultiPartParser
 from auth import create_purpose_token, decode_purpose_token
 from bid_excel_reader import DEFAULT_LIMITS, BidReadResult, read_bid_excel
 from bid_import_preview import ImportPreview, RowDecision
-from bid_import_revert import READY, RevertBusy, RevertOutcomeUnconfirmed, RevertPlan, RevertRefused, execute_revert, revert_preview
-from bid_import_service import ImportConflict, ImportRejected, apply_bid_import, preview_bid_import
+from bid_import_revert import (
+    READY, RevertBusy, RevertNotAuthorized, RevertOutcomeUnconfirmed, RevertPlan, RevertRefused, execute_revert,
+    revert_preview,
+)
+from bid_import_service import ImportConflict, ImportNotAuthorized, ImportRejected, apply_bid_import, preview_bid_import
 from database import get_db
 from deps import require_admin
 from rate_limit import limit_imports
-from models import Board, ImportBatch, User
+from models import Board, CompanyUser, ImportBatch, User
 from schemas import (
     ImportBatchDetail, ImportBatchList, ImportBatchResponse, ImportDecision, ImportResult, RevertPlanResponse,
     RevertRequest, RevertResult,
@@ -278,7 +281,7 @@ def _revert_state(batch: ImportBatch) -> dict:
         reason = "batch_not_completed" if batch.status != "completed" else "no_ledger"
         return {"has_ledger": False, "revertible": False, "reason": reason, "reverted": False}
     if ledger.reverted_at is not None:
-        reverter = Session.object_session(batch).get(User, ledger.reverted_by_user_id) if ledger.reverted_by_user_id else None
+        reverter = Session.object_session(batch).get(CompanyUser, ledger.reverted_by_user_id) if ledger.reverted_by_user_id else None
         return {
             "has_ledger": True, "revertible": False, "reason": "already_reverted", "reverted": True,
             "reverted_at": ledger.reverted_at,
@@ -318,15 +321,11 @@ def _build_preview(db, read_result, board_id, decisions) -> ImportPreview:
         raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
-@router.post("/boards/{board_id}/imports/preview")
-async def preview_import(
-    board_id: int,
-    request: Request,
-    current_user: User = Depends(require_admin),
-    _: None = Depends(limit_imports),
-    db: Session = Depends(get_db),
-):
-    """Read the uploaded Bids report and propose an action per row. Writes nothing."""
+async def preview_import_impl(db: Session, board_id: int, request: Request, user_id: int, scope: Optional[str] = None):
+    """Read the uploaded Bids report and propose an action per row. Writes nothing.
+
+    `scope` is None for the legacy single database; in a company it is the company slug, signed into the token so a
+    preview made in one company can never confirm in another."""
     _board_or_404(db, board_id)
     data, filename, decisions, _ = await _read_form(request)
     read_result = _read_file(data, filename)
@@ -341,32 +340,44 @@ async def preview_import(
     token = None
     if confirmable:
         token = create_purpose_token(
-            str(current_user.id), PREVIEW_TOKEN_PURPOSE, timedelta(minutes=PREVIEW_TOKEN_MINUTES),
+            str(user_id), PREVIEW_TOKEN_PURPOSE, timedelta(minutes=PREVIEW_TOKEN_MINUTES),
             board_id=board_id,
             file_sha256=read_result.file.sha256,
             decisions_sha256=_decisions_fingerprint(decisions),
             preview_sha256=_preview_fingerprint(body),
             last_batch_id=_last_completed_batch_id(db, board_id),
+            **({"company": scope} if scope else {}),
         )
     return {**body, "confirmable": confirmable, "preview_token": token, "expires_in_minutes": PREVIEW_TOKEN_MINUTES}
 
 
-@router.post("/boards/{board_id}/imports", response_model=ImportResult, status_code=201)
-async def confirm_import(
+@router.post("/boards/{board_id}/imports/preview")
+async def preview_import(
     board_id: int,
     request: Request,
     current_user: User = Depends(require_admin),
     _: None = Depends(limit_imports),
     db: Session = Depends(get_db),
 ):
+    return await preview_import_impl(db, board_id, request, current_user.id)
+
+
+async def confirm_import_impl(
+    db: Session, board_id: int, request: Request, current_user, scope: Optional[str] = None, recheck=None
+):
     """Apply a previewed import: the same file, the same decisions, the
-    preview_token from the preview and confirm=true."""
+    preview_token from the preview and confirm=true. `current_user` needs only `.id`.
+
+    `recheck` (company routes) re-reads the caller's authority and raises HTTPException when it is gone; it runs just
+    before the write starts (after the upload and the preview were processed) and again, as ImportNotAuthorized,
+    just before the commit."""
     _board_or_404(db, board_id)
     data, filename, decisions, fields = await _read_form(request)
     if fields.get("confirm") != "true":
         raise HTTPException(status_code=422, detail="Set confirm=true to apply the import")
     claims = decode_purpose_token(fields.get("preview_token") or "", PREVIEW_TOKEN_PURPOSE)
-    if claims is None or claims.get("sub") != str(current_user.id) or claims.get("board_id") != board_id:
+    if (claims is None or claims.get("sub") != str(current_user.id) or claims.get("board_id") != board_id
+            or claims.get("company") != scope):
         raise HTTPException(status_code=422, detail="Invalid or expired preview; build the preview again")
     read_result = _read_file(data, filename)
     if read_result.file.sha256 != claims.get("file_sha256"):
@@ -384,8 +395,19 @@ async def confirm_import(
     if _preview_fingerprint(_preview_body(read_result, preview)) != claims.get("preview_sha256"):
         raise HTTPException(status_code=409, detail="The data changed since the preview; build it again")
 
+    def before_commit():
+        try:
+            recheck()
+        except HTTPException:
+            raise ImportNotAuthorized("Not authorized") from None
+
+    if recheck is not None:
+        recheck()
     try:
-        outcome = apply_bid_import(db, read_result, preview, decisions, board_id, current_user)
+        extra = {"before_commit": before_commit} if recheck is not None else {}  # legacy callers: unchanged call
+        outcome = apply_bid_import(db, read_result, preview, decisions, board_id, current_user, **extra)
+    except ImportNotAuthorized:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied") from None
     except ImportRejected as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     except ImportConflict as exc:
@@ -407,14 +429,18 @@ async def confirm_import(
     }
 
 
-@router.get("/boards/{board_id}/imports", response_model=ImportBatchList)
-async def list_imports(
+@router.post("/boards/{board_id}/imports", response_model=ImportResult, status_code=201)
+async def confirm_import(
     board_id: int,
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    request: Request,
     current_user: User = Depends(require_admin),
+    _: None = Depends(limit_imports),
     db: Session = Depends(get_db),
 ):
+    return await confirm_import_impl(db, board_id, request, current_user)
+
+
+def list_imports_impl(db: Session, board_id: int, limit: int, offset: int):
     """This board's import attempts (completed and failed), newest first."""
     _board_or_404(db, board_id)
     query = db.query(ImportBatch).filter(ImportBatch.board_id == board_id)
@@ -425,12 +451,18 @@ async def list_imports(
     return {"items": [_batch(b) for b in batches], "total": query.count(), "limit": limit, "offset": offset}
 
 
-@router.get("/imports/{batch_id}", response_model=ImportBatchDetail)
-async def get_import(
-    batch_id: int,
+@router.get("/boards/{board_id}/imports", response_model=ImportBatchList)
+async def list_imports(
+    board_id: int,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    return list_imports_impl(db, board_id, limit, offset)
+
+
+def get_import_impl(db: Session, batch_id: int):
     """One import attempt: metadata, state, counts and persisted diagnostics."""
     batch = db.get(ImportBatch, batch_id)
     if batch is None:
@@ -440,6 +472,15 @@ async def get_import(
         "mapping": json.loads(batch.mapping_json) if batch.mapping_json else None,
         "card_changes_count": len(batch.card_changes),
     }
+
+
+@router.get("/imports/{batch_id}", response_model=ImportBatchDetail)
+async def get_import(
+    batch_id: int,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return get_import_impl(db, batch_id)
 
 
 # --- revert (Part 23) -----------------------------------------------------------------------------
@@ -510,13 +551,7 @@ _REFUSALS = {
 }
 
 
-@router.get("/imports/{batch_id}/revert-preview", response_model=RevertPlanResponse)
-async def get_revert_preview(
-    batch_id: int,
-    current_user: User = Depends(require_admin),
-    _: None = Depends(limit_imports),
-    db: Session = Depends(get_db),
-):
+def revert_preview_impl(db: Session, batch_id: int):
     """What reverting this batch would do, with the plan_fingerprint to confirm it. Writes nothing."""
     try:
         plan = revert_preview(db, batch_id)
@@ -530,17 +565,31 @@ async def get_revert_preview(
     return _plan_body(plan)
 
 
-@router.post("/imports/{batch_id}/revert", response_model=RevertResult)
-async def revert_import(
+@router.get("/imports/{batch_id}/revert-preview", response_model=RevertPlanResponse)
+async def get_revert_preview(
     batch_id: int,
-    body: RevertRequest,
     current_user: User = Depends(require_admin),
     _: None = Depends(limit_imports),
     db: Session = Depends(get_db),
 ):
+    return revert_preview_impl(db, batch_id)
+
+
+def revert_import_impl(db: Session, batch_id: int, current_user, plan_fingerprint: str, recheck=None):
     """Revert the batch in one transaction, if the plan is still the one the admin previewed."""
+    def before_commit():
+        try:
+            recheck()
+        except HTTPException:
+            raise RevertNotAuthorized() from None
+
+    if recheck is not None:
+        recheck()
     try:
-        outcome = execute_revert(db, batch_id, current_user, body.plan_fingerprint)
+        extra = {"before_commit": before_commit} if recheck is not None else {}  # legacy callers: unchanged call
+        outcome = execute_revert(db, batch_id, current_user, plan_fingerprint, **extra)
+    except RevertNotAuthorized:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied") from None
     except RevertRefused as exc:
         if exc.code == "batch_not_found":
             raise _not_found() from None
@@ -573,3 +622,14 @@ async def revert_import(
             "observed": outcome.observed,
         },
     }
+
+
+@router.post("/imports/{batch_id}/revert", response_model=RevertResult)
+async def revert_import(
+    batch_id: int,
+    body: RevertRequest,
+    current_user: User = Depends(require_admin),
+    _: None = Depends(limit_imports),
+    db: Session = Depends(get_db),
+):
+    return revert_import_impl(db, batch_id, current_user, body.plan_fingerprint)

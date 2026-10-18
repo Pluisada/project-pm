@@ -22,7 +22,7 @@ from card_rules import (
 from database import get_db
 from deps import get_current_user, require_admin
 from lead_options import CURRENCIES, LEAD_SOURCES, PRODUCT_LINES, STAGE_OPEN
-from models import Board, Column, Card, User, UserRole, ConversationMessage, UndoEntry
+from models import Board, Column, Card, CardEditHistory, User, UserRole, ConversationMessage, UndoEntry
 import ai_limits
 import kpis
 import token_store
@@ -577,14 +577,13 @@ async def undo_last_change(
     return UndoStatus(available=False, description=None, undone=description)
 
 
-@router.get("/boards/{board_id}/cards/{card_id}/history", response_model=List[CardEditHistoryEntry])
-async def get_card_history(
-    board_id: int,
-    card_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """List a card's member-edit history, newest first."""
+def card_history_payload(db: Session, board_id: int, card_id: int) -> List[CardEditHistoryEntry]:
+    """Member-edit history of a card, newest first. Read-only.
+
+    `changes` is returned exactly as stored. An entry whose editor has no local user row
+    (deleted, or never synchronised into a company database) keeps its record and shows
+    edited_by "unknown".
+    """
     card = db.query(Card).join(Column).filter(
         Card.id == card_id,
         Column.board_id == board_id,
@@ -596,6 +595,13 @@ async def get_card_history(
             detail="Card not found",
         )
 
+    entries = (
+        db.query(CardEditHistory)
+        .options(selectinload(CardEditHistory.user))
+        .filter(CardEditHistory.card_id == card.id)
+        .order_by(CardEditHistory.created_at.desc(), CardEditHistory.id.desc())
+        .all()
+    )
     return [
         CardEditHistoryEntry(
             id=entry.id,
@@ -603,8 +609,19 @@ async def get_card_history(
             changes=json.loads(entry.changes),
             created_at=entry.created_at,
         )
-        for entry in card.edit_history
+        for entry in entries
     ]
+
+
+@router.get("/boards/{board_id}/cards/{card_id}/history", response_model=List[CardEditHistoryEntry])
+async def get_card_history(
+    board_id: int,
+    card_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List a card's member-edit history, newest first."""
+    return card_history_payload(db, board_id, card_id)
 
 
 # ============================================================================
@@ -631,15 +648,12 @@ async def test_ai(current_user: User = Depends(require_admin)):
     return result
 
 
-@router.post("/boards/{board_id}/ai")
-async def board_ai_chat(
-    board_id: int,
-    request: AIChatRequest,
-    current_user: User = Depends(get_current_user),
-    _: None = Depends(limit_ai_chat),
-    db: Session = Depends(get_db),
+async def board_ai_chat_payload(
+    db: Session, board_id: int, request: AIChatRequest, current_user,
+    assignable_ids: Optional[set] = None, record_undo_entry: bool = True, admin: Optional[bool] = None,
+    reauthorize=None,
 ):
-    """AI chat endpoint for board management."""
+    """The AI chat exchange for one board, shared by the legacy and the company-scoped routes."""
     # Verify board exists and belongs to user
     board = db.query(Board).filter(Board.id == board_id).first()
 
@@ -675,6 +689,12 @@ async def board_ai_chat(
                 detail=ai_result.get("error", "AI service error"),
             )
 
+        # The model call can take seconds: authority is read again from the identity database before anything is
+        # written, and its fresh card-administration decision replaces the one taken at request start. A callable
+        # that raises HTTPException refuses the request with nothing written (company routes only).
+        if reauthorize is not None:
+            admin = reauthorize()
+
         # Save user message
         user_msg = ConversationMessage(
             board_id=board_id,
@@ -688,7 +708,10 @@ async def board_ai_chat(
         # Apply actions if any
         actions_result = None
         if ai_result.get("actions"):
-            actions_result = await apply_board_actions(db, board_id, ai_result["actions"], current_user)
+            actions_result = await apply_board_actions(
+                db, board_id, ai_result["actions"], current_user,
+                assignable_ids=assignable_ids, record_undo_entry=record_undo_entry, admin=admin,
+            )
             if not actions_result.get("success"):
                 db.rollback()
                 raise HTTPException(
@@ -726,9 +749,30 @@ async def board_ai_chat(
         )
 
 
+@router.post("/boards/{board_id}/ai")
+async def board_ai_chat(
+    board_id: int,
+    request: AIChatRequest,
+    current_user: User = Depends(get_current_user),
+    _: None = Depends(limit_ai_chat),
+    db: Session = Depends(get_db),
+):
+    """AI chat endpoint for board management."""
+    return await board_ai_chat_payload(db, board_id, request, current_user)
+
+
 # ============================================================================
 # SALES LEADS
 # ============================================================================
+
+
+def lead_options_payload(salespeople: list[dict], product_lines: list[str] | None = None) -> LeadOptionsResponse:
+    return LeadOptionsResponse(
+        currencies=CURRENCIES,
+        lead_sources=LEAD_SOURCES,
+        product_lines=PRODUCT_LINES if product_lines is None else product_lines,
+        salespeople=salespeople,
+    )
 
 
 @router.get("/lead-options", response_model=LeadOptionsResponse)
@@ -739,12 +783,18 @@ async def get_lead_options(
     """Allowed lead field values. Open to members, who also assign salespeople
     (unlike GET /users, which is admin-only)."""
     users = db.query(User).order_by(User.username).all()
-    return LeadOptionsResponse(
-        currencies=CURRENCIES,
-        lead_sources=LEAD_SOURCES,
-        product_lines=PRODUCT_LINES,
-        salespeople=[{"id": u.id, "username": u.username} for u in users],
-    )
+    return lead_options_payload([{"id": u.id, "username": u.username} for u in users])
+
+
+def board_report_payload(
+    db: Session, board_id: int, salesperson_id: Optional[int], product_line: Optional[str],
+):
+    if not db.query(Board).filter(Board.id == board_id).first():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Board not found",
+        )
+    return build_board_report(db, board_id, salesperson_id, product_line)
 
 
 @router.get("/boards/{board_id}/report", response_model=BoardReport)
@@ -755,13 +805,10 @@ async def get_board_report(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Sales report over the board's leads, optionally filtered."""
-    if not db.query(Board).filter(Board.id == board_id).first():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Board not found",
-        )
-    return build_board_report(db, board_id, salesperson_id, product_line)
+    """Sales report over the board's leads, optionally filtered.
+
+    """
+    return board_report_payload(db, board_id, salesperson_id, product_line)
 
 
 # ============================================================================
@@ -784,6 +831,54 @@ def _kpi_period(history, period: str, start: Optional[date], end: Optional[date]
         raise HTTPException(status_code=422, detail=str(exc))
 
 
+def kpi_summary_payload(db: Session, board_id: int, period: str, start: Optional[date], end: Optional[date], compare: bool):
+    history = _kpi_history(db, board_id)
+    current = _kpi_period(history, period, start, end)
+    return {
+        "as_of": history.as_of,
+        "current": kpis.period_kpis(history, current),
+        "previous": kpis.period_kpis(history, current.previous()) if compare else None,
+    }
+
+
+def kpi_conversion_payload(db: Session, board_id: int, period: str, start: Optional[date], end: Optional[date]):
+    history = _kpi_history(db, board_id)
+    current = _kpi_period(history, period, start, end)
+    return {
+        "as_of": history.as_of,
+        "period": current.as_dict(),
+        "coverage": kpis.coverage(history, current),
+        "win_rate_closed": kpis.win_rate_closed(history, current),
+        "cohort": kpis.cohort(history, current),
+        "advancement": kpis.advancement(history, current),
+    }
+
+
+def kpi_stage_time_payload(db: Session, board_id: int, period: str, start: Optional[date], end: Optional[date]):
+    history = _kpi_history(db, board_id)
+    current = _kpi_period(history, period, start, end)
+    return {
+        "as_of": history.as_of,
+        "period": current.as_dict(),
+        "coverage": kpis.coverage(history, current),
+        "stages": kpis.stage_time(history, current),
+    }
+
+
+def kpi_aging_payload(db: Session, board_id: int):
+    history = _kpi_history(db, board_id)
+    return {
+        "as_of": history.as_of,
+        "tracking_started_at": history.tracking_started_at,
+        "opportunities": kpis.aging(history),
+    }
+
+
+def kpi_pipeline_payload(db: Session, board_id: int):
+    history = _kpi_history(db, board_id)
+    return {"as_of": history.as_of, "stages": kpis.pipeline(history), "deal_years": kpis.pipeline_deal_years(history)}
+
+
 @router.get("/boards/{board_id}/kpis/summary", response_model=KpiSummaryResponse)
 async def get_kpi_summary(
     board_id: int,
@@ -796,13 +891,7 @@ async def get_kpi_summary(
 ):
     """Won/lost flow, win rates, creation cohort and sales cycle for a period;
     with compare=true also for the same-length period just before it."""
-    history = _kpi_history(db, board_id)
-    current = _kpi_period(history, period, start, end)
-    return {
-        "as_of": history.as_of,
-        "current": kpis.period_kpis(history, current),
-        "previous": kpis.period_kpis(history, current.previous()) if compare else None,
-    }
+    return kpi_summary_payload(db, board_id, period, start, end, compare)
 
 
 @router.get("/boards/{board_id}/kpis/conversion", response_model=KpiConversionResponse)
@@ -815,16 +904,7 @@ async def get_kpi_conversion(
     db: Session = Depends(get_db),
 ):
     """Stage advancement, cohort reach and win rates for a period."""
-    history = _kpi_history(db, board_id)
-    current = _kpi_period(history, period, start, end)
-    return {
-        "as_of": history.as_of,
-        "period": current.as_dict(),
-        "coverage": kpis.coverage(history, current),
-        "win_rate_closed": kpis.win_rate_closed(history, current),
-        "cohort": kpis.cohort(history, current),
-        "advancement": kpis.advancement(history, current),
-    }
+    return kpi_conversion_payload(db, board_id, period, start, end)
 
 
 @router.get("/boards/{board_id}/kpis/stage-time", response_model=KpiStageTimeResponse)
@@ -838,14 +918,7 @@ async def get_kpi_stage_time(
 ):
     """Observed time per stage: complete and partial (baseline) durations of
     stays exited in the period, plus stays still open."""
-    history = _kpi_history(db, board_id)
-    current = _kpi_period(history, period, start, end)
-    return {
-        "as_of": history.as_of,
-        "period": current.as_dict(),
-        "coverage": kpis.coverage(history, current),
-        "stages": kpis.stage_time(history, current),
-    }
+    return kpi_stage_time_payload(db, board_id, period, start, end)
 
 
 @router.get("/boards/{board_id}/kpis/aging", response_model=KpiAgingResponse)
@@ -855,12 +928,7 @@ async def get_kpi_aging(
     db: Session = Depends(get_db),
 ):
     """Open opportunities and how long they've been in their current stage."""
-    history = _kpi_history(db, board_id)
-    return {
-        "as_of": history.as_of,
-        "tracking_started_at": history.tracking_started_at,
-        "opportunities": kpis.aging(history),
-    }
+    return kpi_aging_payload(db, board_id)
 
 
 @router.get("/boards/{board_id}/kpis/pipeline", response_model=KpiPipelineResponse)
@@ -870,8 +938,7 @@ async def get_kpi_pipeline(
     db: Session = Depends(get_db),
 ):
     """Current cards per stage and per currency."""
-    history = _kpi_history(db, board_id)
-    return {"as_of": history.as_of, "stages": kpis.pipeline(history), "deal_years": kpis.pipeline_deal_years(history)}
+    return kpi_pipeline_payload(db, board_id)
 
 
 # ============================================================================

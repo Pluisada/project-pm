@@ -3,6 +3,7 @@
 Disposable tmp_path identity and company databases only; no legacy database is touched.
 Company databases are seeded with raw SQL so no ORM flush listener runs.
 """
+import hashlib
 import sqlite3
 from datetime import timedelta
 from types import SimpleNamespace
@@ -35,6 +36,9 @@ def seed_company(path, title):
                     "VALUES (1, 1, 'Lead', 0, 'open', ?, ?)", (NOW, NOW))
         con.execute("INSERT INTO cards (id, column_id, title, position, salesperson_id, created_at, updated_at) "
                     "VALUES (1, 1, ?, 0, 7, ?, ?)", (title + " card", NOW, NOW))
+        con.execute("INSERT INTO card_stage_events (id, card_id, board_id, event_type, to_column_id, to_stage_kind, "
+                    "source, occurred_at, value_snapshot_taken) VALUES (1, 1, 1, 'create', 1, 'open', 'seed', ?, 0)",
+                    (NOW,))
         con.commit()
     finally:
         con.close()
@@ -252,3 +256,119 @@ def test_route_registered_in_main_app():
     paths = {r.path for r in main.app.routes}
     assert "/api/companies/{company_slug}/boards/{board_id}" in paths
     assert "/api/boards/{board_id}" in paths
+
+
+# --- KPI views ------------------------------------------------------------
+
+KPI_PATHS = ["summary", "conversion", "stage-time", "aging", "pipeline"]
+
+
+def kpi(rig, slug, name, token=None, board=1, **params):
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    return rig.client.get(f"/api/companies/{slug}/boards/{board}/kpis/{name}", headers=headers, params=params)
+
+
+@pytest.mark.parametrize("name", KPI_PATHS)
+def test_kpi_member_visitor_and_admin_read(rig, name):
+    rig.e.member("m@example.com")
+    rig.e.member("v@example.com", role="visitor")
+    for email in ("m@example.com", "v@example.com", "admin@example.com"):
+        assert kpi(rig, "lity", name, rig.e.token(email)).status_code == 200
+
+
+@pytest.mark.parametrize("name", KPI_PATHS)
+def test_kpi_response_matches_legacy_models(rig, name):
+    import schemas
+    model = {"summary": schemas.KpiSummaryResponse, "conversion": schemas.KpiConversionResponse,
+             "stage-time": schemas.KpiStageTimeResponse, "aging": schemas.KpiAgingResponse,
+             "pipeline": schemas.KpiPipelineResponse}[name]
+    body = kpi(rig, "lity", name, rig.e.token("admin@example.com")).json()
+    assert set(body) == set(model.model_fields)
+
+
+def test_kpi_company_data_and_isolation(rig):
+    rig.e.member("m@example.com", slug="lity")
+    token = rig.e.token("m@example.com")
+    aging = kpi(rig, "lity", "aging", token).json()["opportunities"]
+    assert [o["title"] for o in aging] == ["lity board card"]
+    assert aging[0]["history"] == "observed"
+    pipeline = kpi(rig, "lity", "pipeline", token).json()
+    assert [st["title"] for st in pipeline["stages"]] == ["Lead"]
+    for name in KPI_PATHS:
+        assert kpi(rig, "valor-log", name, token).status_code == 403
+    assert rig.opened == ["lity"]
+    admin = rig.e.token("admin@example.com")
+    assert kpi(rig, "salcomp", "aging", admin).json()["opportunities"][0]["title"] == "salcomp board card"
+
+
+def test_kpi_query_semantics(rig):
+    token = rig.e.token("admin@example.com")
+    ok = kpi(rig, "lity", "summary", token, period="last_90_days", compare="true").json()
+    assert ok["previous"] is not None
+    assert kpi(rig, "lity", "summary", token).json()["previous"] is None
+    assert kpi(rig, "lity", "summary", token, period="bogus").status_code == 422
+    assert kpi(rig, "lity", "aging", token, board=99).status_code == 404
+
+
+@pytest.mark.parametrize("name", KPI_PATHS)
+@pytest.mark.parametrize("auth", ["none", "garbage", "legacy"])
+def test_kpi_bad_tokens_do_not_open_company(rig, name, auth):
+    token = {"none": None, "garbage": "x",
+             "legacy": create_access_token({"sub": "admin"}, timedelta(minutes=5))}[auth]
+    assert kpi(rig, "lity", name, token).status_code == 401
+    assert rig.opened == [] and rig.sessions == []
+
+
+@pytest.mark.parametrize("name", KPI_PATHS)
+def test_kpi_inactive_and_unmember_rejected_without_opening(rig, name):
+    rig.e.member("m@example.com", slug="valor-log")
+    rig.e.member("n@example.com")
+    outsider, inactive = rig.e.token("m@example.com"), rig.e.token("n@example.com")
+    assert kpi(rig, "lity", name, outsider).status_code == 403
+    rig.e.update(IdentityUser, IdentityUser.email == "n@example.com", is_active=False)
+    assert kpi(rig, "lity", name, inactive).status_code in (401, 403)
+    rig.e.update(IdentityCompany, IdentityCompany.slug == "salcomp", is_active=False)
+    assert kpi(rig, "salcomp", name, rig.e.token("admin@example.com")).status_code == 403
+    assert rig.opened == []
+
+
+def test_kpi_no_database_url_fallback(rig, tmp_path, monkeypatch):
+    legacy = tmp_path / "legacy.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{legacy}")
+    env = {k: v for k, v in rig.e.env.items() if not k.startswith("PM_COMPANY_DB_")}
+    app = FastAPI()
+    app.include_router(build_company_router(identity_db_dependency(rig.e.factory), CompanyRuntime(env)))
+    r = TestClient(app).get("/api/companies/lity/boards/1/kpis/pipeline",
+                            headers={"Authorization": f"Bearer {rig.e.token('admin@example.com')}"})
+    assert r.status_code == 503
+    assert not legacy.exists() and rig.opened == []
+
+
+def test_kpi_requests_leave_company_files_byte_identical(rig):
+    token = rig.e.token("admin@example.com")
+    paths = [company_database_path(s, rig.e.env) for s in COMPANY_SLUGS]
+    before = [hashlib.sha256(p.read_bytes()).hexdigest() for p in paths]
+    for slug in COMPANY_SLUGS:
+        for name in KPI_PATHS:
+            assert kpi(rig, slug, name, token).status_code == 200
+        assert rig.get(slug, token).status_code == 200
+    assert [hashlib.sha256(p.read_bytes()).hexdigest() for p in paths] == before
+    assert sorted(p.name for p in rig.e.tmp_path.iterdir()) == sorted(
+        ["identity.db"] + [f"{s}.db" for s in COMPANY_SLUGS])
+
+
+def test_kpi_session_closed_per_request(rig):
+    token = rig.e.token("admin@example.com")
+    kpi(rig, "lity", "pipeline", token)
+    kpi(rig, "lity", "aging", token, board=99)
+    assert len(rig.sessions) == 2
+    # a closed session holds no connection checked out
+    assert all(s.get_bind().pool.checkedout() == 0 for s in rig.sessions)
+
+
+def test_kpi_routes_registered_in_main_app():
+    import main
+    paths = {r.path for r in main.app.routes}
+    for name in KPI_PATHS:
+        assert f"/api/companies/{{company_slug}}/boards/{{board_id}}/kpis/{name}" in paths
+        assert f"/api/boards/{{board_id}}/kpis/{name}" in paths

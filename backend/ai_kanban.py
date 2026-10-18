@@ -14,8 +14,9 @@ from card_rules import (
     is_admin,
     new_card_fields,
 )
-from lead_options import DEAL_CURRENCY, LEAD_SOURCES, PRODUCT_LINES
-from models import ConversationMessage, Card, BoardColumn as Column, User
+from lead_options import DEAL_CURRENCY, LEAD_SOURCES
+from product_catalog import ProductError, catalog_names, check_product_line
+from models import ConversationMessage, Card, BoardColumn as Column, CompanyUser
 from schemas import BoardDetail, CardUpdate
 from stage_history import SOURCE_AI, set_stage_context
 from undo import record_undo, undo_create, undo_delete, undo_move, undo_update
@@ -57,7 +58,7 @@ Lead fields (all optional, on create and update; send null to clear one):
 - expected_close_date: "YYYY-MM-DD" (when the sale is expected to close)
 - next_step_due: "YYYY-MM-DD" (Next Action Date); next_step: the Action, a short text of at most 100 characters
 - lead_source: one of: {", ".join(LEAD_SOURCES)}
-- product_line: one of: {", ".join(PRODUCT_LINES)}
+- product_line: one of the "product_lines" listed in the board state
 - salesperson_id: a user id from the "salespeople" list in the board state
 
 Rules:
@@ -79,9 +80,10 @@ async def get_board_context(db: Session, board_id: int) -> dict:
     return {
         "board_id": board.id,
         "title": board.title,
+        "product_lines": catalog_names(db),
         "salespeople": [
             {"id": u.id, "username": u.username}
-            for u in db.query(User).order_by(User.username).all()
+            for u in db.query(CompanyUser).order_by(CompanyUser.username).all()
         ],
         "columns": [
             {
@@ -193,7 +195,7 @@ Recent Conversation:
         }
 
 
-def _validated_card_fields(db: Session, action: dict) -> dict:
+def _validated_card_fields(db: Session, action: dict, assignable_ids: set | None = None) -> dict:
     """Pick an action's card fields and validate them like the REST route does.
 
     Raises ValueError (ValidationError and InvalidCardUpdate both are) with a
@@ -207,19 +209,34 @@ def _validated_card_fields(db: Session, action: dict) -> dict:
             "; ".join(f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors())
         )
     salesperson_id = fields.get("salesperson_id")
-    if salesperson_id is not None and db.get(User, salesperson_id) is None:
+    if salesperson_id is not None and (
+        db.get(CompanyUser, salesperson_id) is None
+        or (assignable_ids is not None and salesperson_id not in assignable_ids)
+    ):
         raise InvalidCardUpdate("Salesperson not found")
+    try:
+        check_product_line(db, fields)
+    except ProductError as exc:
+        raise InvalidCardUpdate(str(exc))
     return fields
 
 
+def _board_card(db: Session, board_id: int, card_id) -> Card | None:
+    """The card, only if its column belongs to this board (card -> column -> board); any other board is "not found"."""
+    return db.query(Card).join(Column).filter(Card.id == card_id, Column.board_id == board_id).first()
+
+
 async def apply_board_actions(
-    db: Session, board_id: int, actions: list[dict], current_user: User
+    db: Session, board_id: int, actions: list[dict], current_user,
+    assignable_ids: set | None = None, record_undo_entry: bool = True, admin: bool | None = None,
 ) -> dict:
     """Apply AI-suggested actions to the board.
 
     Goes through the same member/admin rules as the REST card routes (see
     card_rules.py) - the AI chat sidebar is another way to move/edit/delete
-    cards, not a bypass of those rules.
+    cards, not a bypass of those rules. `admin` is an explicit card-administration decision from the company
+    routes (Phase 2E part 4); None keeps is_admin(current_user), as the legacy route and every other caller do.
+    Card creation never uses it: a creator who is not a global admin still owns the card.
     """
     from models import Board
 
@@ -252,7 +269,7 @@ async def apply_board_actions(
 
                     try:
                         fields = _validated_card_fields(
-                            db, {"title": "Untitled", "details": "", **action}
+                            db, {"title": "Untitled", "details": "", **action}, assignable_ids
                         )
                     except ValueError as e:
                         results["failed"].append({"action": action, "reason": str(e)})
@@ -276,7 +293,7 @@ async def apply_board_actions(
 
                 elif action_type == "update":
                     card_id = action.get("card_id")
-                    card = db.query(Card).filter(Card.id == card_id).first()
+                    card = _board_card(db, board_id, card_id)
                     if not card:
                         results["failed"].append(
                             {"action": action, "reason": "Card not found"}
@@ -284,9 +301,9 @@ async def apply_board_actions(
                         continue
 
                     try:
-                        fields = _validated_card_fields(db, action)
+                        fields = _validated_card_fields(db, action, assignable_ids)
                         undo_step = undo_update(card, fields)
-                        apply_card_updates(db, card, fields, current_user)
+                        apply_card_updates(db, card, fields, current_user, admin=admin)
                         undo_steps.append(undo_step)
                     except (ValueError, CardPermissionDenied) as e:
                         results["failed"].append({"action": action, "reason": str(e)})
@@ -297,7 +314,7 @@ async def apply_board_actions(
                     card_id = action.get("card_id")
                     column_id = action.get("column_id")
 
-                    card = db.query(Card).filter(Card.id == card_id).first()
+                    card = _board_card(db, board_id, card_id)
                     column = db.query(Column).filter(Column.id == column_id).first()
 
                     if not card or not column or column.board_id != board_id:
@@ -306,7 +323,7 @@ async def apply_board_actions(
                         )
                         continue
 
-                    denial = move_denial(current_user, card, column.position)
+                    denial = move_denial(current_user, card, column.position, admin=admin)
                     if denial:
                         results["failed"].append({"action": action, "reason": denial})
                         continue
@@ -318,14 +335,14 @@ async def apply_board_actions(
 
                 elif action_type == "delete":
                     card_id = action.get("card_id")
-                    card = db.query(Card).filter(Card.id == card_id).first()
+                    card = _board_card(db, board_id, card_id)
                     if not card:
                         results["failed"].append(
                             {"action": action, "reason": "Card not found"}
                         )
                         continue
 
-                    if not is_admin(current_user):
+                    if not (is_admin(current_user) if admin is None else admin):
                         results["failed"].append(
                             {"action": action, "reason": "Only admins can delete cards"}
                         )
@@ -350,13 +367,14 @@ async def apply_board_actions(
                 )
 
         count = len(results["successful"])
-        record_undo(
-            db,
-            current_user,
-            board_id,
-            f"Undo AI assistant changes ({count} change{'s' if count != 1 else ''})",
-            undo_steps,
-        )
+        if record_undo_entry:
+            record_undo(
+                db,
+                current_user,
+                board_id,
+                f"Undo AI assistant changes ({count} change{'s' if count != 1 else ''})",
+                undo_steps,
+            )
         db.commit()
         return {"success": True, **results}
 

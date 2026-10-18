@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 from datetime import date, datetime
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from lead_options import DEAL_CURRENCY, Currency, LeadSource, ProductLine, StageKind
+from lead_options import DEAL_CURRENCY, Currency, LeadSource, StageKind
 from models import UserRole
 from password_policy import MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, validate_password
 
@@ -159,7 +159,8 @@ class CardUpdate(BaseModel):
     currency: Optional[Currency] = None
     expected_close_date: Optional[date] = None
     lead_source: Optional[LeadSource] = None
-    product_line: Optional[ProductLine] = None
+    # Checked against the database's product catalog by card_rules, not here.
+    product_line: Optional[str] = Field(None, max_length=100)
     salesperson_id: Optional[int] = None
     # Next Action Date and its Action (stored in card_bid_details).
     next_step_due: Optional[date] = None
@@ -280,6 +281,22 @@ class SalespersonOption(BaseModel):
     username: str
 
 
+class ProductBody(BaseModel):
+    """Create or rename a product."""
+    name: str = Field(..., max_length=100)
+
+
+class ProductResponse(BaseModel):
+    id: Optional[int]  # None: a built-in default of a company whose catalog is not initialized
+    name: str
+    card_count: int
+
+
+class ProductCatalogResponse(BaseModel):
+    initialized: bool
+    products: List[ProductResponse]
+
+
 class LeadOptionsResponse(BaseModel):
     """Allowed values for the lead fields, for the edit form's selects."""
     currencies: List[str]
@@ -289,8 +306,13 @@ class LeadOptionsResponse(BaseModel):
 
 
 class ReportGroup(BaseModel):
-    """One row of a breakdown (by salesperson, product line or source)."""
+    """One row of a breakdown (by salesperson, product line or source).
+
+    key is the display label. salesperson_id is the stable identity, set only in by_salesperson
+    (null there means unassigned); equal labels with different ids are separate rows.
+    """
     key: str
+    salesperson_id: Optional[int] = None
     open_count: int
     # *_totals: current-year amounts (deal_value), as before; *_next_totals:
     # next-year amounts; *_sum_totals: their two-year total. All per currency.

@@ -58,7 +58,7 @@ from bid_import_preview import (
 from bid_import_ledger import LEDGER_VERSION, card_snapshot, snapshot_json
 from models import (
     Board, BoardColumn, Card, CardBidDetails, CardImportChange, CardSourceRef, CardStageEvent, ImportBatch,
-    ImportBatchItem, ImportBatchLedger, User,
+    ImportBatchItem, ImportBatchLedger, CompanyUser,
 )
 from stage_history import SOURCE_IMPORT, stage_context, utcnow
 
@@ -70,6 +70,10 @@ logger = logging.getLogger(__name__)
 
 class ImportRejected(ValueError):
     """The request can't be applied as given (bad input or decisions). Nothing was written."""
+
+
+class ImportNotAuthorized(ImportRejected):
+    """The caller's authority was revoked before the commit; nothing was written (recorded as a failed attempt)."""
 
 
 class ImportConflict(RuntimeError):
@@ -195,8 +199,9 @@ def apply_bid_import(
     preview: ImportPreview,
     decisions,
     board_id: int,
-    user: User,
+    user,
     operator: str | None = None,
+    before_commit=None,
 ) -> ImportOutcome:
     """Write the confirmed preview in one transaction, or nothing at all.
 
@@ -210,7 +215,7 @@ def apply_bid_import(
     with db.no_autoflush:
         user_id = user.id if user is not None else None
     try:
-        return _apply(db, read_result, preview, decisions, board_id, user, operator)
+        return _apply(db, read_result, preview, decisions, board_id, user, operator, before_commit)
     except Exception as exc:
         record_failed_import(db, read_result, decisions, board_id, user_id, *_failure(exc), operator=operator)
         raise
@@ -240,7 +245,7 @@ def record_failed_import(
         with Session(engine) as session, session.begin():
             if session.get(Board, board_id) is None:
                 return None
-            if user_id is not None and session.get(User, user_id) is None:
+            if user_id is not None and session.get(CompanyUser, user_id) is None:
                 user_id = None
             batch = ImportBatch(
                 board_id=board_id,
@@ -261,7 +266,7 @@ def record_failed_import(
         return None
 
 
-def _apply(db: Session, read_result, preview, decisions, board_id, user, operator=None) -> ImportOutcome:
+def _apply(db: Session, read_result, preview, decisions, board_id, user, operator=None, before_commit=None) -> ImportOutcome:
     if db.new or db.dirty or db.deleted:
         raise ImportRejected("The session has unsaved changes; apply an import in a clean session")
     if not read_result.ok or not preview.ok:
@@ -273,7 +278,7 @@ def _apply(db: Session, read_result, preview, decisions, board_id, user, operato
         with stage_context(db, user, SOURCE_IMPORT):
             if db.get(Board, board_id) is None:
                 raise ImportRejected("Board not found")
-            if user is None or db.get(User, user.id) is None:
+            if user is None or db.get(CompanyUser, user.id) is None:
                 raise ImportRejected("Unknown user")
             stages = load_board_stages(db, board_id)
             batch = ImportBatch(
@@ -306,6 +311,8 @@ def _apply(db: Session, read_result, preview, decisions, board_id, user, operato
             batch.status = "completed"
             batch.completed_at = utcnow()
             db.flush()
+        if before_commit is not None:
+            before_commit()  # last look at the caller's authority; raising rolls everything back below
         db.commit()
         return outcome
     except IntegrityError as exc:
