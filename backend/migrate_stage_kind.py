@@ -67,15 +67,56 @@ def resolve_database_path(argument) -> str:
     return path
 
 
-def backup_database(conn, path: str, tag: str, now=datetime.now) -> str:
+class BackupError(MigrationError):
+    """A backup file that backup_database created could not be completed; `path` names that new, unverified file."""
+
+    def __init__(self, message: str, path: str):
+        super().__init__(message)
+        self.path = path
+
+
+def backup_database(conn, path: str, tag: str, now=None, *, exclusive: bool = False) -> str:
     """Copy the open database next to itself as <name>-pre-<tag>-<time>.db.bak
-    (the suffix .gitignore ignores) and return the copy's path."""
+    (the suffix .gitignore ignores) and return the copy's path.
+
+    By default an existing file of that name is silently overwritten (the historical behavior the older migrations were
+    written against). With exclusive=True the file is created with O_EXCL: if the name exists (same second, or any earlier
+    backup) a MigrationError is raised and the existing file is not touched; and if the copy then fails, BackupError.path
+    names the partial file this call created, so the caller can quarantine it instead of leaving it looking like a backup.
+    That covers every failure after the file exists: opening the destination connection and the copy itself. An exception
+    that is not an Exception (KeyboardInterrupt, SystemExit) is re-raised unchanged, but carries `backup_artifact` (the same
+    path) and a note naming it.
+    """
     base, _ = os.path.splitext(path)
-    backup_path = f"{base}-pre-{tag}-{now():%Y%m%d%H%M%S}.db.bak"
-    backup = sqlite3.connect(backup_path)
-    with backup:
-        conn.backup(backup)
-    backup.close()
+    backup_path = f"{base}-pre-{tag}-{(now or datetime.now)():%Y%m%d%H%M%S}.db.bak"
+    if not exclusive:
+        backup = sqlite3.connect(backup_path)
+        try:
+            with backup:
+                conn.backup(backup)
+        finally:
+            backup.close()
+        return backup_path
+    try:
+        fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        raise MigrationError(f"The backup path {backup_path} already exists; refusing to overwrite it (it was not touched)") from None
+    except OSError as exc:
+        raise MigrationError(f"the backup file {backup_path} could not be created ({exc.strerror or exc}); no backup file was created") from exc
+    try:  # from here on the file exists and is not a verified backup
+        os.close(fd)
+        backup = sqlite3.connect(backup_path)
+        try:
+            with backup:
+                conn.backup(backup)
+        finally:
+            backup.close()
+    except Exception as exc:
+        raise BackupError(f"the backup {backup_path} could not be written ({exc})", backup_path) from exc
+    except BaseException as exc:
+        exc.backup_artifact = backup_path
+        exc.add_note(f"backup artifact left at {backup_path}; it is not a verified backup")
+        raise
     return backup_path
 
 
