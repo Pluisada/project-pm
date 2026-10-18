@@ -10,6 +10,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session, selectinload
 
+from bid_revenue import add_revenue, new_revenue, revenue_rows
 from lead_options import DEAL_CURRENCY, STAGE_LOST, STAGE_WON
 from models import Card, Column, CompanyUser
 
@@ -111,7 +112,7 @@ def build_board_report(
         db.query(Card)
         .join(Column)
         .filter(Column.board_id == board_id)
-        .options(selectinload(Card.column))
+        .options(selectinload(Card.column), selectinload(Card.bid_details))
     )
     if salesperson_id is not None:
         query = query.filter(Card.salesperson_id == salesperson_id)
@@ -122,10 +123,11 @@ def build_board_report(
     labels = user_labels(db, (card.salesperson_id for card in cards))
 
     stages = {
-        col.id: {"column_id": col.id, "title": col.title, "stage_kind": col.stage_kind, "count": 0, "money": new_money()}
+        col.id: {"column_id": col.id, "title": col.title, "stage_kind": col.stage_kind, "count": 0, "money": new_money(), "bid": new_revenue()}
         for col in columns
     }
     open_money, won_money = new_money(), new_money()
+    open_bid, won_bid = new_revenue(), new_revenue()
     kpis = {"open_count": 0, "won_count": 0, "lost_count": 0}
     closing_soon = []
     horizon = today + timedelta(days=CLOSING_SOON_DAYS)
@@ -134,16 +136,19 @@ def build_board_report(
         stage = stages[card.column_id]
         stage["count"] += 1
         add_money(stage["money"], card)
+        add_revenue(stage["bid"], card.bid_details)
 
         # Classified by the column's stage_kind, never its (renameable) title.
         if card.column.stage_kind == STAGE_WON:
             kpis["won_count"] += 1
             add_money(won_money, card)
+            add_revenue(won_bid, card.bid_details)
         elif card.column.stage_kind == STAGE_LOST:
             kpis["lost_count"] += 1
         else:
             kpis["open_count"] += 1
             add_money(open_money, card)
+            add_revenue(open_bid, card.bid_details)
             if card.expected_close_date and card.expected_close_date <= horizon:
                 closing_soon.append({
                     "card_id": card.id,
@@ -161,6 +166,7 @@ def build_board_report(
                 })
 
     kpis.update(money_fields(open_money, "open_"), **money_fields(won_money, "won_"))
+    kpis.update(open_bid_revenue=revenue_rows(open_bid), won_bid_revenue=revenue_rows(won_bid))
     decided = kpis["won_count"] + kpis["lost_count"]
     kpis["win_rate"] = kpis["won_count"] / decided if decided else None
     closing_soon.sort(key=lambda lead: lead["expected_close_date"])
@@ -169,7 +175,7 @@ def build_board_report(
         "kpis": kpis,
         "stages": [
             {"column_id": st["column_id"], "title": st["title"], "stage_kind": st["stage_kind"],
-             "count": st["count"], **money_fields(st["money"])}
+             "count": st["count"], **money_fields(st["money"]), "bid_revenue": revenue_rows(st["bid"])}
             for st in stages.values()
         ],
         # Years the amounts above were entered for (cards' stored deal_year):

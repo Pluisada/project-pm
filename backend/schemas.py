@@ -326,6 +326,15 @@ class ReportGroup(BaseModel):
     won_sum_totals: Dict[str, float] = {}
 
 
+class BidRevenueMeasure(BaseModel):
+    """Bid report revenue in integer cents of its own currency; see bid_revenue.py. Never added to Deal Value."""
+    currency: str
+    current_cents: int
+    current_count: int
+    next_cents: int
+    next_count: int
+
+
 class ReportStage(BaseModel):
     column_id: int
     title: str
@@ -334,6 +343,7 @@ class ReportStage(BaseModel):
     totals: Dict[str, float]
     next_totals: Dict[str, float] = {}
     sum_totals: Dict[str, float] = {}
+    bid_revenue: List[BidRevenueMeasure] = []
 
 
 class ReportKpis(BaseModel):
@@ -345,6 +355,8 @@ class ReportKpis(BaseModel):
     won_totals: Dict[str, float]
     won_next_totals: Dict[str, float] = {}
     won_sum_totals: Dict[str, float] = {}
+    open_bid_revenue: List[BidRevenueMeasure] = []
+    won_bid_revenue: List[BidRevenueMeasure] = []
     lost_count: int
     win_rate: Optional[float]
 
@@ -578,6 +590,7 @@ class PipelineStage(BaseModel):
     without_value: int
     next_year_values: Dict[str, MoneyTotal] = {}
     total_values: Dict[str, MoneyTotal] = {}
+    bid_revenue: List[BidRevenueMeasure] = []
 
 
 class KpiPipelineResponse(BaseModel):
