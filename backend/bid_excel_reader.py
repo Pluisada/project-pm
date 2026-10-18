@@ -155,8 +155,6 @@ class BidRecord:
     solution_type: str | None = None
     project_name: str | None = None
     prospect_description: str | None = None
-    confidence_label: str | None = None        # Nível de Confiança, as written
-    confidence_percent: int | None = None      # 0-100, parsed from the label
     volume_current_year: int | None = None
     volume_next_year: int | None = None
     production_start_date: date | None = None  # Data de MP
@@ -225,7 +223,7 @@ class BidReadResult:
 class ColumnSpec:
     header: str
     field: str
-    kind: str                     # code | year | text | date | confidence | volume | revenue
+    kind: str                     # code | year | text | date | volume | revenue
     required_column: bool = False  # the header must exist (else file error)
     required_value: bool = False   # every row needs a value (else row error)
 
@@ -247,7 +245,6 @@ BID_COLUMNS: tuple[ColumnSpec, ...] = (
     ColumnSpec("Solução", "solution_type", "text"),
     ColumnSpec("Nome do projeto", "project_name", "text", required_column=True),
     ColumnSpec("Descrição da prospecção", "prospect_description", "text"),
-    ColumnSpec("Nível de Confiança", "confidence_label", "confidence"),
     ColumnSpec("Volume (ano atual)", "volume_current_year", "volume"),
     ColumnSpec("Volume (próximo ano)", "volume_next_year", "volume"),
     ColumnSpec("Data de MP", "production_start_date", "date"),
@@ -269,7 +266,9 @@ REQUIRED_HEADERS = tuple(spec.header for spec in BID_COLUMNS if spec.required_co
 
 ABSENT_MARKERS = {"", "-"}
 _TEXT_DATE = re.compile(r"(\d{2})/(\d{2})/(\d{4})")
-_CONFIDENCE = re.compile(r"(?:.*\()?\s*(\d{1,3})\s*%\s*\)?")
+# The report's "Nível de Confiança" column is no longer imported (the team's own confidence_level replaced it): it is
+# recognised so it does not draw an "unknown column" warning, and its values are never read or validated.
+IGNORED_HEADERS = ("Nível de Confiança",)
 _EXPECTED_CODE = re.compile(r"\d{6}-\d{2}")
 _ZERO_PAD_FORMAT = re.compile(r"0+")
 _MIN_YEAR, _MAX_YEAR = 1900, 2100
@@ -281,6 +280,7 @@ def normalize_header(header) -> str:
 
 
 _SPECS_BY_HEADER = {normalize_header(spec.header): spec for spec in BID_COLUMNS}
+_IGNORED_KEYS = {normalize_header(header) for header in IGNORED_HEADERS}
 
 
 # --- exact cell parsing ---------------------------------------------------------
@@ -475,6 +475,8 @@ def _map_headers(headers, limits: ReaderLimits):
         spec = _SPECS_BY_HEADER.get(key)
         if spec:
             by_index[index] = spec
+        elif key in _IGNORED_KEYS:
+            ignored.append(header)
         else:
             ignored.append(header)
             file_warnings.append(ReadIssue(
@@ -580,18 +582,6 @@ def _parse_revenue(value) -> int:
         raise _FieldError("invalid_amount", f"Amount {exc.reason}") from None  # reason only, never the value
 
 
-def _parse_confidence(value, limits: ReaderLimits) -> tuple[str, int]:
-    label = _parse_text(value, limits)
-    if isinstance(value, Decimal):
-        percent = _integral(value)
-    else:
-        match = _CONFIDENCE.fullmatch(label)
-        percent = int(match.group(1)) if match else None
-    if percent is None or not 0 <= percent <= 100:
-        raise _FieldError("invalid_confidence", 'Expected a percentage such as "LOW (10%)"')
-    return label, percent
-
-
 def _parse_code(value, number_format: Callable[[], str]) -> tuple[str, bool, list[tuple[str, str]]]:
     """(code text, needs review, warnings as (code, message))."""
     _reject_special(value)
@@ -639,8 +629,6 @@ def _read_row(row_number, cells, by_index, headers, workbook, limits) -> BidRow:
                 code, review, code_warnings = _parse_code(value, lambda: _number_format(workbook, style_id))
                 values["code"], values["code_needs_review"] = code, review
                 row_warnings.extend(issue(Severity.WARNING, c, m) for c, m in code_warnings)
-            elif spec.kind == "confidence":
-                values["confidence_label"], values["confidence_percent"] = _parse_confidence(value, limits)
             elif spec.kind == "text":
                 values[spec.field] = _parse_text(value, limits)
             elif spec.kind == "date":

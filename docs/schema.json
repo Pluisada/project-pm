@@ -240,6 +240,11 @@
           "nullable": true,
           "description": "Chargers or Power supplies"
         },
+        "confidence_level": {
+          "type": "VARCHAR(6)",
+          "nullable": true,
+          "description": "The sales team's own assessment: exactly LOW, MEDIUM or HIGH; NULL = not assigned (company schema version 4)"
+        },
         "salesperson_id": {
           "type": "INTEGER",
           "constraint": "FOREIGN KEY REFERENCES users(id) ON DELETE SET NULL",
@@ -679,11 +684,6 @@
           "nullable": true,
           "description": "Solution type"
         },
-        "confidence": {
-          "type": "INTEGER",
-          "nullable": true,
-          "description": "Confidence"
-        },
         "volume_current_year": {
           "type": "INTEGER",
           "nullable": true,
@@ -807,11 +807,6 @@
           "type": "VARCHAR",
           "nullable": true,
           "description": "Stage as in the source"
-        },
-        "source_confidence": {
-          "type": "VARCHAR",
-          "nullable": true,
-          "description": "Confidence label as written in the source, e.g. LOW (10%); card_bid_details.confidence keeps the percentage"
         },
         "source_created_at": {
           "type": "DATETIME",

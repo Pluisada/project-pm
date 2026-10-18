@@ -40,7 +40,7 @@ def snapshot(path):
 
 
 def test_required_schema_matches_models():
-    assert COMPANY_SCHEMA_VERSION == 2
+    assert COMPANY_SCHEMA_VERSION == 4
     assert set(REQUIRED_COMPANY_SCHEMA) == set(CompanyBase.metadata.tables)
     for table, cols in REQUIRED_COMPANY_SCHEMA.items():
         assert cols == {c.name for c in CompanyBase.metadata.tables[table].columns}
@@ -96,7 +96,7 @@ def test_non_sqlite_file_rejected(tmp_path):
         validate_company_schema("lity", env_for(tmp_path))
 
 
-@pytest.mark.parametrize("version", [0, 1, 3, 99, -1])  # 1 = the superseded pipeline-core contract
+@pytest.mark.parametrize("version", [0, 1, 2, 3, 5, 99, -1])  # 1 = pipeline-core, 2 = before cards.confidence_level, 3 = still the obsolete Bid columns
 def test_bad_version_rejected(tmp_path, version):
     make_db(tmp_path / "lity.db", version=version)
     with pytest.raises(CompanySchemaError, match="schema version"):
@@ -213,7 +213,7 @@ def test_validation_is_per_company(tmp_path):
 
 
 def test_errors_do_not_leak_paths(tmp_path):
-    make_db(tmp_path / "lity.db", version=3)
+    make_db(tmp_path / "lity.db", version=2)
     with pytest.raises(CompanySchemaError) as exc:
         validate_company_schema("lity", env_for(tmp_path))
     assert str(tmp_path) not in str(exc.value)

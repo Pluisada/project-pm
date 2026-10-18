@@ -31,7 +31,11 @@ DEAL_CURRENCY = "USD"
 CURRENCIES = [DEAL_CURRENCY]
 LEAD_SOURCES = ["Website", "Referral", "Trade show", "Cold outreach", "Existing customer", "Other"]
 PRODUCT_LINES = ["Chargers", "Power supplies"]
+# The sales team's own assessment of an opportunity (cards.confidence_level); NULL means "not assigned".
+# Exactly these upper-case values, nothing else.
+CONFIDENCE_LEVELS = ["LOW", "MEDIUM", "HIGH"]
 
 Currency = Literal[tuple(CURRENCIES)]
 LeadSource = Literal[tuple(LEAD_SOURCES)]
 ProductLine = Literal[tuple(PRODUCT_LINES)]
+ConfidenceLevel = Literal[tuple(CONFIDENCE_LEVELS)]

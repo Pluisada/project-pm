@@ -21,7 +21,9 @@ from bid_excel_reader import (
     read_bid_excel_file,
 )
 
-HEADERS = [spec.header for spec in BID_COLUMNS]
+_HEADERS = [spec.header for spec in BID_COLUMNS]
+# The real report's 31 columns: "Nível de Confiança" (no longer imported) sits where it always did.
+HEADERS = _HEADERS[:14] + ["Nível de Confiança"] + _HEADERS[14:]
 
 
 def row(**overrides):
@@ -139,7 +141,8 @@ class TestValidFile:
         result = read(build([row(), row(**{"Código": "000124-01"})]))
         assert result.ok and result.file_warnings == ()
         assert result.sheet.name == "Leads"
-        assert len(result.sheet.headers) == 31 and len(result.sheet.mapped_columns) == 31
+        assert len(result.sheet.headers) == 31 and len(result.sheet.mapped_columns) == 30
+        assert result.sheet.ignored_columns == ("Nível de Confiança",)  # recognised and ignored: no warning (checked above)
         assert result.summary.rows_read == 2 and result.summary.valid_rows == 2
         first = result.rows[0]
         assert first.row_number == 2 and result.rows[1].row_number == 3
@@ -147,7 +150,6 @@ class TestValidFile:
         assert record.code == "000123-01" and not record.code_needs_review
         assert (record.year, record.cat, record.stage) == (2026, "OPEN", "RFQ")
         assert record.customer == "Cliente Ficticio" and record.project_name == "Projeto Teste"
-        assert (record.confidence_label, record.confidence_percent) == ("LOW (10%)", 10)
         assert (record.volume_current_year, record.volume_next_year) == (1500, 3000)
         assert record.revenue_current_year_cents == 123456 and record.revenue_currency == "BRL"
         assert record.next_step_due == date(2026, 6, 30)
@@ -273,20 +275,12 @@ class TestValues:
         assert current.record.volume_next_year == expected
         assert codes(current.errors) == ([code] if code else [])
 
-    @pytest.mark.parametrize("value, label, percent", [
-        ("LOW (10%)", "LOW (10%)", 10),
-        ("MEDIUM (50%)", "MEDIUM (50%)", 50),
-        ("HIGH (85%)", "HIGH (85%)", 85),
-        ("70%", "70%", 70),
-        (50, "50", 50),
-    ])
-    def test_confidence(self, value, label, percent):
-        record = read(build([row(**{"Nível de Confiança": value})])).rows[0].record
-        assert (record.confidence_label, record.confidence_percent) == (label, percent)
-
-    @pytest.mark.parametrize("value", ["LOW", "HIGH (150%)", Decimal("0.5")])
-    def test_unrecognized_confidence_is_a_row_error(self, value):
-        assert codes(read(build([row(**{"Nível de Confiança": value})])).rows[0].errors) == ["invalid_confidence"]
+    @pytest.mark.parametrize("value", ["LOW (10%)", "70%", 50, "LOW", "HIGH (150%)", Decimal("0.5")])
+    def test_the_confidence_column_is_recognised_but_never_read_or_validated(self, value):
+        result = read(build([row(**{"Nível de Confiança": value})]))
+        assert result.rows[0].errors == () and not result.file_errors
+        assert "unknown_column" not in codes(result.file_warnings)
+        assert not hasattr(result.rows[0].record, "confidence_label") and not hasattr(result.rows[0].record, "confidence_percent")
 
     def test_year(self):
         assert read(build([row(Ano=2027)])).rows[0].record.year == 2027
@@ -402,7 +396,7 @@ class TestStructure:
     def test_unknown_header_is_a_warning(self):
         headers = HEADERS + ["Coluna Nova"]
         result = read(build([list(row().values()) + ["x"]], headers=headers))
-        assert result.ok and result.sheet.ignored_columns == ("Coluna Nova",)
+        assert result.ok and result.sheet.ignored_columns == ("Nível de Confiança", "Coluna Nova")
         assert codes(result.file_warnings) == ["unknown_column"]
 
     def test_duplicate_header_is_a_file_error(self):

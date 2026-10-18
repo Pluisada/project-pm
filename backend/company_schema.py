@@ -1,12 +1,15 @@
 """Read-only validation of a company database's schema (fail closed).
 
-Contract, version COMPANY_SCHEMA_VERSION = 2 (CompanyBase.metadata: the commercial
+Contract, version COMPANY_SCHEMA_VERSION = 4 (CompanyBase.metadata: the commercial
 tables plus the company-local `users` reference table, models.CompanyUser):
-- The version marker is SQLite's PRAGMA user_version, which must equal 2 exactly.
+- The version marker is SQLite's PRAGMA user_version, which must equal 4 exactly.
   0 (never stamped), 1 (the old pipeline-core contract, which had no local users
-  table), a negative or any other number is refused. Nothing upgrades a database
-  between versions: an existing version-1 database needs a separately authorized
-  migration, which does not exist yet.
+  table), 2 (before cards.confidence_level), 3 (cards.confidence_level but still the
+  obsolete Bid confidence columns), a negative or any other number is refused, so an
+  older database answers the clear 503 before any card is queried.
+  Nothing upgrades a database between versions: version 2 or 3 -> 4 is the explicit,
+  dry-run-by-default migrate_confidence_level.py; a version-1 database needs a
+  separately authorized migration, which does not exist yet.
 - Every table in REQUIRED_COMPANY_SCHEMA must exist with at least the listed
   columns. Extra tables and columns are tolerated (later additive migrations).
 - A stamped version with missing objects is inconsistent and refused; an
@@ -31,7 +34,7 @@ from urllib.parse import quote
 
 from database_targets import company_database_path
 
-COMPANY_SCHEMA_VERSION = 2
+COMPANY_SCHEMA_VERSION = 4
 
 REQUIRED_COMPANY_SCHEMA: dict[str, frozenset[str]] = {
     "audit_events": frozenset({
@@ -44,7 +47,7 @@ REQUIRED_COMPANY_SCHEMA: dict[str, frozenset[str]] = {
         "id", "board_id", "message_id", "action_type", "card_id", "changes", "created_at"
     }),
     "card_bid_details": frozenset({
-        "id", "card_id", "plant", "customer_type", "business_type", "product_category", "product", "solution_type", "confidence", "volume_current_year", "volume_next_year", "production_start_date", "revenue_current_year_cents", "revenue_next_year_cents", "revenue_currency", "status_note", "project_lead", "cpm", "next_step", "next_step_due", "close_reason", "close_reason_note", "created_at", "updated_at"
+        "id", "card_id", "plant", "customer_type", "business_type", "product_category", "product", "solution_type", "volume_current_year", "volume_next_year", "production_start_date", "revenue_current_year_cents", "revenue_next_year_cents", "revenue_currency", "status_note", "project_lead", "cpm", "next_step", "next_step_due", "close_reason", "close_reason_note", "created_at", "updated_at"
     }),
     "card_edit_history": frozenset({
         "id", "card_id", "user_id", "changes", "created_at"
@@ -53,13 +56,13 @@ REQUIRED_COMPANY_SCHEMA: dict[str, frozenset[str]] = {
         "id", "card_id", "import_batch_id", "user_id", "changes", "created_at"
     }),
     "card_source_refs": frozenset({
-        "id", "card_id", "source_system", "source_key", "source_code", "source_status", "source_stage", "source_confidence", "source_created_at", "source_updated_at", "source_last_edited_at", "last_import_batch_id", "source_row_hash", "created_at", "updated_at"
+        "id", "card_id", "source_system", "source_key", "source_code", "source_status", "source_stage", "source_created_at", "source_updated_at", "source_last_edited_at", "last_import_batch_id", "source_row_hash", "created_at", "updated_at"
     }),
     "card_stage_events": frozenset({
         "id", "card_id", "board_id", "event_type", "from_column_id", "from_stage_kind", "to_column_id", "to_stage_kind", "user_id", "source", "occurred_at", "deal_value_snapshot", "deal_currency_snapshot", "value_snapshot_taken"
     }),
     "cards": frozenset({
-        "id", "column_id", "title", "details", "position", "company", "contact", "deal_value", "deal_value_next_year", "deal_year", "currency", "expected_close_date", "lead_source", "product_line", "salesperson_id", "created_at", "updated_at"
+        "id", "column_id", "title", "details", "position", "company", "contact", "deal_value", "deal_value_next_year", "deal_year", "currency", "expected_close_date", "lead_source", "product_line", "confidence_level", "salesperson_id", "created_at", "updated_at"
     }),
     "columns": frozenset({
         "id", "board_id", "title", "position", "stage_kind", "created_at", "updated_at"

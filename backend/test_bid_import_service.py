@@ -151,19 +151,18 @@ class TestCreate:
         assert card.position == 1  # after the manual card already in Proposal
         details = card.bid_details
         assert details.revenue_current_year_cents == 123456 and details.revenue_next_year_cents is None
-        assert details.revenue_currency == "BRL" and details.confidence == 10
+        assert details.revenue_currency == "BRL"
         assert (details.volume_current_year, details.volume_next_year) == (1500, 3000)
         assert details.next_step_due == date(2026, 6, 30) and details.production_start_date == date(2026, 7, 1)
         assert details.customer_type == "LEAD" and details.project_lead == "Pessoa B"
         assert env.db.query(User).count() == 1  # nobody created from CPM / Líder do projeto
 
-    def test_source_ref_and_confidence_label(self, env):
+    def test_source_ref(self, env):
         _, outcome = run(env, workbook(*ROWS), DECISIONS)
         ref = card_by_code(env.db, "000101-01").source_ref
         assert ref.source_system == "salcomp-bids"
         assert ref.source_key == 'v1:["000101-01","cliente ficticio"]'
         assert (ref.source_code, ref.source_status, ref.source_stage) == ("000101-01", "OPEN", "RFQ")
-        assert ref.source_confidence == "LOW (10%)"
         assert ref.source_created_at == datetime(2026, 2, 1) and ref.source_updated_at == datetime(2026, 3, 5)
         assert ref.source_last_edited_at is None
         assert ref.source_row_hash.startswith("v1:") and ref.last_import_batch_id == outcome.batch_id
@@ -295,7 +294,7 @@ class TestUpdate:
         assert outcome.updated_card_ids == (card.id,) and outcome.created_card_ids == ()
         env.db.refresh(card)
         assert card.title == "Projeto Novo" and card.bid_details.next_step == "Enviar proposta"
-        assert card.bid_details.confidence == 85 and card.source_ref.source_confidence == "HIGH (85%)"
+        assert card.bid_details.next_step == "Enviar proposta"
         assert card.source_ref.source_updated_at == datetime(2026, 4, 1)
         assert card.source_ref.last_import_batch_id == outcome.batch_id
         # Not managed by the import: untouched.
@@ -622,8 +621,6 @@ class TestImportHistory:
         assert json.loads(entry.changes) == {
             "card.title": {"old": "Projeto Teste", "new": "Projeto Novo"},
             "bid_details.next_step": {"old": "Ligar", "new": "Enviar proposta"},
-            "bid_details.confidence": {"old": 10, "new": 85},
-            "source_ref.source_confidence": {"old": "LOW (10%)", "new": "HIGH (85%)"},
             "source_ref.source_updated_at": {"old": "2026-03-05T00:00:00", "new": "2026-04-01T00:00:00"},
         }
 

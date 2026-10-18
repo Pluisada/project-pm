@@ -45,7 +45,7 @@ def rec(row_number=2, **overrides) -> BidRecord:
         code="000123-01", customer="Cliente Ficticio", cat="OPEN", stage="RFQ", project_name="Projeto Teste",
         prospect_description="Descricao", plant="Planta", customer_type="LEAD", business_type="CASH COW",
         product_category="Charger", product="Produto X", solution_type="ODM",
-        confidence_label="LOW (10%)", confidence_percent=10, volume_current_year=1500, volume_next_year=None,
+        volume_current_year=1500, volume_next_year=None,
         production_start_date=date(2026, 7, 1), revenue_current_year_cents=123456, revenue_next_year_cents=None,
         status_note="Status", cpm="Pessoa A", project_lead="Pessoa B", next_step="Ligar",
         next_step_due=date(2026, 6, 30), close_reason=None, close_reason_note=None,
@@ -433,7 +433,7 @@ class TestFieldMapping:
         details = one(rec()).fields.bid_details
         assert details == {
             "plant": "Planta", "customer_type": "LEAD", "business_type": "CASH COW", "product_category": "Charger",
-            "product": "Produto X", "solution_type": "ODM", "confidence": 10, "volume_current_year": 1500,
+            "product": "Produto X", "solution_type": "ODM", "volume_current_year": 1500,
             "volume_next_year": None, "production_start_date": date(2026, 7, 1),
             "revenue_current_year_cents": 123456, "revenue_next_year_cents": None, "revenue_currency": "BRL",
             "status_note": "Status", "project_lead": "Pessoa B", "cpm": "Pessoa A", "next_step": "Ligar",
@@ -441,9 +441,8 @@ class TestFieldMapping:
         }
 
     def test_absent_values_stay_none(self):
-        details = one(rec(volume_current_year=None, revenue_current_year_cents=None, confidence_percent=None)).fields.bid_details
+        details = one(rec(volume_current_year=None, revenue_current_year_cents=None)).fields.bid_details
         assert details["volume_current_year"] is None and details["revenue_current_year_cents"] is None
-        assert details["confidence"] is None
 
     def test_source_ref_preserves_the_source(self):
         record = rec(code="000007-03", cat="Open CE", stage="RFQ", source_last_edited_on=date(2026, 3, 9))
@@ -463,10 +462,11 @@ class TestFieldMapping:
         assert not any("salesperson" in key or "user" in key for key in flat)
         assert set(fields.not_mapped) == set(NOT_MAPPED_FIELDS)
 
-    def test_confidence_label_goes_to_the_source_ref(self):
+    def test_the_obsolete_bid_confidence_is_not_mapped_anywhere(self):
         fields = one(rec()).fields
-        assert fields.source_ref["source_confidence"] == "LOW (10%)" and fields.bid_details["confidence"] == 10
-        assert "confidence_label" not in fields.not_mapped
+        assert "confidence" not in fields.bid_details and "source_confidence" not in fields.source_ref
+        assert not any("confidence" in key for key in fields.flat())
+        assert not any("confidence" in name for name in fields.not_mapped)
 
     def test_deadline_is_next_step_due_not_expected_close(self):
         fields = one(rec()).fields

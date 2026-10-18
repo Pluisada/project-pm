@@ -295,7 +295,7 @@ def _bid_board(client, test_db, tokens, board):
     cards = [c for col in detail["columns"] for c in col["cards"]]
     with_bid, without = cards[0], cards[1]
     test_db.add(CardBidDetails(
-        card_id=with_bid["id"], plant="Manaus", product="Charger", confidence=40,
+        card_id=with_bid["id"], plant="Manaus", product="Charger",
         revenue_current_year_cents=123456, revenue_currency="USD", cpm="CPM Name",
         next_step="Send RFI", next_step_due=date(2027, 1, 15), status_note="note",
     ))
@@ -313,11 +313,11 @@ def test_board_returns_bid_details_separate_from_lead_fields(client, test_db, to
     }
     card = cards[with_bid["id"]]
     bid = card["bid_details"]
-    assert bid["plant"] == "Manaus" and bid["cpm"] == "CPM Name" and bid["confidence"] == 40
+    assert bid["plant"] == "Manaus" and bid["cpm"] == "CPM Name"
     assert bid["revenue_current_year_cents"] == 123456 and bid["revenue_currency"] == "USD"
     assert bid["revenue_next_year_cents"] is None and bid["volume_current_year"] is None
     assert bid["next_step_due"] == "2027-01-15"
-    assert card["source_ref"] == {"source_code": "BID-1", "source_confidence": None}
+    assert card["source_ref"] == {"source_code": "BID-1"}
     # Lead fields are untouched by the Bid data.
     assert card["deal_value"] == with_bid["deal_value"]
     assert card["currency"] == with_bid["currency"]

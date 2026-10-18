@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 from datetime import date, datetime
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from lead_options import DEAL_CURRENCY, Currency, LeadSource, StageKind
+from lead_options import DEAL_CURRENCY, ConfidenceLevel, Currency, LeadSource, StageKind
 from models import UserRole
 from password_policy import MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, validate_password
 
@@ -161,6 +161,8 @@ class CardUpdate(BaseModel):
     lead_source: Optional[LeadSource] = None
     # Checked against the database's product catalog by card_rules, not here.
     product_line: Optional[str] = Field(None, max_length=100)
+    # Exactly LOW, MEDIUM or HIGH (upper case), or null = not assigned; anything else is a 422.
+    confidence_level: Optional[ConfidenceLevel] = None
     salesperson_id: Optional[int] = None
     # Next Action Date and its Action (stored in card_bid_details).
     next_step_due: Optional[date] = None
@@ -206,7 +208,6 @@ class BidDetailsResponse(BaseModel):
     product_category: Optional[str] = None
     product: Optional[str] = None
     solution_type: Optional[str] = None
-    confidence: Optional[int] = None
     volume_current_year: Optional[int] = None
     volume_next_year: Optional[int] = None
     production_start_date: Optional[date] = None
@@ -228,7 +229,6 @@ class BidDetailsResponse(BaseModel):
 class SourceRefResponse(BaseModel):
     """Read-only identity of the source opportunity (card_source_refs)."""
     source_code: str
-    source_confidence: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -251,6 +251,7 @@ class CardResponse(BaseModel):
     expected_close_date: Optional[date] = None
     lead_source: Optional[str] = None
     product_line: Optional[str] = None
+    confidence_level: Optional[str] = None
     salesperson_id: Optional[int] = None
     salesperson_name: Optional[str] = None
     bid_details: Optional[BidDetailsResponse] = None

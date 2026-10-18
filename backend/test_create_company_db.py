@@ -39,7 +39,7 @@ def test_creates_the_complete_versioned_schema(tmp_path, slug):
     path = create_company_database(slug, env)
     assert path == (tmp_path / f"{slug}.db").resolve()
     names, version = tables(path)
-    assert version == COMPANY_SCHEMA_VERSION == 2
+    assert version == COMPANY_SCHEMA_VERSION == 4
     # products: the optional catalog table, outside the required contract
     assert names == set(REQUIRED_COMPANY_SCHEMA) | {"products"} and "users" in names
     assert validate_company_schema(slug, env) is None
@@ -225,7 +225,7 @@ def test_cli_creates_and_reports(tmp_path, monkeypatch, capsys):
         monkeypatch.delenv(company_env_name(slug), raising=False)
     monkeypatch.setenv(company_env_name("lity"), f"sqlite:///{tmp_path / 'lity.db'}")
     assert create_company_db.main(["--company", "lity"]) == 0
-    assert "schema version 2" in capsys.readouterr().out
+    assert "schema version 4" in capsys.readouterr().out
     assert create_company_db.main(["--company", "lity"]) == 1  # now exists
     assert "already exists" in capsys.readouterr().err
 

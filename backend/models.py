@@ -134,6 +134,8 @@ class Card(CompanyBase):
     expected_close_date = SQLColumn(Date, nullable=True)
     lead_source = SQLColumn(String, nullable=True)
     product_line = SQLColumn(String, nullable=True)
+    # LOW | MEDIUM | HIGH set by the sales team; NULL = not assigned.
+    confidence_level = SQLColumn(String(6), nullable=True)
     salesperson_id = SQLColumn(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = SQLColumn(DateTime, default=func.now(), nullable=False, index=True)
     updated_at = SQLColumn(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
@@ -374,7 +376,6 @@ class CardBidDetails(CompanyBase):
     product_category = SQLColumn(String, nullable=True)
     product = SQLColumn(String, nullable=True)
     solution_type = SQLColumn(String, nullable=True)
-    confidence = SQLColumn(Integer, nullable=True)
     volume_current_year = SQLColumn(Integer, nullable=True)
     volume_next_year = SQLColumn(Integer, nullable=True)
     production_start_date = SQLColumn(Date, nullable=True)
@@ -459,9 +460,6 @@ class CardSourceRef(CompanyBase):
     source_code = SQLColumn(String, nullable=False)
     source_status = SQLColumn(String, nullable=True)
     source_stage = SQLColumn(String, nullable=True)
-    # Original confidence label as written in the source, e.g. "LOW (10%)";
-    # card_bid_details.confidence keeps the parsed percentage.
-    source_confidence = SQLColumn(String, nullable=True)
     source_created_at = SQLColumn(DateTime, nullable=True)
     source_updated_at = SQLColumn(DateTime, nullable=True)
     source_last_edited_at = SQLColumn(DateTime, nullable=True)

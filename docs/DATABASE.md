@@ -255,6 +255,7 @@ uv run python migrate_stage_kind.py --apply      # backup + migrate in one trans
 | expected_close_date | DATE | - | Expected close date |
 | lead_source | TEXT | - | Website, Referral, Trade show, Cold outreach, Existing customer, Other |
 | product_line | TEXT | - | Chargers or Power supplies |
+| confidence_level | VARCHAR(6) | - | The sales team's own assessment: exactly `LOW`, `MEDIUM` or `HIGH`; NULL = not assigned. Company schema version 4 (the Bid report's old confidence columns no longer exist) |
 | salesperson_id | INTEGER | FK → users, ON DELETE SET NULL | Assigned salesperson |
 | created_at | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Creation time |
 | updated_at | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Last modified |
@@ -490,7 +491,6 @@ Four tables for importing the Salcomp Bids report (`relatorio-leads.xlsx`). The 
 | id | INTEGER | PK | Unique identifier |
 | card_id | INTEGER | FK → cards, NOT NULL, UNIQUE, ON DELETE CASCADE | The card (1:1) |
 | plant, customer_type, business_type, product_category, product, solution_type | VARCHAR | - | Classification fields from the report |
-| confidence | INTEGER | - | Confidence |
 | volume_current_year, volume_next_year | INTEGER | - | Volumes |
 | production_start_date | DATE | - | Start of production |
 | revenue_current_year_cents, revenue_next_year_cents | INTEGER | - | Annual revenue **in cents** of `revenue_currency` |
@@ -519,7 +519,6 @@ Four tables for importing the Salcomp Bids report (`relatorio-leads.xlsx`). The 
 | source_key | VARCHAR | NOT NULL; UNIQUE with source_system | Identity within the source |
 | source_code | VARCHAR | NOT NULL | Codigo, as text (keeps leading zeros) |
 | source_status, source_stage | VARCHAR | - | Status/stage as written in the source |
-| source_confidence | VARCHAR | - | Confidence label as written, e.g. `LOW (10%)` (the percentage is `card_bid_details.confidence`) |
 | source_created_at, source_updated_at, source_last_edited_at | DATETIME | - | Source timestamps |
 | last_import_batch_id | INTEGER | FK → import_batches, ON DELETE SET NULL | Last batch that touched it |
 | source_row_hash | VARCHAR(64) | - | Hash of the source row |
@@ -554,7 +553,7 @@ Uniqueness is enforced by the database, not only by code. For Bids, `source_key`
 | 12 | Solução | solution_type | text | |
 | 13 | Nome do projeto | project_name | text | **Required column** |
 | 14 | Descrição da prospecção | prospect_description | text | |
-| 15 | Nível de Confiança | confidence_label + confidence_percent | confidence | `"LOW (10%)"` -> 10 |
+| 15 | Nível de Confiança | (not imported) | ignored | Recognised so it draws no warning, never read or validated; the team sets `cards.confidence_level` itself |
 | 16 | Volume (ano atual) | volume_current_year | volume | Whole number >= 0; 1 is kept with a warning |
 | 17 | Volume (próximo ano) | volume_next_year | volume | Same |
 | 18 | Data de MP | production_start_date | date | |
@@ -617,7 +616,6 @@ Uniqueness is enforced by the database, not only by code. For Bids, `source_key`
   | product_category | Categoria de Produto |
   | product | Produto |
   | solution_type | Solução |
-  | confidence | Nível de Confiança, as a percentage |
   | volume_current_year, volume_next_year | the two Volume columns |
   | production_start_date | Data de MP |
   | revenue_current_year_cents, revenue_next_year_cents | the two Revenue BRL columns, in cents |
@@ -638,7 +636,6 @@ Uniqueness is enforced by the database, not only by code. For Bids, `source_key`
   | source_code | Código |
   | source_status | CAT, as written |
   | source_stage | Estágio, as written |
-  | source_confidence | Nível de Confiança, as written |
   | source_created_at | Data de criação |
   | source_updated_at | Atualizado em |
   | source_last_edited_at | Última edição |
