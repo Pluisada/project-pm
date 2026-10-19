@@ -227,6 +227,23 @@ If the email does not arrive or the link expired:
 
 SMTP status: direct delivery from the Mac to `pluisada@gmail.com` was observed on 2026-10-16 (port 587). Certificate and hostname verification, error handling and log redaction are covered by mocked tests only. The real reset email with the production link has not been sent, and no end-to-end SMTP claim is made.
 
+## C6 release (probability level, Bid Revenue): scope, validation and pending items
+
+Scope of the first publication: **legacy single-database mode only** (`/api/mode` answers `{"auth":"legacy"}`). Central / multi-company mode is not part of it and was not validated. The release candidate is commit `175a549` (12 commits over base `69e3419`). Nothing has been published or deployed, and no migration has been run on any commercial database; this section does not claim otherwise.
+
+What it changes for operators:
+- New `cards.confidence_level`, shown in the app as "Probability level" (LOW / MEDIUM / HIGH or NULL = "Not assigned", set by hand, never inferred); the Reports screen has a "Probability level" filter and a "By probability level" table; Bid Revenue (BRL cents) is reported beside the USD Deal Value and never mixed with it (`docs/KPIS.md`).
+- The obsolete Bid confidence columns (`card_bid_details.confidence`, `card_source_refs.source_confidence`) are dropped and their values discarded on purpose.
+- An existing legacy database must be migrated **before** starting this code, with `migrate_legacy_bid_confidence.py`. Full procedure, stop conditions and audit record: `docs/MIGRATION_PROTOCOL_BID_CONFIDENCE.md`. Summary: stop the app; consistent SQLite backup plus an external copy, with hashes; dry run (it does not print the hash, compute it with `shasum -a 256`); `--apply --expect-sha256 <approved hash>`, which writes an exclusive backup, verifies it against the approved content before changing anything, quarantines a failed one as `*.UNVERIFIED.db.bak` and rolls back on any failure; post-migration checks (obsolete columns gone, `confidence_level` NULL on every card, `integrity_check` ok, `foreign_key_check` empty, row counts unchanged); start with `PM_REQUIRE_EXISTING_DB=1`. Restore: with the app stopped, put back the verified external copy or the tool's verified `.bak` (never an `*.UNVERIFIED*` one) and deploy the previous code; confirm the hash, integrity and counts.
+
+Validation reported by the owner for `175a549` (not re-run when this was written):
+- Backend `python -m pytest -p no:cacheprovider -q` in `backend/`, Python 3.11.15: 2527 passed, 1 skipped (not identified), 0 failed, 670.82 s, 15 warnings; disposable virtual environment, `uv sync --frozen --extra dev`, `DATABASE_URL` and `SECRET_KEY` unset. Python 3.12: two full runs with 2524 passed, 3 failed, 1 skipped, the failures due to a missing editable install (needed by `python -I` subprocesses); the three files then passed (52 tests). No clean full run on 3.12.
+- Frontend: `tsc --noEmit`, `npm run lint` ok; 137 unit tests (19 files); `npm run build` ok (`frontend/out`); `test_static_files.py` 10 passed.
+- E2E: five relevant specs 21/21; full suite 94 passed, 2 skipped (setup tests in `auth.spec.ts`), 1 failed: `bid-import.undo.spec.ts:120`, pre-existing (same failure on `69e3419`), caused by `getByText` looking for text that exists only in the Undo button's `title`. Not fixed.
+- Docker, 2026-10-19: `docker build -t pm-c6-local:175a549 .` exit 0, image id `832a396442f8`, about 307 MB, Linux ARM64, Python 3.11.17, some layers from cache. Disposable container: `/api/health` 200, `/api/mode` `{"auth":"legacy"}`, `/` 200, `/api/boards` without credentials 401 (expected). The container was removed; the image was kept locally.
+
+Still pending, not validated: real SMTP and the real reset email, TLS and the production reverse proxy, the real deployment (including Linux host ownership of the mounted directory), central mode, and the migration of any real database. The local smoke test is not a deployment.
+
 ## Backup, migration and restore procedure (not executed; the commercial database was not touched)
 
 Applies before `migrate_deal_years.py`, `migrate_deal_year_rollover.py`, `migrate_bid_cpm.py` and any import. Use exact absolute paths; never `pm.db`, never a relative path, never `DATABASE_URL` or a symlink (the scripts refuse them, `db_target_guard.validate_target`). Note the scripts pin the target only by absolute path and `--expect-sha256`; they pass no allow-list, so the hash is the identity check. Re-read the path aloud before every command.
