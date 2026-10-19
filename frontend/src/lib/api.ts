@@ -2,11 +2,34 @@
  * Frontend API client for communicating with backend
  */
 
-import { API_BASE_URL, extractErrorDetail, getAuthHeader } from "./auth";
+import { API_BASE_URL, SESSION_EXPIRED_EVENT, clearAuth, extractErrorDetail, getAuthHeader } from "./auth";
 
 export interface ApiError {
   detail: string;
   status_code?: number;
+  /** Machine code and extra fields of a structured error body (`detail: { code, message, ... }`). */
+  code?: string;
+  data?: Record<string, unknown>;
+}
+
+/** The structured part of an error body, if the server sent one. */
+function structuredError(errorData: unknown): Pick<ApiError, "code" | "data"> {
+  const detail = (errorData as { detail?: unknown } | null)?.detail;
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) return {};
+  const data = detail as Record<string, unknown>;
+  return { code: typeof data.code === "string" ? data.code : undefined, data };
+}
+
+/**
+ * Narrow a caught (unknown-typed) error thrown by apiCall down to its detail
+ * message, falling back for anything that isn't a recognizable ApiError.
+ */
+export function getErrorMessage(error: unknown, fallback: string): string {
+  if (error && typeof error === "object" && "detail" in error) {
+    const detail = (error as Partial<ApiError>).detail;
+    if (typeof detail === "string") return detail;
+  }
+  return fallback;
 }
 
 /**
@@ -17,8 +40,11 @@ async function apiCall<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`;
+  // A FormData body needs the browser to set its own multipart boundary.
+  const contentType: Record<string, string> =
+    options.body instanceof FormData ? {} : { "Content-Type": "application/json" };
   const headers = {
-    "Content-Type": "application/json",
+    ...contentType,
     ...getAuthHeader(),
     ...options.headers,
   };
@@ -30,10 +56,17 @@ async function apiCall<T>(
     });
 
     if (!response.ok) {
+      // Only a request that carried a token can mean "session expired"; without
+      // one the 401 is just the caller's answer, and no event means no loop.
+      if (response.status === 401 && "Authorization" in headers) {
+        clearAuth();
+        window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+      }
       const errorData = await response.json().catch(() => ({}));
       throw {
         status_code: response.status,
         detail: extractErrorDetail(errorData, `HTTP ${response.status}`),
+        ...structuredError(errorData),
       } as ApiError;
     }
 
@@ -67,24 +100,98 @@ export interface BoardResponse {
   updated_at: string;
 }
 
+/** A stage's commercial meaning; reports key on this, never on the title. */
+export type StageKind = "open" | "won" | "lost";
+
 export interface ColumnResponse {
   id: number;
   board_id: number;
   title: string;
   position: number;
+  stage_kind: StageKind;
   created_at: string;
   updated_at: string;
   cards?: CardResponse[];
 }
 
-export interface CardResponse {
+/** The sales team's own assessment of an opportunity; null = not assigned. Exact upper case, as the API stores it. */
+export type ConfidenceLevel = "LOW" | "MEDIUM" | "HIGH";
+/** Report filter token: a level, or UNASSIGNED for cards with no level (never "" or "NULL"). */
+export const CONFIDENCE_LEVELS: readonly ConfidenceLevel[] = ["LOW", "MEDIUM", "HIGH"];
+export type ConfidenceFilter = ConfidenceLevel | "UNASSIGNED";
+
+/** Sales lead fields on a card; every one is optional (null when unset). */
+export interface LeadFields {
+  company: string | null;
+  contact: string | null;
+  deal_value: number | null;
+  currency: string | null;
+  expected_close_date: string | null; // YYYY-MM-DD
+  lead_source: string | null;
+  product_line: string | null;
+  confidence_level: ConfidenceLevel | null;
+  salesperson_id: number | null;
+}
+
+/** Read-only Bid report fields of an imported card. Revenue is integer cents of revenue_currency. */
+export interface BidDetails {
+  plant: string | null;
+  customer_type: string | null;
+  business_type: string | null;
+  product_category: string | null;
+  product: string | null;
+  solution_type: string | null;
+  volume_current_year: number | null;
+  volume_next_year: number | null;
+  production_start_date: string | null; // YYYY-MM-DD
+  revenue_current_year_cents: number | null;
+  revenue_next_year_cents: number | null;
+  revenue_currency: string;
+  status_note: string | null;
+  project_lead: string | null; // source name, not a user
+  cpm: string | null; // source name, not a user
+  next_step: string | null;
+  next_step_due: string | null; // YYYY-MM-DD
+  close_reason: string | null;
+  close_reason_note: string | null;
+}
+
+export interface SourceRef {
+  source_code: string;
+}
+
+export interface CardResponse extends LeadFields {
   id: number;
   column_id: number;
   title: string;
   details?: string;
   position: number;
+  has_member_edits: boolean;
+  // deal_value is the amount for deal_year; this is deal_year + 1, same currency.
+  deal_value_next_year?: number;
+  deal_year?: number;
+  salesperson_name: string | null;
+  bid_details?: BidDetails | null;
+  source_ref?: SourceRef | null;
   created_at: string;
   updated_at: string;
+}
+
+/** Partial card update: omitted fields are unchanged, null clears a lead field. */
+export type CardUpdatePayload = Partial<LeadFields> & {
+  title?: string;
+  details?: string;
+  deal_value_next_year?: number;
+  // Next Action Date and its Action (the Action is at most 100 characters).
+  next_step_due?: string | null; // YYYY-MM-DD
+  next_step?: string | null;
+};
+
+export interface CardEditHistoryEntry {
+  id: number;
+  edited_by: string;
+  changes: Record<string, { old: string | number | null; new: string | number | null }>;
+  created_at: string;
 }
 
 export interface BoardDetail extends BoardResponse {
@@ -182,12 +289,11 @@ export async function createCard(
 export async function updateCard(
   boardId: number,
   cardId: number,
-  title?: string,
-  details?: string
+  updates: CardUpdatePayload
 ): Promise<CardResponse> {
   return apiCall<CardResponse>(`/api/boards/${boardId}/cards/${cardId}`, {
     method: "PUT",
-    body: JSON.stringify({ title, details }),
+    body: JSON.stringify(updates),
   });
 }
 
@@ -207,6 +313,338 @@ export async function deleteCard(boardId: number, cardId: number): Promise<void>
   return apiCall<void>(`/api/boards/${boardId}/cards/${cardId}`, {
     method: "DELETE",
   });
+}
+
+export async function getCardHistory(
+  boardId: number,
+  cardId: number
+): Promise<CardEditHistoryEntry[]> {
+  return apiCall<CardEditHistoryEntry[]>(`/api/boards/${boardId}/cards/${cardId}/history`);
+}
+
+// ============================================================================
+// UNDO API
+// ============================================================================
+
+/** The current user's single undoable change on a board. */
+export interface UndoStatus {
+  available: boolean;
+  description: string | null;
+  undone?: string | null; // set by undoLastChange: what was reversed
+}
+
+export async function getUndoStatus(boardId: number): Promise<UndoStatus> {
+  return apiCall<UndoStatus>(`/api/boards/${boardId}/undo`);
+}
+
+export async function undoLastChange(boardId: number): Promise<UndoStatus> {
+  return apiCall<UndoStatus>(`/api/boards/${boardId}/undo`, { method: "POST" });
+}
+
+// ============================================================================
+// SALES LEADS API
+// ============================================================================
+
+export interface LeadOptions {
+  currencies: string[];
+  lead_sources: string[];
+  product_lines: string[];
+  salespeople: { id: number; username: string }[];
+}
+
+export async function getLeadOptions(): Promise<LeadOptions> {
+  return apiCall<LeadOptions>("/api/lead-options");
+}
+
+/** Money totals keyed by currency code - never summed across currencies. */
+export type CurrencyTotals = Record<string, number>;
+
+/** Bid report revenue (integer cents, the bid's own currency). Never added to Deal Value; NULL years are not counted. */
+export interface BidRevenueMeasure {
+  currency: string;
+  current_cents: number;
+  current_count: number;
+  next_cents: number;
+  next_count: number;
+}
+
+export interface ReportGroup {
+  /** Display label. */
+  key: string;
+  /** Stable id, only in by_salesperson (null: unassigned); equal labels can have different ids. */
+  salesperson_id?: number | null;
+  open_count: number;
+  /** *_totals: current-year amounts (deal_value); *_next_totals: next year; *_sum_totals: both. */
+  open_totals: CurrencyTotals;
+  open_next_totals?: CurrencyTotals;
+  open_sum_totals?: CurrencyTotals;
+  won_count: number;
+  won_totals: CurrencyTotals;
+  won_next_totals?: CurrencyTotals;
+  won_sum_totals?: CurrencyTotals;
+}
+
+export interface BoardReport {
+  kpis: {
+    open_count: number;
+    open_totals: CurrencyTotals;
+    open_next_totals?: CurrencyTotals;
+    open_sum_totals?: CurrencyTotals;
+    won_count: number;
+    won_totals: CurrencyTotals;
+    won_next_totals?: CurrencyTotals;
+    won_sum_totals?: CurrencyTotals;
+    open_bid_revenue?: BidRevenueMeasure[];
+    won_bid_revenue?: BidRevenueMeasure[];
+    lost_count: number;
+    win_rate: number | null;
+  };
+  stages: {
+    column_id: number;
+    title: string;
+    stage_kind: StageKind;
+    count: number;
+    totals: CurrencyTotals;
+    next_totals?: CurrencyTotals;
+    sum_totals?: CurrencyTotals;
+    bid_revenue?: BidRevenueMeasure[];
+  }[];
+  /** Years the amounts were entered for (the cards' stored deal_year); several = totals span years. */
+  deal_years?: number[];
+  by_salesperson: ReportGroup[];
+  by_product_line: ReportGroup[];
+  by_source: ReportGroup[];
+  /** Always LOW, MEDIUM, HIGH, "Not assigned" in this order, zeros included. */
+  by_confidence_level?: ReportGroup[];
+  closing_soon: {
+    card_id: number;
+    title: string;
+    company: string | null;
+    stage: string;
+    salesperson_name: string | null;
+    deal_value: number | null;
+    deal_value_next_year?: number;
+    deal_value_total?: number | null;
+    deal_year?: number | null;
+    currency: string | null;
+    expected_close_date: string;
+    overdue: boolean;
+  }[];
+}
+
+export interface ReportFilters {
+  salespersonId?: number;
+  productLine?: string;
+  confidenceLevel?: ConfidenceFilter;
+}
+
+export async function getBoardReport(
+  boardId: number,
+  filters: ReportFilters = {}
+): Promise<BoardReport> {
+  const params = new URLSearchParams();
+  if (filters.salespersonId !== undefined) params.set("salesperson_id", String(filters.salespersonId));
+  if (filters.productLine) params.set("product_line", filters.productLine);
+  if (filters.confidenceLevel) params.set("confidence_level", filters.confidenceLevel);
+  const query = params.toString();
+  return apiCall<BoardReport>(`/api/boards/${boardId}/report${query ? `?${query}` : ""}`);
+}
+
+// ============================================================================
+// KPI API (read-only; definitions in docs/KPIS.md, shapes in backend schemas.py)
+// ============================================================================
+
+export type KpiPeriodPreset = "last_30_days" | "last_90_days" | "year_to_date" | "custom";
+
+/** A period filter. start/end (YYYY-MM-DD, inclusive) only with "custom". */
+export interface KpiPeriodQuery {
+  period: KpiPeriodPreset;
+  start?: string;
+  end?: string;
+}
+
+/** One currency's total. KPI money is always per currency, never summed across. */
+export interface MoneyTotal {
+  total: number;
+  count: number;
+}
+export type MoneyTotals = Record<string, MoneyTotal>;
+
+/** A ratio of distinct opportunities; value is null (with a reason) when the denominator is 0. */
+export interface KpiRate {
+  value: number | null;
+  numerator: number;
+  denominator: number;
+  unavailable_reason: string | null;
+}
+
+/** Duration statistics in days; mean/median are null when count is 0. */
+export interface KpiDuration {
+  count: number;
+  mean_days: number | null;
+  median_days: number | null;
+}
+
+export interface KpiPeriod {
+  label: string;
+  start: string; // inclusive, UTC
+  end: string; // exclusive, UTC
+}
+
+/** complete: the period starts after tracking started; partial: before it; no_history: no events. */
+export interface KpiCoverage {
+  status: "complete" | "partial" | "no_history";
+  tracking_started_at: string | null;
+}
+
+export interface OutcomeFlow {
+  events: number;
+  opportunities: number;
+  card_ids: number[];
+  /** Closing value: recorded on each card's last won/lost event in the period. */
+  values: MoneyTotals;
+  without_value: number;
+  /** Events from before value snapshots existed: value unknown, never replaced. */
+  value_unavailable: number;
+  /** The same cards at their value today - comparison only, not history. */
+  current_values: MoneyTotals;
+  current_without_value: number;
+  /** The same cards' next-year amount and two-year total today (comparison only). */
+  current_next_year_values?: MoneyTotals;
+  current_total_values?: MoneyTotals;
+  still_in_outcome: number;
+}
+
+export interface StageRef {
+  column_id: number;
+  title: string;
+  stage_kind: StageKind;
+}
+
+export interface CohortKpis {
+  size: number;
+  card_ids: number[];
+  won_first: number;
+  lost_first: number;
+  still_open: number;
+  deleted_without_outcome: number;
+  win_rate: KpiRate;
+  closed_win_rate: KpiRate;
+  reached: (StageRef & { count: number; rate: KpiRate })[];
+}
+
+export interface PeriodKpis {
+  period: KpiPeriod;
+  coverage: KpiCoverage;
+  won: OutcomeFlow;
+  lost: OutcomeFlow;
+  reopened: { events: number; opportunities: number };
+  win_rate_closed: KpiRate;
+  cohort: CohortKpis;
+  velocity: { won: KpiDuration; lost: KpiDuration; excluded_unobserved_creation: number };
+}
+
+export interface KpiSummary {
+  as_of: string;
+  current: PeriodKpis;
+  previous: PeriodKpis | null;
+}
+
+export interface KpiConversion {
+  as_of: string;
+  period: KpiPeriod;
+  coverage: KpiCoverage;
+  win_rate_closed: KpiRate;
+  cohort: CohortKpis;
+  /** Open stages only. */
+  advancement: (StageRef & {
+    position: number;
+    entered: number;
+    advanced: number;
+    lost: number;
+    other_exit: number;
+    still_in_stage: number;
+    rate: KpiRate;
+  })[];
+}
+
+export interface KpiStageTime {
+  as_of: string;
+  period: KpiPeriod;
+  coverage: KpiCoverage;
+  stages: (StageRef & {
+    complete: KpiDuration;
+    /** Entered at a baseline: lower bounds. */
+    partial: KpiDuration;
+    ended_by_deletion: number;
+    current: KpiDuration & { observed_entries: number; baseline_entries: number };
+  })[];
+}
+
+export interface KpiAgingRow {
+  card_id: number;
+  title: string;
+  column_id: number;
+  column_title: string;
+  stage_kind: StageKind;
+  entered_at: string | null;
+  entry_observed: boolean | null;
+  /** A lower bound when entry_observed is false. */
+  age_days: number | null;
+  history: "observed" | "since_tracking_start" | "none";
+  deal_value: number | null;
+  deal_value_next_year?: number;
+  deal_value_total?: number | null;
+  deal_year?: number | null;
+  currency: string | null;
+}
+
+export interface KpiAging {
+  as_of: string;
+  tracking_started_at: string | null;
+  opportunities: KpiAgingRow[];
+}
+
+export interface KpiPipeline {
+  as_of: string;
+  stages: (StageRef & {
+    count: number;
+    values: MoneyTotals;
+    without_value: number;
+    next_year_values?: MoneyTotals;
+    total_values?: MoneyTotals;
+    bid_revenue?: BidRevenueMeasure[];
+  })[];
+  deal_years?: number[];
+}
+
+function kpiQuery(query: KpiPeriodQuery, extra: Record<string, string> = {}): string {
+  const params = new URLSearchParams({ period: query.period, ...extra });
+  if (query.period === "custom") {
+    if (query.start) params.set("start", query.start);
+    if (query.end) params.set("end", query.end);
+  }
+  return params.toString();
+}
+
+export async function getKpiSummary(boardId: number, query: KpiPeriodQuery, compare: boolean): Promise<KpiSummary> {
+  return apiCall<KpiSummary>(`/api/boards/${boardId}/kpis/summary?${kpiQuery(query, { compare: String(compare) })}`);
+}
+
+export async function getKpiConversion(boardId: number, query: KpiPeriodQuery): Promise<KpiConversion> {
+  return apiCall<KpiConversion>(`/api/boards/${boardId}/kpis/conversion?${kpiQuery(query)}`);
+}
+
+export async function getKpiStageTime(boardId: number, query: KpiPeriodQuery): Promise<KpiStageTime> {
+  return apiCall<KpiStageTime>(`/api/boards/${boardId}/kpis/stage-time?${kpiQuery(query)}`);
+}
+
+export async function getKpiAging(boardId: number): Promise<KpiAging> {
+  return apiCall<KpiAging>(`/api/boards/${boardId}/kpis/aging`);
+}
+
+export async function getKpiPipeline(boardId: number): Promise<KpiPipeline> {
+  return apiCall<KpiPipeline>(`/api/boards/${boardId}/kpis/pipeline`);
 }
 
 // ============================================================================
@@ -247,12 +685,289 @@ export async function listUsers(): Promise<UserResponse[]> {
   return apiCall<UserResponse[]>("/api/users");
 }
 
-export async function createUser(
-  username: string,
-  password: string
-): Promise<UserResponse> {
+export async function createUser(email: string): Promise<UserResponse> {
   return apiCall<UserResponse>("/api/users", {
     method: "POST",
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ email }),
+  });
+}
+
+// ============================================================================
+// BID IMPORT API (admin-only, Part 22E)
+// ============================================================================
+
+export type ImportAction = "create" | "update" | "ignore" | "review";
+export type DecisionNeeded =
+  | "fix_source_row"
+  | "confirm_stage"
+  | "choose_stage"
+  | "resolve_duplicate"
+  | "confirm_update"
+  | "confirm_move";
+
+/** One explicit choice for one Excel row; the backend resolves everything else. */
+export interface ImportDecision {
+  row_number: number;
+  target_stage?: string;
+  confirm_proposed_stage?: boolean;
+  skip?: boolean;
+  confirm_update?: boolean;
+  confirm_move?: boolean;
+}
+
+export interface ImportIssue {
+  severity: string;
+  code: string;
+  message: string;
+  row: number | null;
+  column: string | null;
+  field: string | null;
+}
+
+export interface ImportStageRef {
+  column_id: number;
+  title: string;
+  stage_kind: StageKind;
+}
+
+export interface ImportFieldChange {
+  field: string;
+  current: unknown;
+  incoming: unknown;
+}
+
+export interface ImportPreviewRow {
+  row_number: number;
+  code: string | null;
+  customer: string | null;
+  project_name: string | null;
+  source_status: string | null;
+  source_stage: string | null;
+  action: ImportAction;
+  classification: {
+    status: string;
+    target: ImportStageRef | null;
+    proposed: ImportStageRef | null;
+  };
+  target_stage: string | null;
+  reasons: ImportIssue[];
+  errors: ImportIssue[];
+  warnings: ImportIssue[];
+  required_decisions: DecisionNeeded[];
+  duplicate_rows: number[];
+  existing_card_id: number | null;
+  changed_fields: ImportFieldChange[];
+  stage_change: { from: string; to: string } | null;
+  move_confirmed: boolean;
+}
+
+export interface ImportPreviewSummary {
+  total_rows: number;
+  valid_rows: number;
+  rows_with_errors: number;
+  rows_with_warnings: number;
+  proposed_creates: number;
+  proposed_updates: number;
+  unconfirmed_updates: number;
+  unchanged: number;
+  internal_duplicate_rows: number;
+  pending_review: number;
+  ignored: number;
+  by_target_stage: Record<string, number>;
+  by_classification: Record<string, number>;
+  by_action: Record<string, number>;
+  /** Cents, per currency. */
+  revenue_cents_by_currency: Record<string, { current_year: number; next_year: number }>;
+}
+
+export interface ImportPreview {
+  file: { filename: string; size_bytes: number; sha256: string };
+  sheet: { name: string; missing_optional_columns: string[]; ignored_columns: string[] } | null;
+  file_warnings: ImportIssue[];
+  summary: ImportPreviewSummary;
+  rows: ImportPreviewRow[];
+  notice: string | null;
+  confirmable: boolean;
+  preview_token: string | null;
+  expires_in_minutes: number;
+}
+
+export interface ImportBatchRevert {
+  has_ledger: boolean;
+  /** Structural only: completed, has a ledger, not yet reverted. Conflicts come from the revert preview. */
+  revertible: boolean;
+  reason: string | null;
+  reverted: boolean;
+  reverted_at: string | null;
+  reverted_by_user_id: number | null;
+  reverted_by_username: string | null;
+  outcome: "reverted" | "no_commercial_changes" | null;
+  no_commercial_changes: boolean | null;
+  cards_deleted: number | null;
+  cards_restored: number | null;
+  moves_reverted: number | null;
+  already_deleted: number | null;
+  summary: Record<string, unknown> | null;
+}
+
+export interface ImportBatch {
+  id: number;
+  board_id: number;
+  username: string | null;
+  filename: string;
+  file_sha256: string;
+  status: string;
+  failure_kind: string | null;
+  failure_reason: string | null;
+  created_count: number;
+  updated_count: number;
+  skipped_count: number;
+  review_count: number;
+  created_at: string;
+  completed_at: string | null;
+  revert: ImportBatchRevert | null;
+}
+
+export interface ImportBatchDetail extends ImportBatch {
+  mapping: Record<string, unknown> | null;
+  card_changes_count: number;
+}
+
+export interface ImportBatchList {
+  items: ImportBatch[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ImportResult {
+  batch: ImportBatch | null;
+  no_op?: boolean;
+  created_card_ids: number[];
+  updated_card_ids: number[];
+  moved_card_ids: number[];
+  skipped: number;
+  review: number;
+}
+
+function importForm(file: File, decisions: ImportDecision[]): FormData {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("decisions", JSON.stringify(decisions));
+  return form;
+}
+
+export async function previewBidImport(
+  boardId: number,
+  file: File,
+  decisions: ImportDecision[]
+): Promise<ImportPreview> {
+  return apiCall<ImportPreview>(`/api/boards/${boardId}/imports/preview`, {
+    method: "POST",
+    body: importForm(file, decisions),
+  });
+}
+
+/** The same file and decisions that produced `previewToken`. */
+export async function confirmBidImport(
+  boardId: number,
+  file: File,
+  decisions: ImportDecision[],
+  previewToken: string
+): Promise<ImportResult> {
+  const form = importForm(file, decisions);
+  form.append("preview_token", previewToken);
+  form.append("confirm", "true");
+  return apiCall<ImportResult>(`/api/boards/${boardId}/imports`, { method: "POST", body: form });
+}
+
+export async function listBidImports(boardId: number, limit = 50, offset = 0): Promise<ImportBatchList> {
+  return apiCall<ImportBatchList>(`/api/boards/${boardId}/imports?limit=${limit}&offset=${offset}`);
+}
+
+export async function getBidImport(batchId: number): Promise<ImportBatchDetail> {
+  return apiCall<ImportBatchDetail>(`/api/imports/${batchId}`);
+}
+
+// Revert (Part 23). Values in blockers are commercial data: show them only in the admin UI, never log them.
+
+export interface RevertBlocker {
+  code: string;
+  card_id: number | null;
+  field: string | null;
+  imported: string | number | boolean | null;
+  current: string | number | boolean | null;
+  batch_ids: number[];
+}
+
+export interface RevertOperation {
+  kind: "delete_card" | "restore_fields" | "move_card" | "delete_bid_details";
+  card_id: number;
+  fields: string[] | null;
+  from_column_id: number | null;
+  to_column_id: number | null;
+}
+
+export interface RevertItem {
+  item_id: number;
+  card_id: number;
+  source_key: string;
+  action: "created" | "updated" | "observed";
+  observation: string | null;
+  classification: string;
+  operations: RevertOperation[];
+  blockers: RevertBlocker[];
+}
+
+export interface RevertCounts {
+  items: number;
+  cards_to_delete: number;
+  cards_to_restore: number;
+  moves_to_revert: number;
+  bid_details_to_delete: number;
+  already_deleted: number;
+  already_reverted: number;
+  observed: number;
+  blocked: number;
+}
+
+export interface RevertPlan {
+  batch_id: number;
+  status: "ready" | "blocked" | "not_revertible" | "already_reverted";
+  reason: string | null;
+  /** status == ready: the confirmation would be accepted now. */
+  revertible: boolean;
+  no_commercial_changes: boolean;
+  ledger_version: number | null;
+  plan_fingerprint: string;
+  counts: RevertCounts;
+  blockers: RevertBlocker[];
+  dependent_batches: { batch_id: number; card_ids: number[] }[];
+  items: RevertItem[];
+}
+
+export interface RevertResult {
+  batch: ImportBatch;
+  outcome: "reverted" | "no_commercial_changes";
+  no_commercial_changes: boolean;
+  counts: {
+    cards_deleted: number;
+    cards_restored: number;
+    moves_reverted: number;
+    already_deleted: number;
+    bid_details_deleted: number;
+    already_reverted: number;
+    observed: number;
+  };
+}
+
+export async function getRevertPreview(batchId: number): Promise<RevertPlan> {
+  return apiCall<RevertPlan>(`/api/imports/${batchId}/revert-preview`);
+}
+
+export async function revertBidImport(batchId: number, planFingerprint: string): Promise<RevertResult> {
+  return apiCall<RevertResult>(`/api/imports/${batchId}/revert`, {
+    method: "POST",
+    body: JSON.stringify({ plan_fingerprint: planFingerprint }),
   });
 }

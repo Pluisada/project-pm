@@ -1,16 +1,34 @@
 """AI-powered Kanban board updates with structured outputs."""
 import json
 from typing import Optional
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from models import ConversationMessage, Card, BoardColumn as Column
-from schemas import BoardDetail
+from card_rules import (
+    CardPermissionDenied,
+    InvalidCardUpdate,
+    apply_card_updates,
+    audit_deletion,
+    audit_new_card_owner,
+    move_denial,
+    is_admin,
+    new_card_fields,
+)
+from lead_options import DEAL_CURRENCY, LEAD_SOURCES
+from product_catalog import ProductError, catalog_names, check_product_line
+from models import ConversationMessage, Card, BoardColumn as Column, CompanyUser
+from schemas import BoardDetail, CardUpdate
+from stage_history import SOURCE_AI, set_stage_context
+from undo import record_undo, undo_create, undo_delete, undo_move, undo_update
 from database import SessionLocal
 from ai import call_ai, AIError
 
 
 # System prompt for AI
-SYSTEM_PROMPT = """You are a helpful AI assistant for a Kanban board project management tool.
+SYSTEM_PROMPT = f"""You are a helpful AI assistant for Salcomp's sales lead tracking board.
+Each card is a sales lead; columns are the sales stages, in position order.
+Each column has a "stage_kind": "won" means deals in it were won, "lost" that they
+were lost, "open" that they're still in progress. Go by stage_kind, not by title.
 
 The user will provide:
 1. Current board state (columns and cards)
@@ -23,16 +41,26 @@ Your job is to:
 3. Provide a helpful response
 
 You MUST respond with valid JSON in this exact format:
-{
+{{
   "response": "Your helpful message to the user",
   "actions": [
-    {"type": "create", "column_id": 1, "title": "Card title", "details": "Card details"},
-    {"type": "update", "card_id": 1, "title": "New title", "details": "New details"},
-    {"type": "move", "card_id": 1, "column_id": 2, "position": 0},
-    {"type": "delete", "card_id": 1}
+    {{"type": "create", "column_id": 1, "title": "Card title", "details": "Card details", "company": "Acme"}},
+    {{"type": "update", "card_id": 1, "title": "New title", "deal_value": 50000}},
+    {{"type": "move", "card_id": 1, "column_id": 2, "position": 0}},
+    {{"type": "delete", "card_id": 1}}
   ],
   "confidence": 0.95
-}
+}}
+
+Lead fields (all optional, on create and update; send null to clear one):
+- company, contact: text
+- deal_value (current year) and deal_value_next_year (the following year): numbers >= 0, always in USD; never send another currency
+- expected_close_date: "YYYY-MM-DD" (when the sale is expected to close)
+- next_step_due: "YYYY-MM-DD" (Next Action Date); next_step: the Action, a short text of at most 100 characters
+- lead_source: one of: {", ".join(LEAD_SOURCES)}
+- product_line: one of the "product_lines" listed in the board state
+- confidence_level: exactly "LOW", "MEDIUM" or "HIGH" (upper case), or null for not assigned. Set it only when the user states the level explicitly; never infer it from other fields, notes or imported data
+- salesperson_id: a user id from the "salespeople" list in the board state
 
 Rules:
 - Only suggest actions that make sense for the user's request
@@ -53,17 +81,35 @@ async def get_board_context(db: Session, board_id: int) -> dict:
     return {
         "board_id": board.id,
         "title": board.title,
+        "product_lines": catalog_names(db),
+        "salespeople": [
+            {"id": u.id, "username": u.username}
+            for u in db.query(CompanyUser).order_by(CompanyUser.username).all()
+        ],
         "columns": [
             {
                 "id": col.id,
                 "title": col.title,
                 "position": col.position,
+                "stage_kind": col.stage_kind,
                 "cards": [
                     {
                         "id": c.id,
                         "title": c.title,
                         "details": c.details,
                         "position": c.position,
+                        "company": c.company,
+                        "contact": c.contact,
+                        "deal_value": c.deal_value,
+                        "currency": DEAL_CURRENCY,
+                        "expected_close_date": (
+                            c.expected_close_date.isoformat() if c.expected_close_date else None
+                        ),
+                        "lead_source": c.lead_source,
+                        "product_line": c.product_line,
+                        "confidence_level": c.confidence_level,
+                        "salesperson_id": c.salesperson_id,
+                        "salesperson_name": c.salesperson_name,
                     }
                     for c in (col.cards or [])
                 ],
@@ -151,16 +197,59 @@ Recent Conversation:
         }
 
 
+def _validated_card_fields(db: Session, action: dict, assignable_ids: set | None = None) -> dict:
+    """Pick an action's card fields and validate them like the REST route does.
+
+    Raises ValueError (ValidationError and InvalidCardUpdate both are) with a
+    readable reason for the action's "failed" entry.
+    """
+    raw = {k: v for k, v in action.items() if k in CardUpdate.model_fields}
+    try:
+        fields = CardUpdate(**raw).model_dump(exclude_unset=True)
+    except ValidationError as e:
+        raise ValueError(
+            "; ".join(f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors())
+        )
+    salesperson_id = fields.get("salesperson_id")
+    if salesperson_id is not None and (
+        db.get(CompanyUser, salesperson_id) is None
+        or (assignable_ids is not None and salesperson_id not in assignable_ids)
+    ):
+        raise InvalidCardUpdate("Salesperson not found")
+    try:
+        check_product_line(db, fields)
+    except ProductError as exc:
+        raise InvalidCardUpdate(str(exc))
+    return fields
+
+
+def _board_card(db: Session, board_id: int, card_id) -> Card | None:
+    """The card, only if its column belongs to this board (card -> column -> board); any other board is "not found"."""
+    return db.query(Card).join(Column).filter(Card.id == card_id, Column.board_id == board_id).first()
+
+
 async def apply_board_actions(
-    db: Session, board_id: int, actions: list[dict]
+    db: Session, board_id: int, actions: list[dict], current_user,
+    assignable_ids: set | None = None, record_undo_entry: bool = True, admin: bool | None = None,
 ) -> dict:
-    """Apply AI-suggested actions to the board."""
+    """Apply AI-suggested actions to the board.
+
+    Goes through the same member/admin rules as the REST card routes (see
+    card_rules.py) - the AI chat sidebar is another way to move/edit/delete
+    cards, not a bypass of those rules. `admin` is an explicit card-administration decision from the company
+    routes (Phase 2E part 4); None keeps is_admin(current_user), as the legacy route and every other caller do.
+    Card creation never uses it: a creator who is not a global admin still owns the card.
+    """
     from models import Board
 
+    set_stage_context(db, current_user, SOURCE_AI)
     results = {
         "successful": [],
         "failed": [],
     }
+    # Inverse steps of every applied action, recorded as one undo entry so a
+    # single Undo click reverses the whole AI request.
+    undo_steps = []
 
     try:
         board = db.query(Board).filter(Board.id == board_id).first()
@@ -180,39 +269,54 @@ async def apply_board_actions(
                         )
                         continue
 
+                    try:
+                        fields = _validated_card_fields(
+                            db, {"title": "Untitled", "details": "", **action}, assignable_ids
+                        )
+                    except ValueError as e:
+                        results["failed"].append({"action": action, "reason": str(e)})
+                        continue
+
+                    # Set directly rather than via apply_card_updates: filling
+                    # in a brand-new card isn't an edit to log in its history
+                    # (same as the REST create route).
                     card = Card(
                         column_id=column_id,
-                        title=action.get("title", "Untitled"),
-                        details=action.get("details", ""),
                         position=action.get("position", 0),
+                        **new_card_fields(current_user, fields),
                     )
                     db.add(card)
                     db.flush()
+                    audit_new_card_owner(db, board_id, card, current_user)
+                    undo_steps.append(undo_create(card))
                     results["successful"].append(
                         {"type": "create", "card_id": card.id}
                     )
 
                 elif action_type == "update":
                     card_id = action.get("card_id")
-                    card = db.query(Card).filter(Card.id == card_id).first()
+                    card = _board_card(db, board_id, card_id)
                     if not card:
                         results["failed"].append(
                             {"action": action, "reason": "Card not found"}
                         )
                         continue
 
-                    if "title" in action:
-                        card.title = action["title"]
-                    if "details" in action:
-                        card.details = action["details"]
-
+                    try:
+                        fields = _validated_card_fields(db, action, assignable_ids)
+                        undo_step = undo_update(card, fields)
+                        apply_card_updates(db, card, fields, current_user, admin=admin)
+                        undo_steps.append(undo_step)
+                    except (ValueError, CardPermissionDenied) as e:
+                        results["failed"].append({"action": action, "reason": str(e)})
+                        continue
                     results["successful"].append({"type": "update", "card_id": card_id})
 
                 elif action_type == "move":
                     card_id = action.get("card_id")
                     column_id = action.get("column_id")
 
-                    card = db.query(Card).filter(Card.id == card_id).first()
+                    card = _board_card(db, board_id, card_id)
                     column = db.query(Column).filter(Column.id == column_id).first()
 
                     if not card or not column or column.board_id != board_id:
@@ -221,27 +325,58 @@ async def apply_board_actions(
                         )
                         continue
 
+                    denial = move_denial(current_user, card, column.position, admin=admin)
+                    if denial:
+                        results["failed"].append({"action": action, "reason": denial})
+                        continue
+
+                    undo_steps.append(undo_move(card, column.id))
                     card.column_id = column_id
                     card.position = action.get("position", 0)
                     results["successful"].append({"type": "move", "card_id": card_id})
 
                 elif action_type == "delete":
                     card_id = action.get("card_id")
-                    card = db.query(Card).filter(Card.id == card_id).first()
+                    card = _board_card(db, board_id, card_id)
                     if not card:
                         results["failed"].append(
                             {"action": action, "reason": "Card not found"}
                         )
                         continue
 
+                    if not (is_admin(current_user) if admin is None else admin):
+                        results["failed"].append(
+                            {"action": action, "reason": "Only admins can delete cards"}
+                        )
+                        continue
+
+                    undo_steps.append(undo_delete(card))
+                    audit_deletion(db, board_id, card, current_user)
                     db.delete(card)
                     results["successful"].append({"type": "delete", "card_id": card_id})
+
+                else:
+                    # Only card actions exist. Anything structural (columns,
+                    # the board) is admin-only through the REST routes and
+                    # deliberately has no AI path.
+                    results["failed"].append(
+                        {"action": action, "reason": "Unsupported action type"}
+                    )
 
             except Exception as e:
                 results["failed"].append(
                     {"action": action, "reason": str(e)}
                 )
 
+        count = len(results["successful"])
+        if record_undo_entry:
+            record_undo(
+                db,
+                current_user,
+                board_id,
+                f"Undo AI assistant changes ({count} change{'s' if count != 1 else ''})",
+                undo_steps,
+            )
         db.commit()
         return {"success": True, **results}
 

@@ -1,28 +1,26 @@
 """Tests for AI module."""
+import httpx
 import pytest
 from unittest.mock import patch, AsyncMock
-from ai import validate_api_key, test_ai_connectivity, AIError, call_ai
+import ai
+from ai import test_ai_connectivity, AIError, call_ai
+
+# Imported production function whose name starts with "test"; keep pytest from collecting it.
+test_ai_connectivity.__test__ = False
 
 
 class TestAPIKeyValidation:
     """Test API key validation."""
 
-    def test_validate_api_key_present(self):
+    def test_validate_api_key_present(self, monkeypatch):
         """Test that validation passes when API key is present."""
-        with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}):
-            # Reload module to pick up env var
-            import importlib
-            import ai
-            importlib.reload(ai)
-            assert ai.validate_api_key()
+        monkeypatch.setattr(ai, "OPENROUTER_API_KEY", "test-key")
+        assert ai.validate_api_key()
 
-    def test_validate_api_key_missing(self):
+    def test_validate_api_key_missing(self, monkeypatch):
         """Test that validation fails when API key is missing."""
-        with patch.dict("os.environ", {}, clear=True):
-            import importlib
-            import ai
-            importlib.reload(ai)
-            assert not ai.validate_api_key()
+        monkeypatch.setattr(ai, "OPENROUTER_API_KEY", None)
+        assert not ai.validate_api_key()
 
 
 class TestAIConnectivity:
@@ -49,7 +47,7 @@ class TestAIConnectivity:
     async def test_call_ai_request_error(self):
         """Test handling of request errors."""
         with patch("ai.validate_api_key", return_value=True):
-            with patch("httpx.AsyncClient.post", side_effect=Exception("Network error")):
+            with patch("httpx.AsyncClient.post", side_effect=httpx.ConnectError("Network error")):
                 with pytest.raises(AIError):
                     await call_ai([{"role": "user", "content": "test"}])
 

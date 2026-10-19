@@ -137,7 +137,7 @@ User Flow:
 
 ✅ **Token Storage:** localStorage (OK for MVP, see notes below)  
 ✅ **Token Type:** JWT with HS256 signature  
-✅ **Token Expiry:** 24 hours by default  
+✅ **Token Expiry:** 8 hours (was 24 hours when Part 4 was written; since changed, and tokens are now revocable server-side via `session_version`)
 ✅ **Credentials:** Hardcoded (user/password) for MVP only  
 ✅ **HTTPS:** Should be enabled in production  
 ✅ **CORS:** Enabled for dev, should restrict in production  
@@ -338,10 +338,10 @@ For production, add:
 
 ## Key Technical Decisions
 
-✅ **JWT Tokens** - Stateless auth, no server-side session storage needed  
+✅ **JWT Tokens** - Stateless auth when Part 4 was written (since then each token is checked against the user's `session_version`, so logout can revoke it)
 ✅ **localStorage** - Simple for MVP, httpOnly cookies for production  
 ✅ **Bearer Token Scheme** - Standard HTTP authentication  
-✅ **24-hour Expiry** - Balanced security and UX  
+✅ **8-hour Expiry** - Balanced security and UX (originally 24 hours)
 ✅ **Hardcoded Credentials** - Simplicity for MVP (will use DB in Part 6)  
 ✅ **Protected Routes** - Client-side guard + server-side validation  
 

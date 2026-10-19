@@ -1,35 +1,22 @@
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
-import { createUser, listUsers, type UserResponse } from "@/lib/api";
-import type { ApiError } from "@/lib/api";
+import { createUser, getErrorMessage, listUsers, type UserResponse } from "@/lib/api";
 
-interface ManageUsersPageProps {
-  onBack: () => void;
-}
+const initialFormState = { email: "" };
 
-const initialFormState = { username: "", password: "" };
-
-export const ManageUsersPage = ({ onBack }: ManageUsersPageProps) => {
+export const ManageUsersPage = () => {
   const [users, setUsers] = useState<UserResponse[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [formState, setFormState] = useState(initialFormState);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const loadUsers = async () => {
-    setIsLoading(true);
-    try {
-      setUsers(await listUsers());
-    } catch (err) {
-      console.error("Failed to load users", err);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   useEffect(() => {
-    loadUsers();
+    listUsers()
+      .then(setUsers)
+      .catch((err: unknown) => console.error("Failed to load users", err))
+      .finally(() => setIsLoading(false));
   }, []);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -38,33 +25,27 @@ export const ManageUsersPage = ({ onBack }: ManageUsersPageProps) => {
     setSubmitting(true);
 
     try {
-      const newUser = await createUser(formState.username, formState.password);
+      const newUser = await createUser(formState.email);
       setUsers((prev) => [...prev, newUser]);
       setFormState(initialFormState);
     } catch (err) {
-      setError((err as ApiError).detail || "Failed to create user");
+      setError(getErrorMessage(err, "Failed to create user"));
     } finally {
       setSubmitting(false);
     }
   };
 
   return (
-    <div className="mx-auto max-w-2xl px-6 py-10">
-      <div className="mb-8 flex items-center justify-between">
+    <div className="mx-auto max-w-2xl px-6 py-6">
+      <div className="mb-6">
         <div>
           <h1 className="font-display text-2xl font-semibold text-[var(--navy-dark)]">
             Manage Users
           </h1>
           <p className="mt-1 text-sm text-[var(--gray-text)]">
-            Create accounts for team members. New users get the member profile.
+            Invite team members by email. They get the member profile once they follow the emailed link and choose a password.
           </p>
         </div>
-        <button
-          onClick={onBack}
-          className="rounded-lg border border-[var(--stroke)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)] transition hover:text-[var(--navy-dark)]"
-        >
-          Back to board
-        </button>
       </div>
 
       <form
@@ -80,44 +61,18 @@ export const ManageUsersPage = ({ onBack }: ManageUsersPageProps) => {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
           <div className="flex-1">
             <label
-              htmlFor="new-user-username"
+              htmlFor="new-user-email"
               className="block text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]"
             >
-              Username
+              Email
             </label>
             <input
-              id="new-user-username"
-              type="text"
-              value={formState.username}
-              onChange={(e) =>
-                setFormState((prev) => ({ ...prev, username: e.target.value }))
-              }
-              placeholder="New username"
+              id="new-user-email"
+              type="email"
+              value={formState.email}
+              onChange={(e) => setFormState({ email: e.target.value })}
+              placeholder="name@company.com"
               disabled={submitting}
-              minLength={3}
-              maxLength={50}
-              required
-              className="mt-2 w-full rounded-lg border border-[var(--stroke)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--primary-blue)] focus:ring-2 focus:ring-[var(--primary-blue)]/20 disabled:opacity-50"
-            />
-          </div>
-          <div className="flex-1">
-            <label
-              htmlFor="new-user-password"
-              className="block text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]"
-            >
-              Password
-            </label>
-            <input
-              id="new-user-password"
-              type="password"
-              value={formState.password}
-              onChange={(e) =>
-                setFormState((prev) => ({ ...prev, password: e.target.value }))
-              }
-              placeholder="At least 8 characters"
-              disabled={submitting}
-              minLength={8}
-              maxLength={128}
               required
               className="mt-2 w-full rounded-lg border border-[var(--stroke)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--primary-blue)] focus:ring-2 focus:ring-[var(--primary-blue)]/20 disabled:opacity-50"
             />
@@ -127,7 +82,7 @@ export const ManageUsersPage = ({ onBack }: ManageUsersPageProps) => {
             disabled={submitting}
             className="rounded-full bg-[var(--secondary-purple)] px-6 py-3 text-xs font-semibold uppercase tracking-wide text-white transition hover:brightness-110 disabled:opacity-50"
           >
-            {submitting ? "Creating..." : "Add user"}
+            {submitting ? "Inviting..." : "Invite user"}
           </button>
         </div>
       </form>

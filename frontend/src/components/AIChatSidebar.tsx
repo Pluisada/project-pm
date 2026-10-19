@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import { sendAIMessage, type ApiError } from "@/lib/api";
+import { useState, useEffect, useRef, type Ref } from "react";
+import { getErrorMessage, sendAIMessage } from "@/lib/api";
 
 interface Message {
   role: "user" | "assistant";
@@ -12,17 +12,19 @@ interface Message {
 interface AIChatSidebarProps {
   boardId: number;
   onBoardChange?: () => void;
+  onClose?: () => void;
+  closeRef?: Ref<HTMLButtonElement>;
 }
 
 const TYPING_DOT_DELAYS = ["0s", "0.2s", "0.4s"];
 
 const EXAMPLE_PROMPTS = [
-  "Create a bug fix task",
-  "Move urgent items to In Progress",
-  "What's in the backlog?",
+  "Show leads closing this month",
+  "Which leads are overdue?",
+  "Move the Acme lead to Proposal",
 ];
 
-export const AIChatSidebar = ({ boardId, onBoardChange }: AIChatSidebarProps) => {
+export const AIChatSidebar = ({ boardId, onBoardChange, onClose, closeRef }: AIChatSidebarProps) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -55,7 +57,7 @@ export const AIChatSidebar = ({ boardId, onBoardChange }: AIChatSidebarProps) =>
         onBoardChange?.();
       }
     } catch (err) {
-      const detail = (err as ApiError).detail || "Failed to get AI response";
+      const detail = getErrorMessage(err, "Failed to get AI response");
       setError(detail);
       addMessage("assistant", `Error: ${detail}. Please try again.`);
     } finally {
@@ -83,10 +85,21 @@ export const AIChatSidebar = ({ boardId, onBoardChange }: AIChatSidebarProps) =>
   return (
     <div className="flex h-full flex-col border-l border-[var(--stroke)] bg-white/50 backdrop-blur">
       {/* Header */}
-      <div className="border-b border-[var(--stroke)] px-6 py-4">
-        <h2 className="text-lg font-semibold text-[var(--navy-dark)]">AI Assistant</h2>
+      <div className="border-b border-t-[3px] border-b-[var(--stroke)] border-t-[var(--secondary-purple)] px-6 py-4">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold text-[var(--navy-dark)]">AI Assistant</h2>
+          <button
+            ref={closeRef}
+            type="button"
+            onClick={onClose}
+            aria-label="Close AI Assistant"
+            className="rounded-lg border border-[var(--stroke)] bg-white px-3 py-1 text-xs font-semibold text-[var(--gray-text)] transition hover:bg-[var(--surface)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--primary-blue)]"
+          >
+            Close
+          </button>
+        </div>
         <p className="mt-1 text-xs text-[var(--gray-text)]">
-          Ask me to organize your board
+          Ask me about your leads or to move them between stages
         </p>
       </div>
 
@@ -118,7 +131,7 @@ export const AIChatSidebar = ({ boardId, onBoardChange }: AIChatSidebarProps) =>
                 }`}
               >
                 <div
-                  className={`max-w-xs rounded-2xl px-4 py-2 text-sm ${
+                  className={`max-w-xs rounded-xl px-4 py-2 text-sm ${
                     msg.role === "user"
                       ? "bg-[var(--secondary-purple)] text-white"
                       : "bg-[var(--surface)] text-[var(--navy-dark)]"
@@ -136,7 +149,7 @@ export const AIChatSidebar = ({ boardId, onBoardChange }: AIChatSidebarProps) =>
             ))}
             {isLoading && (
               <div className="flex justify-start">
-                <div className="rounded-2xl bg-[var(--surface)] px-4 py-3">
+                <div className="rounded-xl bg-[var(--surface)] px-4 py-3">
                   <div className="flex gap-1">
                     {TYPING_DOT_DELAYS.map((delay) => (
                       <div

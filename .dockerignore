@@ -3,15 +3,34 @@
 **/*.pyo
 **/*.egg-info
 **/.pytest_cache
+**/.venv
 **/.git
 **/.gitignore
 **/node_modules
 **/npm-debug.log
 **/yarn-error.log
 **/.next
+frontend/.next-*
 **/out
 **/dist
 **/.vscode
-**/.env
-**/pm.db
 **/.DS_Store
+**/*.tsbuildinfo
+# Secrets: no environment file ever enters the build context
+**/.env
+**/.env.*
+# Local databases, SQLite sidecars and backups
+**/*.db
+**/*.db-*
+**/*.sqlite
+**/*.sqlite3
+**/*.bak
+**/backups
+# Test output, generated static copy, workbooks, local tooling
+**/test-results
+**/playwright-report
+**/coverage
+backend/static
+**/*.xlsx
+.claude
+.agents

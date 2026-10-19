@@ -12,6 +12,9 @@ export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ||
   (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "");
 
+/** Fired (once the stored session is cleared) when an authenticated request gets a 401. */
+export const SESSION_EXPIRED_EVENT = "pm:session-expired";
+
 export type UserRole = "admin" | "member";
 
 export interface LoginRequest {
@@ -76,13 +79,19 @@ export function extractErrorDetail(errorData: unknown, fallback: string): string
   if (Array.isArray(detail) && typeof detail[0]?.msg === "string") {
     return detail[0].msg;
   }
+  // The import's unreadable-file refusal: { message, file_errors: [{ message }] }.
+  if (detail && typeof detail === "object" && typeof (detail as { message?: unknown }).message === "string") {
+    const { message, file_errors } = detail as { message: string; file_errors?: { message?: string }[] };
+    const reasons = (file_errors ?? []).map((issue) => issue.message).filter(Boolean);
+    return reasons.length ? `${message}: ${reasons.join("; ")}` : message;
+  }
   return fallback;
 }
 
 /**
  * Whether the system still needs its first (admin) user created
  */
-export async function getSetupStatus(): Promise<{ needs_setup: boolean }> {
+export async function getSetupStatus(): Promise<{ needs_setup: boolean; setup_enabled: boolean }> {
   const response = await fetch(`${API_BASE_URL}/api/setup/status`);
 
   if (!response.ok) {
@@ -95,20 +104,41 @@ export async function getSetupStatus(): Promise<{ needs_setup: boolean }> {
 /**
  * Create the first (admin) user. Only succeeds while no users exist yet.
  */
-export async function setupAdmin(credentials: LoginRequest): Promise<LoginResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/setup`, {
+/**
+ * POST JSON to an unauthenticated endpoint (setup, signup, password reset).
+ * Throws an Error carrying the backend's message (or `fallback`) when the
+ * response isn't ok; otherwise returns the response for the caller to read.
+ * Deliberately not apiCall: these send no auth header and throw plain Error.
+ */
+async function postJson(
+  path: string,
+  body: unknown,
+  fallback: string,
+  extraHeaders: Record<string, string> = {}
+): Promise<Response> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      ...extraHeaders,
     },
-    body: JSON.stringify(credentials),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(extractErrorDetail(errorData, "Setup failed"));
+    throw new Error(extractErrorDetail(errorData, fallback));
   }
+  return response;
+}
 
+export async function setupAdmin(
+  credentials: LoginRequest,
+  setupKey: string
+): Promise<LoginResponse> {
+  const response = await postJson("/api/setup", credentials, "Setup failed", {
+    "X-Setup-Token": setupKey,
+  });
   const data: LoginResponse = await response.json();
   storeAuth(data);
   return data;
@@ -135,6 +165,12 @@ export async function login(credentials: LoginRequest): Promise<LoginResponse> {
   return data;
 }
 
+export function clearAuth(): void {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+  localStorage.removeItem(ROLE_KEY);
+}
+
 /**
  * Logout user
  */
@@ -154,10 +190,7 @@ export async function logout(): Promise<void> {
     }
   }
 
-  // Clear localStorage
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(USER_KEY);
-  localStorage.removeItem(ROLE_KEY);
+  clearAuth();
 }
 
 /**
@@ -197,4 +230,34 @@ export function getCurrentUsername(): string | null {
  */
 export function isAdmin(): boolean {
   return getAuthState().role === "admin";
+}
+
+/**
+ * Ask the backend to email a signup link. Resolves the same way whether or
+ * not the address is already registered.
+ */
+export async function requestSignup(email: string): Promise<void> {
+  await postJson("/api/signup", { email }, "Sign-up failed");
+}
+
+/**
+ * Create the account for a signup link's token. Does not log in.
+ */
+export async function completeSignup(token: string, password: string): Promise<void> {
+  await postJson("/api/signup/complete", { token, password }, "Could not create account");
+}
+
+/**
+ * Ask for a password reset link. The backend answers the same way whether or
+ * not the account exists, so this resolves without saying where it was sent.
+ */
+export async function requestPasswordReset(identifier: string): Promise<void> {
+  await postJson("/api/password/forgot", { identifier }, "Could not send reset link");
+}
+
+/**
+ * Set a new password from a reset link's token. Does not log in.
+ */
+export async function resetPassword(token: string, password: string): Promise<void> {
+  await postJson("/api/password/reset", { token, password }, "Could not reset password");
 }

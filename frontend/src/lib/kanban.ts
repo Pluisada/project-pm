@@ -1,13 +1,40 @@
+import type { ConfidenceLevel } from "@/lib/api";
+
 export type Card = {
   id: string;
   title: string;
   details: string;
+  // Set by the API-backed board only; unused by the local-state demo board.
+  hasMemberEdits?: boolean;
+  lead?: LeadSummary;
+};
+
+/** What a card shows of its sales lead (API-backed board only). */
+export type LeadSummary = {
+  company: string | null;
+  contact: string | null;
+  dealValue: number | null;
+  expectedCloseDate: string | null; // YYYY-MM-DD
+  productLine: string | null;
+  confidenceLevel?: ConfidenceLevel | null;
+  salespersonName: string | null;
+  // Close date has passed while the lead is still open (not won/lost)
+  overdue: boolean;
+  // Bid next action (read-only, imported); distinct from the expected close date.
+  nextStep: string | null;
+  nextStepDue: string | null; // YYYY-MM-DD, only when a valid date
+  nextStepOverdue: boolean;
+  sourceCode: string | null;
 };
 
 export type Column = {
   id: string;
   title: string;
   cardIds: string[];
+  // Set by the API-backed board only; used to enforce members-move-forward-only.
+  position?: number;
+  // API-backed board only: the stage's commercial meaning (shown as a badge).
+  stageKind?: "open" | "won" | "lost";
 };
 
 export type BoardData = {

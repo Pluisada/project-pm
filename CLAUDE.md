@@ -1,96 +1,83 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
+Guidance for Claude Code in this repository. Per-module detail, the full bug history and every known gap are in `docs/CLAUDE-reference.md` (not auto-loaded); design history is in `docs/PLAN.md`, the schema in `docs/DATABASE.md` / `docs/schema.json`, KPI definitions in `docs/KPIS.md`, security in `docs/SECURITY.md`, user-facing changes in `CHANGELOG.md`. Check `docs/PLAN.md` before structural changes.
 
 ## Project
 
-A Project Management MVP: a Kanban board with drag-and-drop, multi-user auth (admin/member roles), and an AI chat sidebar that can create/edit/move cards. Next.js frontend, FastAPI backend serving the static Next.js export at `/`, SQLite database, packaged as a single Docker container. AI calls go through OpenRouter (`openai/gpt-oss-120b`).
+Salcomp sales lead tracker on a Kanban board: cards are leads, columns are sales stages (1st Contact, F2F Meeting, RFI, Proposal, Award, Lost). A column's commercial meaning is its `stage_kind` (`open`/`won`/`lost`), never its title. Cards carry lead fields (company, contact, deal value + currency, close date, source, product line, salesperson); a Reports screen and an Executive Dashboard (KPIs) aggregate them; an AI chat sidebar can create/edit/move cards. Next.js frontend (static export), FastAPI backend serving it at `/`, SQLite, one Docker container. AI via OpenRouter (`openai/gpt-oss-120b`).
 
-Auth: the first user ever created (via a dedicated setup screen) becomes admin; only an admin can create further users (always role "member") from a "Manage Users" screen. Boards are shared across all authenticated users — not isolated per owner — so admin vs. member today only gates who can create users, nothing else. Local-only via Docker.
+Auth and roles:
+- The first user (setup screen or `create_commercial_db.py`) is admin; HTTP `/api/setup` is closed unless `PM_SETUP_TOKEN` (>=32 chars) is set and sent as `X-Setup-Token` (docs/SECURITY.md section 2). Further admins only via `backend/admin_cli.py`; no HTTP path grants admin. Admins invite members by email (Manage Users): the account is unverified with no usable password until the invitee follows the emailed single-use link (reset flow); self-sign-up is limited to `SIGNUP_ALLOWED_DOMAINS` plus the individual `SIGNUP_ALLOWED_EMAILS` (member, email = username) via a single-use `/?signup_token=` link, and the account exists only once that link verifies the email; "Forgot my password?" sends a single-use 1-hour `/?reset_token=` link and always answers the same way, whether or not the account exists. Signup/reset tokens are random, stored only as SHA-256 in `auth_tokens`. `SECRET_KEY` must be set (>=32 chars, no default) - see `docs/SECURITY.md`.
+- Sessions: access tokens last 8 hours and carry `pwh` (password fingerprint) and `sv` (the user's `session_version`). `POST /api/logout` bumps `session_version`, which ends **all** of that user's sessions on every device; a password change or reset does the same. Passwords need 8-128 chars with an upper-case letter, a lower-case letter, a number and a symbol (`password_policy.py`, enforced by every endpoint and `admin_cli.py`). No access without a verified email (`users.email_verified_at`).
+- Boards are shared across users; board/column structure changes are admin-only.
+- Cards: everyone sees every card. A member edits and moves only cards assigned to them (unassigned cards: admin only); only admins assign/reassign (a member-created card is assigned to its creator, audited as `create` + `assign`) and delete. Members move cards only forward (or reorder in a column); only admins move backward. Undo of a move also requires owning the card then. Assignment changes and deletions are written to `audit_events`. A member's title/details edit goes to `card_edit_history` and sets the "M" badge; admin edits aren't logged. REST, AI chat and undo share these rules through `backend/card_rules.py`.
+- Bid imports (Part 22) are admin-only.
 
 ## Commands
 
-### Backend (`backend/`, Python 3.11+, managed with `uv`)
 ```bash
-cd backend
-uv sync                          # install deps (or: pip install -e .[dev])
-uv run uvicorn main:app --reload --port 8000   # run dev server
-uv run pytest                    # run all tests
-uv run pytest test_routes.py -k test_name       # run a single test
+# Backend (backend/, Python 3.11+, uv)
+cd backend && uv sync
+uv run uvicorn main:app --reload --port 8000
+uv run pytest                          # all;  uv run pytest test_routes.py -k name
+# Frontend (frontend/)
+npm install && npm run dev             # :3000
+npm run lint | test:unit | test:e2e | test:all | build   # build = static export to frontend/out
+npx vitest run src/lib/kanban.test.ts
+npx playwright test tests/kanban.spec.ts -g "name"
+# Docker
+./scripts/start.sh   ./scripts/stop.sh   # needs OPENROUTER_API_KEY and SECRET_KEY in .env
 ```
-
-### Frontend (`frontend/`)
-```bash
-cd frontend
-npm install
-npm run dev          # dev server on :3000 (proxies API calls to backend separately)
-npm run lint
-npm run test:unit    # Vitest, single run
-npm run test:unit:watch
-npm run test:e2e     # Playwright (needs a running app; see playwright.config.ts)
-npm run test:all     # unit + e2e
-npm run build         # static export -> frontend/out (consumed by Dockerfile)
-```
-Run a single Vitest file: `npx vitest run src/lib/kanban.test.ts`.
-Run a single Playwright test: `npx playwright test tests/kanban.spec.ts -g "test name"`.
-
-### Full stack (Docker)
-```bash
-./scripts/start.sh   # docker-compose build && up -d, waits on /api/health
-./scripts/stop.sh    # docker-compose down
-```
-The Dockerfile builds the frontend (`next build` → static export), copies the output into `backend/static/`, and runs the FastAPI app with uvicorn on port 8000. `OPENROUTER_API_KEY` must be set in `.env` at the repo root (see `.env.example`); docker-compose passes it through and mounts `./pm.db` for persistence.
+`test:e2e` starts its own backend (:8001, `PM_E2E=1`, temp SQLite, random key) and frontend (:3001); it never touches `pm.db`.
 
 ## Architecture
 
-### Request flow
-In production (Docker), FastAPI (`backend/main.py`) mounts the static Next.js export at `/` and exposes JSON routes under `/api/*`. In local dev, the two run separately (Next dev server on :3000, FastAPI on :8000) and the frontend's `lib/api.ts`/`lib/auth.ts` talk to `API_BASE_URL`.
+Prod: FastAPI mounts the static export at `/` and serves `/api/*`. Dev: Next on :3000, FastAPI on :8000; the frontend uses `API_BASE_URL`.
 
 ### Backend (`backend/`)
-- `main.py` — FastAPI app setup, CORS, startup hook (`init_db` only — users/boards are created via `/api/setup`, not seeded at boot), auth endpoints (`/api/login`, `/api/logout`, `/api/user`, `/api/setup/status`, `/api/setup`), static file mount.
-- `auth.py` — JWT issuing/verification (`python-jose`), password hashing (`hash_password`/`verify_password`, via `bcrypt` directly — not `passlib`, which has a known incompatibility with `bcrypt>=4.1`). No DB access here.
-- `deps.py` — the single `get_current_user` (parses `Authorization`, verifies the JWT, loads the `User` row) and `require_admin` (403s unless `role == "admin"`), used by both `main.py` and `routes.py`. Role is re-read from the DB on every request, not embedded in the JWT.
-- `database.py` — SQLAlchemy engine/session (SQLite by default, swappable via `DATABASE_URL`), `init_db()` creates tables, `seed_default_board(db, creator)` seeds the shared default board (5 columns + sample cards) once, called from `POST /api/setup` — not at startup.
-- `models.py` — ORM models: `User` (with `role`: `UserRole.ADMIN`/`MEMBER`) → `Board` → `BoardColumn` (aliased as `Column`) → `Card`, plus `ConversationMessage` (AI chat history) and `CardAction` (audit trail of AI-driven board changes). All children cascade-delete from their parent.
-- `schemas.py` — Pydantic request/response models mirroring the ORM models (`*Create`, `*Update`, `*Response`, `BoardDetail`/`ColumnWithCards` for nested board fetches, `SetupRequest`/`UserCreate`/`UserResponse` for auth).
-- `routes.py` — REST CRUD for boards/columns/cards under `/api`, the AI chat endpoint `POST /api/boards/{id}/ai`, and admin-only user management (`GET`/`POST /api/users`, via `Depends(require_admin)`). Boards are shared, not owned — routes look up `Board.id` only, never filter by who created it.
-- `ai.py` — low-level OpenRouter client wrapper (`call_ai`, `test_ai_connectivity`, `AIError`).
-- `ai_kanban.py` — builds board-state context and conversation history for the AI, defines the system prompt requiring structured JSON output (`{response, actions[], confidence}`), and applies returned `actions` (create/update/move/delete) back onto the board via `apply_board_actions`.
-- Tests are colocated (`test_*.py`), run with `pytest` + `TestClient`.
+- `main.py` auth endpoints + static mount; `auth.py` JWT, bcrypt (not passlib), `load_secret_key()`; `token_store.py` persistent single-use signup/reset tokens (hash only, atomic consume); `password_policy.py`; `rate_limit.py` limits login/signup/forgot/Bid import; `deps.py` the single `get_current_user` / `require_admin` (role re-read from DB each request); `mailer.py` SMTP (never logs bodies, links or full addresses; with `SMTP_HOST` unset nothing is sent).
+- `database.py` engine, `init_db()` with startup guards that refuse an un-migrated DB (`StageKindMigrationRequired`, `StageEventsMigrationRequired`, `StageEventValuesMigrationRequired`, `ImportTablesMigrationRequired`); `PM_E2E=1` forces a temp DB. `conftest.py` gives every pytest run a random key and temp DB.
+- `models.py` ORM (`User` > `Board` > `BoardColumn` > `Card`, plus history/import tables); `schemas.py` Pydantic; `lead_options.py` allowed values and the seeded pipeline.
+- `routes.py` boards/columns/cards, undo, report, `/kpis/*`, AI chat, users; `import_routes.py` Bid import endpoints (below); `ai.py` OpenRouter client; `ai_kanban.py` prompt + `apply_board_actions`.
+- `card_rules.py` the only path that writes card content/permissions, used by REST and AI. `undo.py` single-level per-user undo; steps carry `expect` and `apply_undo` refuses (409) if the card changed since.
+- `stage_history.py` writes `card_stage_events` from flush listeners (the only writer); `kpis.py` + `reports.py` read them; Deal Value is always USD (`lead_options.DEAL_CURRENCY`; legacy `cards.currency` codes ignored on read, no conversion). See `docs/KPIS.md`.
+- `create_commercial_db.py` builds a new clean database (schema, admin, board and stages, no cards) at an explicit path that must not exist; the app is pointed at it with `DATABASE_URL`. See `docs/DATABASE.md`.
+- Migrations are explicit scripts (dry run by default): `migrate_stage_kind.py`, `migrate_stage_events.py`, `migrate_stage_event_values.py`, `migrate_import_tables.py --database <path>` (`import_schema.py` defines the expected schema), `migrate_import_revert.py`, `migrate_bid_cpm.py` (`card_bid_details.cpm`), `migrate_legacy_bid_confidence.py --database <abs> [--expect-sha256 <hash> --apply]` (legacy single-database file: adds `cards.confidence_level`, drops the obsolete Bid confidence columns; exclusive, content-verified backup under the write lock; procedure in `docs/MIGRATION_PROTOCOL_BID_CONFIDENCE.md`), `migrate_auth_security.py --database <path>` (session_version, email_verified_at, `auth_tokens`, `audit_events`). `migrate_deal_years.py --database <path> --year Y` (`cards.deal_value_next_year`, `cards.deal_year`; `deal_value` is the amount for `deal_year`, the card shows the sum; year change only via `migrate_deal_year_rollover.py`; reports/KPIs still use `deal_value` alone). Startup never migrates and never creates a missing database (`PM_ALLOW_CREATE_DB=1` is the explicit opt-in).
+- Bid import (Part 22): `bid_excel_reader.py` (read/validate .xlsx, no DB) > `bid_import_preview.py` (pure preview engine) > `bid_import_service.py` (the only writer of the Bid tables, one transaction, records failed attempts, import changes go to `card_import_changes`, never `card_edit_history`) > `import_routes.py` (parse, check the signed `preview_token`, translate errors; no import logic or transactions). `bid_money.py` revenue as integer cents.
 
 ### Frontend (`frontend/src`)
-- `app/page.tsx` → renders the top-level component tree; `ProtectedRoute` gates on setup-status/auth (`SetupPage` when no users exist yet, else `LoginPage`), `KanbanWithSidebar` composes the board with `AIChatSidebar`, `ManageUsersPage` is admin-only (toggled from the header).
-- `components/KanbanBoardAPI.tsx` — the persisted, API-backed board (replaces the older local-state-only `KanbanBoard.tsx`/`lib/kanban.ts` demo, which is still used in its own tests). Talks to the backend via `lib/api.ts`.
-- `lib/auth.ts` — stores the JWT + role (e.g. localStorage), exposes `API_BASE_URL`, `getAuthHeader()`, `getSetupStatus()`/`setupAdmin()`, and `isAdmin()` (UI-only gating — the backend independently re-checks role on every admin request).
-- `lib/api.ts` — typed fetch wrapper (`apiCall`) for all board/column/card/AI/user endpoints; normalizes HTTP and network errors into `ApiError`.
-- Drag-and-drop uses `@dnd-kit` (core + sortable); column/card components (`KanbanColumn`, `KanbanCard`, `KanbanCardPreview`, `NewCardForm`) are shared between the demo and API-backed boards.
-- Styling: Tailwind CSS 4, with the app color palette defined as CSS variables in `app/layout.tsx` (`--primary-blue #209dd7`, `--secondary-purple #753991`, `--accent-yellow #ecad0a`, `--navy-dark #032147`, `--gray-text #888888`).
+- `app/page.tsx` > `ProtectedRoute` (setup/login/auth gate) > `KanbanWithSidebar` (`KanbanBoardAPI` + `AIChatSidebar`); `ManageUsersPage`, `ReportsPage`, `DashboardPage`, `LeadEditModal`, `CardHistoryModal`; signup/reset screens read `?signup_token=` / `?reset_token=` from `window.location.search`.
+- `BidImportPage` (+ `BidImportRows`, `BidImportHistory`, `lib/bidImport.ts`): admin-only Import Bids screen; it sends only explicit decisions and lets the backend say which rows need what.
+- `lib/api.ts` typed fetch wrapper (`ApiError`), `lib/auth.ts` JWT in localStorage + `API_BASE_URL`; UI role gating is defense in depth only.
+- dnd-kit drag-and-drop; Tailwind 4; palette in CSS variables in `app/layout.tsx`.
 
-### Docs
-`docs/PLAN.md` is the working plan for how the project was built in parts; `docs/DATABASE.md` documents the schema; `docs/schema.json` is the machine-readable schema. Check `docs/PLAN.md` before making structural changes.
+## Status and known gaps
 
-## Status and known gaps (see `docs/PLAN.md` for full history)
+Parts 1-21 complete. Part 22 (Bid import) is implemented end to end: schema, migration, reader, preview, service, admin-only endpoints (22E), the Import Bids screen (22F) and its E2E spec (`frontend/tests/bid-import.spec.ts`, 10 tests, synthetic workbooks from `tests/fixtures/make_bid_fixtures.py`). The prepared clean Salcomp database was empty (six stages, no cards, no batches, no CPM column) until 2026-10-16, when the CPM migration and the import of the 52 opportunities were applied to it (Phase 4C.8; see the local commercial database bullet). The real report `relatorio-leads.xlsx` (SHA-256 `1b758fdf...059b00ea6`, 52 rows) was used in Phase 4A-4B.2 for the preview and for import rehearsals on disposable copies (Phase 4B.1, 4B.2; evidence in `pm-phase4-evidence/`, outside the repo); synthetic workbooks are used only by the automated tests. The rehearsals on copies were separate from the 2026-10-16 import into the actual database; activation is a further step and has not happened.
+- Docker: image build, persistence, healthcheck and the strict missing-database refusal were verified on Docker Desktop (macOS) with the scratch directory (see `docs/DEPLOYMENT.md`); not verified: Linux hosts, TLS proxy, the real reset email, and the `Application Support` path. Commercial-database mount (`PM_DB_*`) and `RATE_LIMIT_TRUSTED_PROXIES` are in that doc.
+- Local commercial database (decided 2026-10-16): all remaining development/validation is on the user's Mac; the permanent path is `/Users/pauloluisada/Library/Application Support/SalcompSalesPipeline/data/pm-commercial.db` (not the scratch path); the original in `pm-phase3-scratch/data/` stays until the user authorizes retiring it. State as of 2026-10-16 (Phase 4C.8, report `pm-commercial-backups/20261016-import-4c8-run1/00-run-report.md`): the CPM migration and the import of the 52 opportunities of `relatorio-leads.xlsx` are DONE on this database (batch 1, 52 created, 0 skipped, 0 review; post-import SHA-256 `1aa5a32e...10132509`; integrity ok, 0 foreign-key violations; a repeat dry run reports nothing to do). It is NOT activated: the administrator (id 1) has no usable password and no verified email. Administrator activation (pending) and cleanup each need separate explicit authorization, and the real reset email has not been exercised (activation goes through the emailed reset link). SMTP: direct delivery verified 2026-10-16 (port 587 STARTTLS); STARTTLS certificate and hostname verification is in `mailer.py` (`ssl.create_default_context()` passed to `starttls`) and covered by mocked tests only, not yet re-checked against the real server; `PM_PUBLIC_URL` on the deployment environment is not validated. The application starting, or answering the 2026-10-16 smoke test, is not activation: activation is complete only when the administrator has a verified email and a usable password; VPS Hostinger deployment waits for finished development and explicit approval. Select it only with `DATABASE_URL="sqlite:////<abs path>"` plus `PM_REQUIRE_EXISTING_DB=1` in the process environment; never use `scripts/start-mac.sh` for it (it re-exports `.env`'s `DATABASE_URL` and breaks on spaces). See `docs/DEPLOYMENT.md`.
+- Backend, pre-C6 history (last full run before C6, 2026-10-16: 1263 passed, 1 skipped, 0 failed; the earlier 2026-10-14 run was 708 passed, 1 skipped, 3 failed, since resolved). The skip was `ai.test_ai_connectivity`, a production function collected as a test because `test_ai.py` imported it; it was corrected afterwards with `test_ai_connectivity.__test__ = False` in `backend/test_ai.py` (its real tests were running all along), and the focused `test_ai.py` run then gave 6 passed, 0 skipped. That fix was not covered by a full run until the C6 run above (whose single skip was not identified, so it is not claimed to be the same test). The 2 `test_ai.py` stale-mock failures are fixed (focused run 2026-10-16: 51 passed, 1 skipped); the 4 `test_bid_import_undo.py` failures seen in Phase 4B.2/4C.2 were a stale test assumption (members acted on unassigned seeded cards; fixed 2026-10-16, 13/13 pass). `test_static_files.py` (10/10) passes only while the generated, git-ignored `backend/static` exists (Docker build, or copy `frontend/out`); regenerate it after frontend changes. Frontend `tsc --noEmit` is clean (the 17 former test-file errors are resolved, verified 2026-10-16).
+- C6 (probability level (`cards.confidence_level`), report filter and breakdown by probability level, Bid Revenue beside Deal Value; commit `175a549`, 12 commits over base `69e3419`; first publication scope: legacy-only, central mode not validated; nothing published, no migration run on any commercial database). Validation reported by the owner on 2026-10-19, not re-run by the documentation step: backend 2527 passed, 1 skipped (unidentified), 0 failed on Python 3.11.15 (no clean full run on 3.12: two runs had 3 failures from a missing editable install, the 3 files then passed, 52 tests); frontend tsc and lint ok, 137 unit tests in 19 files, build ok, `test_static_files.py` 10 passed; E2E 94 passed, 2 skipped (`auth.spec.ts` setup tests), 1 failed. The failure, `bid-import.undo.spec.ts:120`, is pre-existing (also on `69e3419`): `getByText` looks for "Remove new card ..." which lives only in the Undo button's `title`; not fixed. Docker image `pm-c6-local:175a549` built and a disposable container passed the local smoke test (`/api/health` 200, `/api/mode` legacy, `/` 200, `/api/boards` 401). Not validated: real SMTP, TLS/proxy, real deployment, central mode. Legacy databases need `migrate_legacy_bid_confidence.py` (backup, dry run, hash-approved apply, checks, restore) before running this code; see `docs/MIGRATION_PROTOCOL_BID_CONFIDENCE.md` and `docs/DEPLOYMENT.md`. These are the current full-suite totals; the Backend bullet below is the pre-C6 history.
+- The dev `backend/pm.db` has the first three migrations but neither Part 22/23's nor `migrate_auth_security.py`'s, so the backend refuses to start on it until those are applied. Never run migrations on it without being asked; keep it byte-identical in tests.
+- Rate limiting (`backend/rate_limit.py`, docs/SECURITY.md section 7) is in-memory and per process. Access tokens (8h) sit in localStorage; logout and password changes revoke them server-side. Invited users need working SMTP to ever get in; without it an admin can only re-send via "Forgot my password?" once mail works. The E2E member fixture (`tests/helpers.ts getMemberToken`) still posts a password to `/api/users` and must be reworked.
+- E2E runs serially (one shared throwaway board); `playwright.docker.config.ts` refuses the standard compose setup.
+- `CardAction` is never written; no per-card history UI; `docs/PROMPTS.md` / `docs/AI_SCHEMA.md` were never written.
 
-All 10 planned parts are implementation-complete, but verification has been piecemeal (curl + Chrome DevTools MCP, feature by feature), not one continuous browser session. Be aware of these gaps before assuming something works:
+### Don't reintroduce (full list in `docs/CLAUDE-reference.md`)
+- Access tokens must carry `pwh` and `sv` (`auth.create_user_access_token`) and `deps.get_current_user` must validate them against the user's current `password_fingerprint` and `session_version`; never issue or accept a token without them. Logout must bump `session_version`.
+- Signup/reset tokens stay random, hashed in `auth_tokens`, single-use and consumed atomically in the same transaction as the change they authorize; never log a message body, link, token or full recipient (`mailer.py`), and never add a flag that does. `/api/password/forgot` must answer identically for every identifier.
+- Card writes go through `card_rules` (ownership, admin-only assignment, audit); never trust a client-supplied owner or role.
+- Never default `SECRET_KEY`; `verify_token` must reject any JWT with a `purpose` claim; reset links stay single-use through the `pwh` password-fingerprint check.
+- One auth dependency (`deps.get_current_user`); board/column writes and `/api/ai/test` stay `require_admin`; `apply_board_actions` must take `current_user` and apply `card_rules`.
+- Key reports/KPIs on `Column.stage_kind`, never titles. Never write stage events outside `stage_history.py`'s listeners; never let SQLite choose card ids; no cascading FK from `card_stage_events` to `cards`.
+- Undo steps must carry `expect`. Import changes never go to `card_edit_history` (it drives the "M" badge). Bid revenue is integer cents, never NUMERIC/float.
+- `models.py`: the `Column` class is aliased `BoardColumn`; `ConversationMessage.meta_data` (not `metadata`).
+- AI: OpenRouter base URL is `https://openrouter.ai/api/v1`; `call_ai_with_board()` must prepend `SYSTEM_PROMPT` and `call_ai()` sets `response_format: json_object`.
+- Frontend: always use `API_BASE_URL`; keep the `col-${id}` / `card-${id}` dnd-kit id prefixes; drag listeners only on the handle button; card/column titles commit on blur, not per keystroke; match cards in tests via `data-title` / `getByDisplayValue`; keep `pointerWithin` + `closestCenter` fallback collision detection and the Undo bar's `overflow-clip`.
+- Tests: in-memory SQLite needs `StaticPool` + `check_same_thread=False`; E2E has no fallback backend URL, and drags wait for the `drag-overlay` testid to detach.
+- openpyxl is pinned (3.1.5); re-run `test_bid_excel_reader.py` on upgrade.
+- Central `card_rules.is_admin` must recognize a `CompanyContext` through its `is_global_admin` property, never by comparing its role string to `"admin"` (the global administrator's role is `"super_admin"`; `"admin"` is reserved and grants nothing in Phase 1). The legacy `User.role == "admin"` branch stays for the single-database mode.
 
-- **Docker path is unverified.** All testing so far has run the backend and frontend natively (`uvicorn` on :8000, `next dev` on :3000) as separate processes, not through `Dockerfile`/`docker-compose.yml`. Don't assume the Docker build works without checking.
-- No markdown rendering, card-change animations, or mobile sidebar collapse in the AI chat sidebar.
-- `docs/PROMPTS.md` / `docs/AI_SCHEMA.md`, referenced in the Part 9 plan, were never written — the system prompt and action schema live inline in `ai_kanban.py`.
-- Test coverage is not formally measured; the existing suite did not catch any of the runtime bugs below.
+## Coding standards
 
-### Non-obvious bugs already fixed (don't reintroduce)
-- `models.py`: a model class literally named `Column` shadowed SQLAlchemy's own `Column` import and broke under SQLAlchemy 2.0.36's type-annotation syntax — now aliased as `BoardColumn` (`Column = BoardColumn` for back-compat). `ConversationMessage.meta_data` is named that way (not `metadata`) because `metadata` collides with `Base.metadata`.
-- `ai.py`: OpenRouter's base URL is `https://openrouter.ai/api/v1` — `.io` 404s.
-- `ai_kanban.py`: `call_ai_with_board()` must actually prepend `{"role": "system", "content": SYSTEM_PROMPT}` to the message list (plus `response_format: {"type": "json_object"}` in `ai.py`'s `call_ai()`) or the model free-forms text instead of structured JSON, and `apply_board_actions()` silently never runs.
-- `KanbanBoardAPI.tsx`: columns and cards are separate SQL tables with independent autoincrement ids, so a column and a card can share a numeric id. dnd-kit keys all draggables/droppables in one id-keyed map, so raw numeric ids collide. Ids are prefixed (`col-${id}` / `card-${id}`) before being handed to `KanbanColumn`/`KanbanCard`, then translated back to numeric ids in callbacks — don't strip that prefixing.
-- `auth.ts` / `api.ts`: use the `API_BASE_URL` constant, not relative paths — relative `/api/...` calls only work when frontend and backend share an origin (the Docker/static-export setup), and 404 against Next.js itself when run as separate dev servers.
-- `routes.py` used to have its own `get_current_user` that ignored the `Authorization` header and always loaded a hardcoded username — meaning no board/column/card/AI route ever validated a bearer token. Fixed by unifying on `deps.get_current_user`; don't reintroduce a second, route-file-local auth dependency.
-- Backend tests using an in-memory SQLite engine (`create_engine("sqlite:///:memory:")`) need `poolclass=StaticPool` + `connect_args={"check_same_thread": False}`, or `TestClient` requests intermittently fail with `sqlite3.ProgrammingError: SQLite objects created in a thread can only be used in that same thread` — see `test_auth.py`/`test_routes.py`'s `test_db` fixture.
-
-## Coding standards (from AGENTS.md)
-
-- Use latest stable versions of libraries and idiomatic patterns.
-- Keep it simple: no over-engineering, no unnecessary defensive programming, no speculative features.
-- Be concise; no emojis, ever.
-- When debugging, find the root cause before attempting a fix — don't guess.
+Latest stable libraries and idiomatic patterns; keep it simple (no over-engineering, speculative features or needless defensive code); be concise; no emojis; find the root cause before fixing.

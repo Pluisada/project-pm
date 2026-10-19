@@ -35,7 +35,8 @@ class TestStaticFileServing:
         """Test that API endpoints work alongside static files."""
         response = client.get("/api/health")
         assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
+        # test_mode is only true in the isolated Playwright backend (PM_E2E=1).
+        assert response.json() == {"status": "ok", "test_mode": False}
 
     def test_nonexistent_api_returns_404(self, client):
         """Test that non-existent API routes return 404."""

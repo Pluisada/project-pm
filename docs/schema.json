@@ -51,6 +51,17 @@
           "default": "CURRENT_TIMESTAMP",
           "nullable": false,
           "description": "Last update timestamp"
+        },
+        "session_version": {
+          "type": "INTEGER",
+          "nullable": false,
+          "default": 0,
+          "description": "Bumped on logout and on password change/reset; access tokens carry it (sv) and are rejected on mismatch"
+        },
+        "email_verified_at": {
+          "type": "TIMESTAMP",
+          "nullable": true,
+          "description": "When the email was verified via a signup/reset link; NULL means no application access"
         }
       },
       "indexes": [
@@ -129,6 +140,12 @@
           "default": 0,
           "description": "Column order (0, 1, 2, ...)"
         },
+        "stage_kind": {
+          "type": "VARCHAR",
+          "default": "'open'",
+          "nullable": false,
+          "description": "Commercial meaning of the stage: 'open', 'won' or 'lost'. Reports use this, never the title. At most one won and one lost per board; can't change while the column has cards. Added to older databases by backend/migrate_stage_kind.py (explicit)."
+        },
         "created_at": {
           "type": "TIMESTAMP",
           "default": "CURRENT_TIMESTAMP",
@@ -148,7 +165,7 @@
       ]
     },
     "cards": {
-      "description": "Kanban cards (tasks/items)",
+      "description": "Sales leads - one card per lead; its column is the sales stage",
       "columns": {
         "id": {
           "type": "INTEGER",
@@ -177,6 +194,62 @@
           "nullable": false,
           "default": 0,
           "description": "Card order within column"
+        },
+        "company": {
+          "type": "TEXT",
+          "nullable": true,
+          "description": "Lead's company"
+        },
+        "contact": {
+          "type": "TEXT",
+          "nullable": true,
+          "description": "Contact person"
+        },
+        "deal_value": {
+          "type": "REAL",
+          "nullable": true,
+          "description": "Deal value (>= 0), in `currency`, for the year `deal_year` (the \"current year\")"
+        },
+        "deal_value_next_year": {
+          "type": "REAL",
+          "nullable": false,
+          "description": "Deal value (>= 0, default 0) for deal_year + 1, in the same `currency`. Not Bid revenue"
+        },
+        "deal_year": {
+          "type": "INTEGER",
+          "nullable": false,
+          "description": "Calendar year deal_value belongs to; stamped at creation, changed only by migrate_deal_year_rollover.py"
+        },
+        "currency": {
+          "type": "VARCHAR(3)",
+          "nullable": true,
+          "description": "Legacy. Deal Value is always USD: only USD is accepted on write, reads report USD, older codes in existing rows are ignored (backend/lead_options.py DEAL_CURRENCY)"
+        },
+        "expected_close_date": {
+          "type": "DATE",
+          "nullable": true,
+          "description": "Expected close date"
+        },
+        "lead_source": {
+          "type": "TEXT",
+          "nullable": true,
+          "description": "One of Website, Referral, Trade show, Cold outreach, Existing customer, Other"
+        },
+        "product_line": {
+          "type": "TEXT",
+          "nullable": true,
+          "description": "Chargers or Power supplies"
+        },
+        "confidence_level": {
+          "type": "VARCHAR(6)",
+          "nullable": true,
+          "description": "The sales team's own assessment: exactly LOW, MEDIUM or HIGH; NULL = not assigned (company schema version 4)"
+        },
+        "salesperson_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES users(id) ON DELETE SET NULL",
+          "nullable": true,
+          "description": "Assigned salesperson"
         },
         "created_at": {
           "type": "TIMESTAMP",
@@ -248,6 +321,45 @@
         "created_at"
       ]
     },
+    "card_edit_history": {
+      "description": "Audit trail of card content edits made by member users (backs the 'M' badge / history modal). Distinct from card_actions, which is AI-only.",
+      "columns": {
+        "id": {
+          "type": "INTEGER",
+          "constraint": "PRIMARY KEY AUTOINCREMENT",
+          "nullable": false,
+          "description": "Unique history entry ID"
+        },
+        "card_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES cards(id) ON DELETE CASCADE",
+          "nullable": false,
+          "description": "Edited card"
+        },
+        "user_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES users(id) ON DELETE SET NULL",
+          "nullable": true,
+          "description": "Member who made the edit; SET NULL (not cascaded) so history survives user removal"
+        },
+        "changes": {
+          "type": "TEXT",
+          "nullable": false,
+          "description": "JSON: {\"title\": {\"old\", \"new\"}, \"details\": {\"old\", \"new\"}} - only the fields that changed"
+        },
+        "created_at": {
+          "type": "TIMESTAMP",
+          "default": "CURRENT_TIMESTAMP",
+          "nullable": false,
+          "description": "Edit timestamp"
+        }
+      },
+      "indexes": [
+        "card_id",
+        "user_id",
+        "created_at"
+      ]
+    },
     "card_actions": {
       "description": "AI-suggested card actions (for auditing and undo)",
       "columns": {
@@ -299,6 +411,579 @@
         "card_id",
         "created_at"
       ]
+    },
+    "undo_entries": {
+      "description": "Each user's single level of undo: the inverse of their last board change. Replaced by the next change, deleted once used.",
+      "columns": {
+        "id": {
+          "type": "INTEGER",
+          "constraint": "PRIMARY KEY AUTOINCREMENT",
+          "nullable": false,
+          "description": "Unique ID"
+        },
+        "user_id": {
+          "type": "INTEGER",
+          "constraint": "UNIQUE, FOREIGN KEY REFERENCES users(id) ON DELETE CASCADE",
+          "nullable": false,
+          "description": "Owner - one entry per user"
+        },
+        "board_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES boards(id) ON DELETE CASCADE",
+          "nullable": false,
+          "description": "Board the change was made on"
+        },
+        "description": {
+          "type": "TEXT",
+          "nullable": false,
+          "description": "Human-readable label shown next to the Undo button"
+        },
+        "steps": {
+          "type": "TEXT",
+          "nullable": false,
+          "description": "JSON list of inverse operations (move/update/delete/create), applied in reverse order. Card steps carry expect (the card's state as the change left it); undo refuses if a card no longer matches"
+        },
+        "created_at": {
+          "type": "TIMESTAMP",
+          "default": "CURRENT_TIMESTAMP",
+          "nullable": false,
+          "description": "When the change was made"
+        }
+      },
+      "indexes": [
+        "user_id (UNIQUE)",
+        "board_id"
+      ]
+    },
+    "card_stage_events": {
+      "description": "Append-only card stage history (Part 18), written only by stage_history.py's flush listener in the same transaction as the change. card_id/board_id/column ids are not FKs so history survives deletions.",
+      "columns": {
+        "id": {
+          "type": "INTEGER",
+          "constraint": "PRIMARY KEY",
+          "nullable": false,
+          "description": "Unique ID; tie-break within the same instant"
+        },
+        "card_id": {
+          "type": "INTEGER",
+          "nullable": false,
+          "description": "Card (no FK: kept after the card is deleted)"
+        },
+        "board_id": {
+          "type": "INTEGER",
+          "nullable": false,
+          "description": "Board the card was on (no FK)"
+        },
+        "event_type": {
+          "type": "VARCHAR",
+          "nullable": false,
+          "description": "created | moved | won | lost | reopened | deleted | baseline (migration, or a card created by the Bid import - source import)"
+        },
+        "from_column_id": {
+          "type": "INTEGER",
+          "nullable": true,
+          "description": "Column before (null for created/baseline)"
+        },
+        "from_stage_kind": {
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": "stage_kind before, copied at event time"
+        },
+        "to_column_id": {
+          "type": "INTEGER",
+          "nullable": true,
+          "description": "Column after (null for deleted)"
+        },
+        "to_stage_kind": {
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": "stage_kind after, copied at event time"
+        },
+        "user_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES users(id) ON DELETE SET NULL",
+          "nullable": true,
+          "description": "Who acted"
+        },
+        "source": {
+          "type": "VARCHAR",
+          "nullable": false,
+          "description": "api | ai | undo | seed | migration | import | system"
+        },
+        "occurred_at": {
+          "type": "DATETIME",
+          "nullable": false,
+          "description": "When (UTC)"
+        },
+        "deal_value_snapshot": {
+          "type": "FLOAT",
+          "nullable": true,
+          "description": "Card deal_value at event time (Part 20)"
+        },
+        "deal_currency_snapshot": {
+          "type": "VARCHAR(3)",
+          "nullable": true,
+          "description": "Card currency at event time"
+        },
+        "value_snapshot_taken": {
+          "type": "BOOLEAN",
+          "default": "0",
+          "nullable": false,
+          "description": "1 = recorded at event time (null value = card had none); 0 = event predates snapshots, value unknown"
+        }
+      },
+      "indexes": [
+        "id",
+        "card_id",
+        "board_id",
+        "occurred_at"
+      ]
+    },
+    "import_batches": {
+      "description": "One Salcomp Bid import attempt (Part 22D): a completed import, written in the same transaction as its cards, or a failed attempt (status failed, failure_kind/failure_reason) recorded after the rollback in a separate transaction. mapping_json = rule versions, stage rules, board stages and decisions (no row content).",
+      "columns": {
+        "id": {
+          "type": "INTEGER",
+          "constraint": "PRIMARY KEY",
+          "nullable": false,
+          "description": "Unique ID"
+        },
+        "board_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES boards(id) ON DELETE CASCADE",
+          "nullable": false,
+          "description": "Board imported into"
+        },
+        "user_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES users(id) ON DELETE SET NULL",
+          "nullable": true,
+          "description": "Who ran the import"
+        },
+        "filename": {
+          "type": "VARCHAR",
+          "nullable": false,
+          "description": "Uploaded file name"
+        },
+        "file_sha256": {
+          "type": "VARCHAR(64)",
+          "nullable": false,
+          "description": "SHA-256 of the uploaded file"
+        },
+        "mapping_json": {
+          "type": "TEXT",
+          "nullable": true,
+          "description": "Column/stage mapping used (JSON)"
+        },
+        "created_count": {
+          "type": "INTEGER",
+          "default": "0",
+          "nullable": false,
+          "description": "Cards created"
+        },
+        "updated_count": {
+          "type": "INTEGER",
+          "default": "0",
+          "nullable": false,
+          "description": "Cards updated"
+        },
+        "skipped_count": {
+          "type": "INTEGER",
+          "default": "0",
+          "nullable": false,
+          "description": "Rows skipped"
+        },
+        "review_count": {
+          "type": "INTEGER",
+          "default": "0",
+          "nullable": false,
+          "description": "Rows left for manual review"
+        },
+        "status": {
+          "type": "VARCHAR",
+          "default": "pending",
+          "nullable": false,
+          "description": "completed (written with its cards) | failed (an attempt that wrote nothing, recorded afterwards in its own transaction) | pending (only inside the import's transaction)"
+        },
+        "failure_kind": {
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": "failed only: validation | conflict | unexpected"
+        },
+        "failure_reason": {
+          "type": "VARCHAR(500)",
+          "nullable": true,
+          "description": "failed only: the service's message (no cell content), or just the exception type for unexpected failures"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "nullable": false,
+          "description": "When the batch was registered"
+        },
+        "updated_at": {
+          "type": "DATETIME",
+          "nullable": false,
+          "description": "Last change"
+        },
+        "completed_at": {
+          "type": "DATETIME",
+          "nullable": true,
+          "description": "When it finished"
+        }
+      },
+      "indexes": [
+        "id",
+        "board_id",
+        "user_id",
+        "file_sha256",
+        "created_at"
+      ]
+    },
+    "card_bid_details": {
+      "description": "Salcomp Bid commercial fields, 1:1 with a card (Part 22). Revenue is integer cents (exact), separate from cards.deal_value and never summed with it.",
+      "columns": {
+        "id": {
+          "type": "INTEGER",
+          "constraint": "PRIMARY KEY",
+          "nullable": false,
+          "description": "Unique ID"
+        },
+        "card_id": {
+          "type": "INTEGER",
+          "constraint": "UNIQUE, FOREIGN KEY REFERENCES cards(id) ON DELETE CASCADE",
+          "nullable": false,
+          "description": "Card (one row per card)"
+        },
+        "plant": {
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": "Plant"
+        },
+        "customer_type": {
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": "Customer type"
+        },
+        "business_type": {
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": "Business type"
+        },
+        "product_category": {
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": "Product category"
+        },
+        "product": {
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": "Product"
+        },
+        "solution_type": {
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": "Solution type"
+        },
+        "volume_current_year": {
+          "type": "INTEGER",
+          "nullable": true,
+          "description": "Volume, current year"
+        },
+        "volume_next_year": {
+          "type": "INTEGER",
+          "nullable": true,
+          "description": "Volume, next year"
+        },
+        "production_start_date": {
+          "type": "DATE",
+          "nullable": true,
+          "description": "Start of production"
+        },
+        "revenue_current_year_cents": {
+          "type": "INTEGER",
+          "nullable": true,
+          "description": "Annual revenue, current year, in cents of revenue_currency (NULL = not informed; divide by 100 only for display)"
+        },
+        "revenue_next_year_cents": {
+          "type": "INTEGER",
+          "nullable": true,
+          "description": "Annual revenue, next year, in cents (same rules)"
+        },
+        "revenue_currency": {
+          "type": "VARCHAR(3)",
+          "default": "BRL",
+          "nullable": false,
+          "description": "Currency of both revenue columns"
+        },
+        "status_note": {
+          "type": "TEXT",
+          "nullable": true,
+          "description": "Status note"
+        },
+        "project_lead": {
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": "Project lead (free text, not a user)"
+        },
+        "cpm": {
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": "CPM as written in the report (free text, not a user)"
+        },
+        "next_step": {
+          "type": "TEXT",
+          "nullable": true,
+          "description": "Next step"
+        },
+        "next_step_due": {
+          "type": "DATE",
+          "nullable": true,
+          "description": "Next step due date"
+        },
+        "close_reason": {
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": "Close reason"
+        },
+        "close_reason_note": {
+          "type": "TEXT",
+          "nullable": true,
+          "description": "Close reason detail"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "nullable": false,
+          "description": "Created"
+        },
+        "updated_at": {
+          "type": "DATETIME",
+          "nullable": false,
+          "description": "Last change"
+        }
+      },
+      "indexes": [
+        "id",
+        "card_id (UNIQUE)",
+        "created_at"
+      ]
+    },
+    "card_source_refs": {
+      "description": "Source identity of an imported card (Part 22): at most one per card, (source_system, source_key) unique in the database.",
+      "columns": {
+        "id": {
+          "type": "INTEGER",
+          "constraint": "PRIMARY KEY",
+          "nullable": false,
+          "description": "Unique ID"
+        },
+        "card_id": {
+          "type": "INTEGER",
+          "constraint": "UNIQUE, FOREIGN KEY REFERENCES cards(id) ON DELETE CASCADE",
+          "nullable": false,
+          "description": "Card (one row per card)"
+        },
+        "source_system": {
+          "type": "VARCHAR",
+          "default": "salcomp-bids",
+          "nullable": false,
+          "description": "Source system"
+        },
+        "source_key": {
+          "type": "VARCHAR",
+          "nullable": false,
+          "description": "bid_source_key(Codigo, Cliente): \"v1:\" + JSON array of both parts, each with accents dropped (NFKD), whitespace collapsed and casefolded; leading zeros kept"
+        },
+        "source_code": {
+          "type": "VARCHAR",
+          "nullable": false,
+          "description": "Codigo as text (leading zeros kept)"
+        },
+        "source_status": {
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": "Status as in the source"
+        },
+        "source_stage": {
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": "Stage as in the source"
+        },
+        "source_created_at": {
+          "type": "DATETIME",
+          "nullable": true,
+          "description": "Created in the source"
+        },
+        "source_updated_at": {
+          "type": "DATETIME",
+          "nullable": true,
+          "description": "Updated in the source"
+        },
+        "source_last_edited_at": {
+          "type": "DATETIME",
+          "nullable": true,
+          "description": "Last edited in the source"
+        },
+        "last_import_batch_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES import_batches(id) ON DELETE SET NULL",
+          "nullable": true,
+          "description": "Last batch that touched it"
+        },
+        "source_row_hash": {
+          "type": "VARCHAR(64)",
+          "nullable": true,
+          "description": "bid_row_hash(record): \"v1:\" + SHA-256 of every value read from the row except its position"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "nullable": false,
+          "description": "Created"
+        },
+        "updated_at": {
+          "type": "DATETIME",
+          "nullable": false,
+          "description": "Last change"
+        }
+      },
+      "indexes": [
+        "id",
+        "card_id (UNIQUE)",
+        "source_system",
+        "last_import_batch_id",
+        "created_at",
+        "UNIQUE (source_system, source_key) uq_card_source_refs_system_key"
+      ]
+    },
+    "card_import_changes": {
+      "description": "What a Salcomp Bid import actually changed on an existing card (Part 22D follow-up). Separate from card_edit_history (member edits, the M badge). Only confirmed updates that changed a managed field; one row per card and batch; written in the import's transaction.",
+      "columns": {
+        "id": {
+          "type": "INTEGER",
+          "constraint": "PRIMARY KEY",
+          "nullable": false,
+          "description": "Unique ID"
+        },
+        "card_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES cards(id) ON DELETE CASCADE",
+          "nullable": false,
+          "description": "Updated card"
+        },
+        "import_batch_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES import_batches(id) ON DELETE CASCADE",
+          "nullable": false,
+          "description": "Batch that changed it"
+        },
+        "user_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY REFERENCES users(id) ON DELETE SET NULL",
+          "nullable": true,
+          "description": "Who ran the import"
+        },
+        "changes": {
+          "type": "TEXT",
+          "nullable": false,
+          "description": "JSON {\"card.title\": {\"old\", \"new\"}, ...}: only changed fields; dates ISO; no row hash"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "nullable": false,
+          "description": "When the change was written"
+        }
+      },
+      "indexes": [
+        "id",
+        "card_id",
+        "import_batch_id",
+        "user_id",
+        "created_at",
+        "UNIQUE (card_id, import_batch_id) uq_card_import_changes_card_batch"
+      ]
+    },
+    "auth_tokens": {
+      "description": "Persistent single-use signup/reset tokens; only the SHA-256 of the token is stored",
+      "columns": {
+        "id": {
+          "type": "INTEGER",
+          "constraint": "PRIMARY KEY",
+          "nullable": false
+        },
+        "token_hash": {
+          "type": "VARCHAR(64)",
+          "constraint": "UNIQUE NOT NULL",
+          "nullable": false,
+          "description": "SHA-256 of the random token"
+        },
+        "purpose": {
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "description": "'signup' or 'reset'"
+        },
+        "user_id": {
+          "type": "INTEGER",
+          "constraint": "FOREIGN KEY users(id) ON DELETE CASCADE",
+          "nullable": true,
+          "description": "User (reset); NULL for a pending signup"
+        },
+        "email": {
+          "type": "TEXT",
+          "nullable": true,
+          "description": "Pending registration address (signup)"
+        },
+        "created_at": {
+          "type": "TIMESTAMP",
+          "nullable": false
+        },
+        "expires_at": {
+          "type": "TIMESTAMP",
+          "nullable": false
+        },
+        "consumed_at": {
+          "type": "TIMESTAMP",
+          "nullable": true
+        },
+        "invalidated_at": {
+          "type": "TIMESTAMP",
+          "nullable": true
+        }
+      }
+    },
+    "audit_events": {
+      "description": "Audit trail of opportunity assignment changes and deletions; no foreign keys so rows outlive cards and actors",
+      "columns": {
+        "id": {
+          "type": "INTEGER",
+          "constraint": "PRIMARY KEY",
+          "nullable": false
+        },
+        "board_id": {
+          "type": "INTEGER",
+          "nullable": false
+        },
+        "card_id": {
+          "type": "INTEGER",
+          "nullable": true
+        },
+        "actor_user_id": {
+          "type": "INTEGER",
+          "nullable": true
+        },
+        "action": {
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "description": "'assign' or 'delete'"
+        },
+        "details": {
+          "type": "TEXT",
+          "nullable": false,
+          "description": "JSON"
+        },
+        "created_at": {
+          "type": "TIMESTAMP",
+          "nullable": false
+        }
+      }
     }
   },
   "relationships": {
@@ -337,13 +1022,62 @@
       "from": "boards.id",
       "to": "card_actions.board_id",
       "description": "One board has multiple card actions"
+    },
+    "card_to_edit_history": {
+      "type": "one-to-many",
+      "from": "cards.id",
+      "to": "card_edit_history.card_id",
+      "description": "One card can have multiple member-edit history entries"
+    },
+    "board_to_import_batches": {
+      "type": "one-to-many",
+      "from": "boards.id",
+      "to": "import_batches.board_id",
+      "description": "Import batches of a board; deleted with it"
+    },
+    "user_to_import_batches": {
+      "type": "one-to-many",
+      "from": "users.id",
+      "to": "import_batches.user_id",
+      "description": "Who ran each import; SET NULL if the user is deleted"
+    },
+    "card_to_bid_details": {
+      "type": "one-to-one",
+      "from": "cards.id",
+      "to": "card_bid_details.card_id",
+      "description": "Bid fields of a card; deleted with it"
+    },
+    "card_to_source_ref": {
+      "type": "one-to-one",
+      "from": "cards.id",
+      "to": "card_source_refs.card_id",
+      "description": "Source identity of an imported card; deleted with it"
+    },
+    "import_batch_to_source_refs": {
+      "type": "one-to-many",
+      "from": "import_batches.id",
+      "to": "card_source_refs.last_import_batch_id",
+      "description": "Source refs last touched by a batch; SET NULL if the batch is deleted"
+    },
+    "card_to_import_changes": {
+      "type": "one-to-many",
+      "from": "cards.id",
+      "to": "card_import_changes.card_id",
+      "description": "Import history of a card; deleted with it"
+    },
+    "import_batch_to_card_changes": {
+      "type": "one-to-many",
+      "from": "import_batches.id",
+      "to": "card_import_changes.import_batch_id",
+      "description": "Card changes made by a batch"
     }
   },
   "constraints": {
     "cascade_delete": "Deleting a user or board will cascade delete all related data",
     "unique_constraints": "username and email must be unique per user",
     "foreign_keys": "All foreign keys enabled with appropriate cascade rules",
-    "timestamps": "All records have created_at and updated_at for audit trail"
+    "timestamps": "All records have created_at and updated_at for audit trail",
+    "bid_import_identity": "card_source_refs: UNIQUE (source_system, source_key) and UNIQUE card_id; card_bid_details: UNIQUE card_id; card_import_changes: UNIQUE (card_id, import_batch_id)"
   },
   "notes": {
     "mvp": "Multi-user with two roles (admin/member). The first user created via POST /api/setup becomes admin; only admins can create further users via POST /api/users. Boards are shared, not isolated per user.",
@@ -351,6 +1085,10 @@
     "json_fields": "metadata and changes fields store JSON for flexibility",
     "conversation_history": "Supports full AI conversation history for context",
     "audit_trail": "timestamps and card_actions table enable full audit trail",
-    "performance": "Indexes on frequently queried fields (user_id, board_id, created_at)"
+    "performance": "Indexes on frequently queried fields (user_id, board_id, created_at)",
+    "bid_import_tables": "Part 22: import tables import_batches, card_bid_details, card_source_refs, card_import_changes (schema, explicit migration, startup guard), Excel reader (22B), preview engine (22C) and the transactional import service (22D, with failed-attempt records and import history) and the admin-only HTTP endpoints (22E: preview, confirm, batch list, batch details) exist; the UI is not implemented yet. Existing databases get the tables only from backend/migrate_import_tables.py --database <path> --apply.",
+    "bid_revenue_cents": "card_bid_details revenue is INTEGER cents converted exactly with backend/bid_money.py (Decimal, never float; more than 2 decimals, negatives and values above 9999999999999999.99 are rejected); NULL = not informed, never 0.",
+    "bid_import_mapping": "Preview mapping (bid_import_preview.py): cards.title/details/company <- Nome do projeto/Descricao da prospeccao/Cliente; Bid fields -> card_bid_details; source fields -> card_source_refs. Never mapped: cards.deal_value, currency, expected_close_date, lead_source, product_line, contact, salesperson_id.",
+    "edit_histories": "card_edit_history = member edits only (backs the M badge, unchanged); card_import_changes = changes made by Bid imports. An import never writes card_edit_history."
   }
 }

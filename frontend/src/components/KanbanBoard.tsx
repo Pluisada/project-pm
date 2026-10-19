@@ -145,9 +145,11 @@ export const KanbanBoard = () => {
                 key={column.id}
                 column={column}
                 cards={column.cardIds.map((cardId) => board.cards[cardId])}
+                canDeleteCards
                 onRename={handleRenameColumn}
                 onAddCard={handleAddCard}
                 onDeleteCard={handleDeleteCard}
+                onOpenCardHistory={() => {}}
               />
             ))}
           </section>

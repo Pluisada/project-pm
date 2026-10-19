@@ -1,12 +1,14 @@
 """Shared FastAPI dependencies for authentication and authorization."""
+import hmac
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
-from auth import verify_token
-from database import get_db
+from auth import E2E_ONLY_USERNAMES, decode_access_token, password_fingerprint
+from database import E2E_MODE, get_db
 from models import User, UserRole
+from stage_history import SOURCE_API, set_stage_context
 
 
 def get_current_user(
@@ -33,15 +35,15 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    username = verify_token(parts[1])
-    if not username:
+    payload = decode_access_token(parts[1])
+    if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user = db.query(User).filter(User.username == username).first()
+    user = db.query(User).filter(User.username == payload["sub"]).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -49,6 +51,40 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Tokens carry a fingerprint of the password they were issued under, so a
+    # password change or reset ends every earlier session of this user only.
+    # The claim is mandatory: a token without it is rejected.
+    pwh = payload.get("pwh")
+    if not isinstance(pwh, str) or not hmac.compare_digest(
+        pwh, password_fingerprint(user.password_hash)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Logout and password changes bump session_version; a token issued under an
+    # older value is revoked. Also mandatory: a token without `sv` is rejected.
+    sv = payload.get("sv")
+    if type(sv) is not int or sv != user.session_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    # Defence in depth: nobody gets in without a verified email, and the public
+    # test accounts only work in the isolated E2E backend.
+    if user.email_verified_at is None or (user.username in E2E_ONLY_USERNAMES and not E2E_MODE):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Stage changes in this request are attributed to this user, as an API
+    # change unless the AI or undo path narrows the source.
+    set_stage_context(db, user, SOURCE_API)
     return user
 
 

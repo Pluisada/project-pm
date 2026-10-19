@@ -4,11 +4,71 @@ services:
   app:
     build: .
     ports:
-      - "8000:8000"
+      # Loopback by default: reach the app through a TLS reverse proxy on the
+      # host. Set PM_BIND_ADDRESS=0.0.0.0 only to expose it directly (no TLS).
+      - "${PM_BIND_ADDRESS:-127.0.0.1}:8000:8000"
+    # The app needs no Linux capabilities and never escalates privileges. The
+    # root filesystem is not read-only because SQLite writes its journal next
+    # to the default /app/pm.db mount.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     environment:
       - PORT=8000
-      - DATABASE_URL=sqlite:///./pm.db
+      # Database: defaults keep the development setup (file ./pm.db). For a
+      # separate commercial database see docs/DEPLOYMENT.md. These PM_* names
+      # are deliberately not DATABASE_URL / APP_BASE_URL, which .env sets for
+      # native development and must not leak into the container.
+      - DATABASE_URL=${PM_DATABASE_URL:-sqlite:///./pm.db}
+      # On (1) whenever PM_DB_HOST_PATH is set: the app then refuses to start
+      # unless the database file exists with a complete schema, instead of
+      # creating an empty one. Unset for the development setup.
+      - PM_REQUIRE_EXISTING_DB=${PM_REQUIRE_EXISTING_DB:-${PM_DB_HOST_PATH:+1}}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      # Required, no default: compose refuses to start without it, and the
+      # app itself refuses missing/default/short keys (see docs/SECURITY.md).
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY must be set in .env - see docs/SECURITY.md}
+      # First-run HTTP setup is closed unless this is set (>= 32 chars) and sent as
+      # X-Setup-Token. Set it only for the provisioning window, then unset it and
+      # restart (docs/SECURITY.md section 2).
+      - PM_SETUP_TOKEN=${PM_SETUP_TOKEN:-}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      # Domains allowed to self-sign-up; empty = public signup disabled.
+      - SIGNUP_ALLOWED_DOMAINS=${SIGNUP_ALLOWED_DOMAINS:-}
+      # Individual addresses allowed as exceptions; never opens their domain.
+      - SIGNUP_ALLOWED_EMAILS=${SIGNUP_ALLOWED_EMAILS:-}
+      # Set PM_ENV=production on the server: the app then refuses to start unless
+      # the public URL is https and non-local, and it serves no /docs or /openapi.json.
+      - PM_ENV=${PM_ENV:-}
+      - APP_BASE_URL=${PM_PUBLIC_URL:-http://localhost:8000}
+      # Reverse proxy address(es)/CIDRs whose X-Forwarded-For is trusted by the
+      # rate limiter; empty = clients connect directly (docs/DEPLOYMENT.md).
+      - RATE_LIMIT_TRUSTED_PROXIES=${RATE_LIMIT_TRUSTED_PROXIES:-}
+      # Declares that a reverse proxy sits in front (true/false; empty = direct
+      # access). In production, true requires RATE_LIMIT_TRUSTED_PROXIES.
+      - PM_BEHIND_PROXY=${PM_BEHIND_PROXY:-}
+      # CORS is only needed when the frontend is served from another origin.
+      # Empty (the default here) = same-origin only, which is the Docker setup.
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
+      # Send Strict-Transport-Security from the app (only if served over HTTPS
+      # only and the proxy does not already set it).
+      - HSTS_ENABLED=${HSTS_ENABLED:-}
     volumes:
-      - ./pm.db:/app/pm.db
+      # Host path : container path. The default mounts the development file;
+      # for the commercial database mount a DIRECTORY (SQLite also writes
+      # journal files next to the database).
+      - ${PM_DB_HOST_PATH:-./pm.db}:${PM_DB_CONTAINER_PATH:-/app/pm.db}
     restart: unless-stopped

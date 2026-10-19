@@ -1,3 +1,4 @@
+import { describe, expect, it } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { KanbanBoard } from "@/components/KanbanBoard";
@@ -29,7 +30,9 @@ describe("KanbanBoard", () => {
 
     const titleInput = within(column).getByPlaceholderText(/card title/i);
     await userEvent.type(titleInput, "New card");
-    const detailsInput = within(column).getByPlaceholderText(/details/i);
+    // Exact match: a case-insensitive /details/i regex would also match
+    // existing cards' own (differently worded) detail textareas.
+    const detailsInput = within(column).getByPlaceholderText("Details");
     await userEvent.type(detailsInput, "Notes");
 
     await userEvent.click(within(column).getByRole("button", { name: /add card/i }));
