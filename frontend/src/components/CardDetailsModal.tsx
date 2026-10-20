@@ -3,7 +3,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import type { CardResponse, StageKind } from "@/lib/api";
-import { DEAL_CURRENCY, formatCents, formatDate, formatMoney, isValidIsoDate } from "@/lib/format";
+import { DEAL_CURRENCY, formatDate, formatMoney, isValidIsoDate } from "@/lib/format";
 
 type CardDetailsModalProps = {
   card: CardResponse;
@@ -122,8 +122,6 @@ export const CardDetailsModal = ({
     { label: "Details", value: card.details },
   ];
 
-  const revenue = (cents: number | null) =>
-    cents == null || !bid ? null : formatCents(cents, bid.revenue_currency);
   const number = (value: number | null) => (value == null ? null : value.toLocaleString());
 
   return (
@@ -184,15 +182,6 @@ export const CardDetailsModal = ({
                   { label: "Volume, current year", value: number(bid.volume_current_year) },
                   { label: "Volume, next year", value: number(bid.volume_next_year) },
                   { label: "Production start", value: showDate(bid.production_start_date) },
-                  { label: "Revenue, current year", value: revenue(bid.revenue_current_year_cents) },
-                  { label: "Revenue, next year", value: revenue(bid.revenue_next_year_cents) },
-                  {
-                    label: "Revenue currency",
-                    value:
-                      bid.revenue_current_year_cents != null || bid.revenue_next_year_cents != null
-                        ? bid.revenue_currency
-                        : null,
-                  },
                 ]}
               />
               <Section

@@ -83,6 +83,13 @@ def new_card_fields(user: User, fields: dict) -> dict:
     return fields if is_admin(user) else {**fields, "salesperson_id": user.id}
 
 
+def new_card_deal_fields(card) -> dict:
+    """Deal Value columns for a card being created (USD; deal_year keeps its column default)."""
+    if card.deal_value is None and not card.deal_value_next_year:
+        return {}
+    return {"deal_value": card.deal_value, "deal_value_next_year": card.deal_value_next_year, "currency": DEAL_CURRENCY}
+
+
 def audit_new_card_owner(db, board_id: int, card: Card, user: User) -> None:
     """Audit the creation of a freshly flushed card and its initial assignment, if it has one."""
     record_audit(db, board_id, card.id, user, "create", {

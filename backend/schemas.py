@@ -138,6 +138,9 @@ class CardCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
     details: Optional[str] = Field(None, max_length=5000)
     position: int = Field(default=0, ge=0)
+    # Optional annual Deal Value (USD): deal_value is the card's deal_year amount, the next year's is separate.
+    deal_value: Optional[float] = Field(None, ge=0, allow_inf_nan=False)
+    deal_value_next_year: float = Field(default=0, ge=0, allow_inf_nan=False)
 
 
 NEXT_STEP_MAX_LENGTH = 100
@@ -326,15 +329,6 @@ class ReportGroup(BaseModel):
     won_sum_totals: Dict[str, float] = {}
 
 
-class BidRevenueMeasure(BaseModel):
-    """Bid report revenue in integer cents of its own currency; see bid_revenue.py. Never added to Deal Value."""
-    currency: str
-    current_cents: int
-    current_count: int
-    next_cents: int
-    next_count: int
-
-
 class ReportStage(BaseModel):
     column_id: int
     title: str
@@ -343,7 +337,6 @@ class ReportStage(BaseModel):
     totals: Dict[str, float]
     next_totals: Dict[str, float] = {}
     sum_totals: Dict[str, float] = {}
-    bid_revenue: List[BidRevenueMeasure] = []
 
 
 class ReportKpis(BaseModel):
@@ -355,8 +348,6 @@ class ReportKpis(BaseModel):
     won_totals: Dict[str, float]
     won_next_totals: Dict[str, float] = {}
     won_sum_totals: Dict[str, float] = {}
-    open_bid_revenue: List[BidRevenueMeasure] = []
-    won_bid_revenue: List[BidRevenueMeasure] = []
     lost_count: int
     win_rate: Optional[float]
 
@@ -592,7 +583,6 @@ class PipelineStage(BaseModel):
     without_value: int
     next_year_values: Dict[str, MoneyTotal] = {}
     total_values: Dict[str, MoneyTotal] = {}
-    bid_revenue: List[BidRevenueMeasure] = []
 
 
 class KpiPipelineResponse(BaseModel):

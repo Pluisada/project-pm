@@ -644,3 +644,42 @@ def test_undo_restores_previous_action(client, tokens, board, card_id):
     detail = client.get(f"/api/boards/{board['id']}", headers=auth(tokens["admin"])).json()
     card = next(c for col in detail["columns"] for c in col["cards"] if c["id"] == card_id)
     assert card["bid_details"]["next_step"] == "Call"
+
+
+# --- creation with annual Deal Values ---
+
+
+def _create(client, token, board, **extra):
+    column_id = board["columns"][0]["id"] if "columns" in board else client.get(
+        f"/api/boards/{board['id']}", headers=auth(token)).json()["columns"][0]["id"]
+    return client.post(
+        f"/api/boards/{board['id']}/cards",
+        json={"column_id": column_id, "title": "New lead", **extra},
+        headers=auth(token),
+    )
+
+
+def test_create_card_stores_both_annual_values_in_usd(client, tokens, board):
+    response = _create(client, tokens["admin"], board, deal_value=1000, deal_value_next_year=250.5)
+    assert response.status_code == 201
+    card = response.json()
+    assert (card["deal_value"], card["deal_value_next_year"], card["currency"]) == (1000, 250.5, "USD")
+    assert card["deal_year"] == date.today().year
+
+
+def test_create_card_without_values_keeps_the_defaults(client, tokens, board):
+    card = _create(client, tokens["admin"], board).json()
+    assert card["deal_value"] is None and card["deal_value_next_year"] == 0
+
+
+def test_member_created_card_keeps_values_and_is_assigned_to_the_member(client, tokens, board):
+    card = _create(client, tokens["member"], board, deal_value=5, deal_value_next_year=7).json()
+    assert (card["deal_value"], card["deal_value_next_year"]) == (5, 7)
+    assert card["salesperson_id"] is not None
+
+
+@pytest.mark.parametrize("payload", [
+    {"deal_value": -1}, {"deal_value_next_year": -0.01}, {"deal_value": "abc"}, {"deal_value_next_year": None},
+])
+def test_create_card_rejects_invalid_values(client, tokens, board, payload):
+    assert _create(client, tokens["admin"], board, **payload).status_code == 422

@@ -31,7 +31,7 @@ describe("CardDetailsModal", () => {
   it("shows Deal Value in USD (whatever legacy code the card holds) and Bid fields in their own currency", () => {
     const { dialog } = open(card({ bid_details: bid, source_ref: { source_code: "OPP-1" } }));
     expect(within(dialog).getByText(/\$500/)).toBeInTheDocument();   // card.currency is a legacy "EUR": ignored
-    expect(within(dialog).getByText("$1,234.56")).toBeInTheDocument();
+    expect(within(dialog).queryByText("$1,234.56")).not.toBeInTheDocument();
     // The old Bid "Confidence" and "Source confidence" rows no longer exist.
     expect(within(dialog).queryByText("Confidence")).not.toBeInTheDocument();
     expect(within(dialog).queryByText("Source confidence")).not.toBeInTheDocument();
@@ -43,30 +43,24 @@ describe("CardDetailsModal", () => {
     expect(within(dialog).getByText("Jan 31, 2099")).toBeInTheDocument();
     expect(within(dialog).getByText("Mar 15, 2027")).toBeInTheDocument();
     // Null fields: no row, no zero.
-    expect(within(dialog).queryByText("Revenue, next year")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/Revenue/)).not.toBeInTheDocument();
     expect(within(dialog).queryByText("Volume, current year")).not.toBeInTheDocument();
     expect(within(dialog).queryByText("CPM (source)")).not.toBeInTheDocument();
   });
 
-  it("lists the two annual deal values by year, apart from Bid revenue", () => {
+  it("lists the two annual deal values by year and no Bid revenue", () => {
     const { dialog } = open(card({ deal_value: 500, deal_value_next_year: 250, deal_year: 2026, bid_details: bid }));
     expect(within(dialog).getByText("Deal value 2026")).toBeInTheDocument();
     expect(within(dialog).getByText("Deal value 2027")).toBeInTheDocument();
     expect(within(dialog).getByText("$500")).toBeInTheDocument();
     expect(within(dialog).getByText("$250")).toBeInTheDocument();
-    expect(within(dialog).getByText("$1,234.56")).toBeInTheDocument();
+    expect(within(dialog).queryByText("$1,234.56")).not.toBeInTheDocument();
   });
 
   it("shows no Deal Value row, and no $0, when nothing is entered", () => {
     const { dialog } = open(card({ deal_value: null, deal_value_next_year: 0, deal_year: 2026 }));
     expect(within(dialog).queryByText(/Deal value/)).toBeNull();
     expect(within(dialog).queryByText("$0")).toBeNull();
-  });
-
-  it("keeps Bid revenue in its own currency next to a USD Deal Value", () => {
-    const { dialog } = open(card({ deal_value: 500, bid_details: { ...bid, revenue_currency: "EUR" } }));
-    expect(within(dialog).getByText("$500")).toBeInTheDocument();
-    expect(within(dialog).getByText("€1,234.56")).toBeInTheDocument();
   });
 
   it("states that a card has no Bid data instead of inventing any", () => {

@@ -106,11 +106,11 @@ test("the details view groups general, Bid and source data and keeps their meani
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("heading", { name: title })).toBeVisible();
 
-  // Deal value (EUR) and Bid revenue (USD cents) stay separate, each in its own currency.
-  await expect(dialog.getByText(/\$75,000/)).toBeVisible();   // the card carries a legacy "EUR": read as USD
-  await expect(dialog.getByText("$1,234.56")).toBeVisible();
-  await expect(dialog.getByText("$987,654.32")).toBeVisible();
-  await expect(dialog.getByText("Revenue currency")).toBeVisible();
+  // Deal value shows (a legacy "EUR" card reads as USD); Bid revenue is no longer shown.
+  await expect(dialog.getByText(/\$75,000/)).toBeVisible();
+  await expect(dialog.getByText("$1,234.56")).toHaveCount(0);
+  await expect(dialog.getByText("$987,654.32")).toHaveCount(0);
+  await expect(dialog.getByText(/Revenue/)).toHaveCount(0);
 
   // Three different dates: expected close, next action due, production start.
   await expect(dialog.getByText("Jan 31, 2099")).toBeVisible();

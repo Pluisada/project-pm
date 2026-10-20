@@ -13,7 +13,6 @@ import {
   type ReportGroup,
 } from "@/lib/api";
 import { DEAL_CURRENCY, annualLines, formatDate, formatMoney, formatTotals, type AnnualMeasure } from "@/lib/format";
-import { BidRevenueTable } from "@/components/BidRevenueTable";
 import { AnnualLegend, AnnualTotals, Section, StageBars, StatTile, selectClass, tdClass, thClass } from "@/components/ReportBlocks";
 
 type ReportsPageProps = {
@@ -199,8 +198,6 @@ export const ReportsPage = ({ boardId }: ReportsPageProps) => {
           <Section title="Leads by stage">
             <StageBars stages={report.stages} years={report.deal_years} />
           </Section>
-
-          <BidRevenueTable rows={report.stages} testId="report-bid-revenue" />
 
           <Section title="Closing in the next 30 days or overdue">
             {report.closing_soon.length === 0 ? (

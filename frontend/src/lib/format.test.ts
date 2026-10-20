@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { annualLabels, annualLines, dealValueTotal, formatCents, formatDays, formatPeriodDates, formatRate, formatTotals, isValidIsoDate, moneyTotalsToNumbers } from "@/lib/format";
+import { annualLabels, annualLines, dealValueTotal, formatDays, formatPeriodDates, formatRate, formatTotals, isValidIsoDate, moneyTotalsToNumbers } from "@/lib/format";
 
 describe("KPI formatting", () => {
   it("adapts KPI money to per-currency totals without mixing currencies", () => {
@@ -28,17 +28,7 @@ describe("KPI formatting", () => {
   });
 });
 
-describe("Bid value formatting", () => {
-  it("converts integer cents to a display amount in the given currency only", () => {
-    expect(formatCents(123456, "USD")).toBe("$1,234.56");
-    expect(formatCents(100000, "EUR")).toContain("1,000");
-    expect(formatCents(0, "USD")).toBe("$0");
-  });
-
-  it("falls back to the raw code for a currency Intl does not know", () => {
-    expect(formatCents(1050, "XX")).toBe("10.5 XX");
-  });
-
+describe("Date validation", () => {
   it("accepts only real YYYY-MM-DD calendar dates", () => {
     expect(isValidIsoDate("2026-10-16")).toBe(true);
     expect(isValidIsoDate("2026-02-31")).toBe(false);

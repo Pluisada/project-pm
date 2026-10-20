@@ -151,21 +151,3 @@ export function isValidIsoDate(value: string | null | undefined): value is strin
   return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
 }
 
-/**
- * Bid revenue is stored as integer cents of its own currency; convert to a
- * display amount here only. Falls back to "<amount> <code>" for a currency
- * code Intl does not know, rather than failing the whole dialog.
- */
-export function formatCents(cents: number, currency: string): string {
-  const amount = cents / 100;
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency,
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 2,
-    }).format(amount);
-  } catch {
-    return `${amount.toLocaleString()} ${currency}`;
-  }
-}

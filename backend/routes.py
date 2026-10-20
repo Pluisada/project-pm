@@ -17,13 +17,13 @@ from card_rules import (
     audit_deletion,
     audit_new_card_owner,
     move_denial,
+    new_card_deal_fields,
     new_card_fields,
 )
 from database import get_db
 from deps import get_current_user, require_admin
 from lead_options import CURRENCIES, ConfidenceFilter, LEAD_SOURCES, PRODUCT_LINES, STAGE_OPEN
-from bid_revenue import add_revenue, new_revenue, revenue_rows
-from models import Board, Column, Card, CardBidDetails, CardEditHistory, User, UserRole, ConversationMessage, UndoEntry
+from models import Board, Column, Card, CardEditHistory, User, UserRole, ConversationMessage, UndoEntry
 import ai_limits
 import kpis
 import token_store
@@ -384,7 +384,7 @@ async def create_card(
         title=card.title,
         details=card.details,
         position=card.position,
-        **new_card_fields(current_user, {}),
+        **new_card_fields(current_user, new_card_deal_fields(card)),
     )
     db.add(db_card)
     db.flush()
@@ -882,12 +882,6 @@ def kpi_aging_payload(db: Session, board_id: int):
 def kpi_pipeline_payload(db: Session, board_id: int):
     history = _kpi_history(db, board_id)
     stages = kpis.pipeline(history)
-    by_column = {stage["column_id"]: new_revenue() for stage in stages}
-    column_of = {card.id: card.column_id for card in history.cards.values()}
-    for details in db.query(CardBidDetails).filter(CardBidDetails.card_id.in_(column_of)).all():
-        add_revenue(by_column[column_of[details.card_id]], details)
-    for stage in stages:
-        stage["bid_revenue"] = revenue_rows(by_column[stage["column_id"]])
     return {"as_of": history.as_of, "stages": stages, "deal_years": kpis.pipeline_deal_years(history)}
 
 
