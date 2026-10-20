@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CentralApp } from "@/components/CentralApp";
+import { getActiveCompany, resetActiveCompanyForTests } from "@/lib/activeCompany";
 
 const json = (status: number, body: unknown = {}) => new Response(JSON.stringify(body), { status });
 const board = { id: 3, user_id: 1, title: "Pipeline", created_at: "", updated_at: "" };
@@ -37,6 +38,55 @@ describe("CentralApp", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     window.history.replaceState(null, "", "/");
+    resetActiveCompanyForTests();
+  });
+
+  it("registers the chosen company in memory, sends its slug on every request and forgets it on sign-out", async () => {
+    localStorage.setItem("pm_auth_token", "tok");
+    localStorage.setItem("pm_auth_user", "a@b.com");
+    const fetchMock = route({
+      "/api/central/me": () => me([
+        { slug: "salcomp", name: "Salcomp", role: "super_admin" },
+        { slug: "lity", name: "Lity", role: "super_admin" },
+      ]),
+      "/api/companies/lity/boards": () => json(200, [board]),
+      "/api/central/logout": () => json(204),
+    });
+    render(<CentralApp />);
+    await userEvent.selectOptions(await screen.findByLabelText("Company"), "lity");
+    await screen.findByRole("button", { name: "Export Current Database" });
+    expect(getActiveCompany()).toBe("lity");
+    const companyCalls = fetchMock.mock.calls.filter(([u]) => String(u).includes("/api/companies/"));
+    expect(companyCalls.length).toBeGreaterThan(0);
+    for (const [, init] of companyCalls as unknown as [string, RequestInit][]) {
+      expect((init.headers as Record<string, string>)["X-Company-Slug"]).toBe("lity");
+    }
+    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(getActiveCompany()).toBeNull();
+  });
+
+  it("switching company ends the old company's requests and never sends a later one to it", async () => {
+    localStorage.setItem("pm_auth_token", "tok");
+    localStorage.setItem("pm_auth_user", "a@b.com");
+    const fetchMock = route({
+      "/api/central/me": () => me([
+        { slug: "salcomp", name: "Salcomp", role: "super_admin" },
+        { slug: "lity", name: "Lity", role: "super_admin" },
+      ]),
+      "/api/companies/salcomp/boards": () => json(200, [board]),
+      "/api/companies/lity/boards": () => json(200, [board]),
+    });
+    render(<CentralApp />);
+    const select = await screen.findByLabelText("Company");
+    await userEvent.selectOptions(select, "salcomp");
+    await screen.findByRole("button", { name: "Export Current Database" });
+    fetchMock.mockClear();
+    await userEvent.selectOptions(select, "lity");
+    await waitFor(() => expect(getActiveCompany()).toBe("lity"));
+    await screen.findByRole("button", { name: "Export Current Database" });
+    const urls = fetchMock.mock.calls.map(([u]) => String(u)).filter((u) => u.includes("/api/companies/"));
+    expect(urls.length).toBeGreaterThan(0);
+    expect(urls.every((u) => u.includes("/api/companies/lity/"))).toBe(true);
   });
 
   it("shows the landing page and LOGIN button first, then reveals the sign-in form", async () => {

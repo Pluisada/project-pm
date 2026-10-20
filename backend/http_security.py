@@ -20,7 +20,7 @@ DEV_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 # Methods and headers the frontend actually uses (Bearer token, JSON bodies).
 CORS_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
-CORS_HEADERS = ["Authorization", "Content-Type", "X-Setup-Token"]
+CORS_HEADERS = ["Authorization", "Content-Type", "X-Setup-Token", "X-Company-Slug"]
 
 # The static export inlines its bootstrap scripts and React/dnd-kit set inline
 # styles, so script-src/style-src need 'unsafe-inline'. Everything else is

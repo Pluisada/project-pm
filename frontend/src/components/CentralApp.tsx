@@ -25,6 +25,7 @@ import { CentralLanding } from "@/components/CentralLanding";
 import { CentralMembers } from "@/components/CentralMembers";
 import { ExcelDownloadButtons } from "@/components/ExcelDownloadButtons";
 import { LoadingScreen } from "@/components/LoadingScreen";
+import { setActiveCompany } from "@/lib/activeCompany";
 
 const COMPANY_KEY = "pm_central_company";
 
@@ -126,6 +127,16 @@ export const CentralApp = () => {
   // Companies the backend refused (403) are never auto-selected again, or a lone company would loop.
   const denied = useRef(new Set<string>());
 
+  // The company in use is registered in memory before React renders anything for it (children mount, and start
+  // their requests, before a parent effect would run), and every request is bound to it from then on.
+  const companyRef = useRef<string | null>(null);
+  const applyCompany = useCallback((next: string | null) => {
+    companyRef.current = next;
+    setActiveCompany(next);
+    setCompanySlug(next);
+  }, []);
+  useEffect(() => () => setActiveCompany(null), []);
+
   const loadMe = useCallback(async () => {
     try {
       const identity = await getCentralMe();
@@ -133,7 +144,8 @@ export const CentralApp = () => {
       const remembered = rememberedCompany();
       const listed = identity.companies.map((c) => c.slug);
       const pickable = listed.filter((slug) => !denied.current.has(slug));
-      setCompanySlug((current) =>
+      const current = companyRef.current;
+      applyCompany(
         current && listed.includes(current)
           ? current
           : remembered && pickable.includes(remembered)
@@ -150,7 +162,7 @@ export const CentralApp = () => {
     } finally {
       setReady(true);
     }
-  }, []);
+  }, [applyCompany]);
 
   useEffect(() => {
     // Take the token out of the address bar (history, referrers, screenshots).
@@ -168,13 +180,13 @@ export const CentralApp = () => {
   useEffect(() => {
     const onExpired = () => {
       setMe(null);
-      setCompanySlug(null);
+      applyCompany(null);
       setLoaded(null);
       setNotice("Your session expired. Sign in again.");
     };
     window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
-  }, []);
+  }, [applyCompany]);
 
   useEffect(() => {
     if (!companySlug) return;
@@ -190,7 +202,7 @@ export const CentralApp = () => {
           // Access changed since sign-in: forget the company and re-read what the backend allows.
           denied.current.add(companySlug);
           remember(null);
-          setCompanySlug(null);
+          applyCompany(null);
           setProblem("You no longer have access to that company.");
           loadMe();
         } else {
@@ -202,7 +214,7 @@ export const CentralApp = () => {
       cancelled = true;
       controller.abort();
     };
-  }, [companySlug, attempt, loadMe]);
+  }, [companySlug, attempt, loadMe, applyCompany]);
 
   // Re-reads the board list of one company on request (after a board creation of unknown outcome).
   const boardsSeq = useRef(0);
@@ -223,7 +235,7 @@ export const CentralApp = () => {
     setProblem(null);
     setBoardsFailed(null);
     setPickedBoardId(null);
-    setCompanySlug(slug);
+    applyCompany(slug);
   };
 
   // Only for the company currently selected; the effect re-reads companySlug, so it never loads another one.
@@ -238,7 +250,7 @@ export const CentralApp = () => {
     remember(null);
     setLoginOpen(false);
     setMe(null);
-    setCompanySlug(null);
+    applyCompany(null);
     setLoaded(null);
     setPickedBoardId(null);
     setNotice(null);
@@ -258,7 +270,7 @@ export const CentralApp = () => {
     await centralLogout();
     remember(null);
     setMe(null);
-    setCompanySlug(null);
+    applyCompany(null);
     setLoaded(null);
     setProblem(null);
     setLink(null);

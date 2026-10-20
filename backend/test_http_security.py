@@ -88,6 +88,18 @@ class TestCorsBehaviour:
         assert r.status_code == 200
         assert "x-setup-token" in r.headers["access-control-allow-headers"].lower()
 
+    def test_company_preflight_allows_the_company_header(self, client):
+        r = client.options(
+            "/api/companies/lity/boards",
+            headers={
+                "Origin": DEV,
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization,x-company-slug",
+            },
+        )
+        assert r.status_code == 200
+        assert "x-company-slug" in r.headers["access-control-allow-headers"].lower()
+
     def test_unexpected_header_and_method_not_allowed(self, client):
         r = client.options(
             "/api/login",

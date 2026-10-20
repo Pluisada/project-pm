@@ -111,8 +111,11 @@ describe("Excel downloads", () => {
     vi.stubGlobal("fetch", fetchMock);
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
     const pending = downloadCompanyExcel("salcomp", 7, "export", controller.signal);
-    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal);
+    // The request carries a signal that follows the caller's (it is combined with the active-company signal).
+    const sent = fetchMock.mock.calls[0][1].signal!;
+    expect(sent.aborted).toBe(false);
     controller.abort();
+    expect(sent.aborted).toBe(true);
     const error = await pending.catch((e) => e);
     expect(isAbortError(error)).toBe(true);
     expect(click).not.toHaveBeenCalled();

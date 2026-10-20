@@ -372,3 +372,44 @@ def test_kpi_routes_registered_in_main_app():
     for name in KPI_PATHS:
         assert f"/api/companies/{{company_slug}}/boards/{{board_id}}/kpis/{name}" in paths
         assert f"/api/boards/{{board_id}}/kpis/{name}" in paths
+
+
+# --- X-Company-Slug: a consistency assertion by the client, never an authorization input ---
+
+def test_matching_company_header_changes_nothing(rig):
+    rig.e.member("m@example.com", slug="lity")
+    token = rig.e.token("m@example.com")
+    r = rig.client.get("/api/companies/lity/boards/1", headers={"Authorization": f"Bearer {token}", "X-Company-Slug": "lity"})
+    assert r.status_code == 200 and r.json()["title"] == "lity board"
+    assert rig.opened == ["lity"]
+
+
+def test_company_header_is_optional(rig):
+    rig.e.member("m@example.com", slug="lity")
+    assert rig.get("lity", rig.e.token("m@example.com")).status_code == 200
+
+
+@pytest.mark.parametrize("sent", ["salcomp", "valor-log", "LITY", "lity ", ""])
+def test_mismatched_company_header_is_refused_before_anything_is_opened(rig, sent):
+    rig.e.member("m@example.com", slug="lity")
+    token = rig.e.token("m@example.com")
+    r = rig.client.get("/api/companies/lity/boards/1", headers={"Authorization": f"Bearer {token}", "X-Company-Slug": sent})
+    assert r.status_code == 400 and r.json()["detail"] == "Company mismatch"
+    assert rig.opened == [] and rig.sessions == []
+
+
+def test_company_header_never_grants_access_to_another_company(rig):
+    rig.e.member("m@example.com", slug="lity")
+    token = rig.e.token("m@example.com")
+    # Naming a company the person belongs to in the header does not open another one from the URL.
+    r = rig.client.get("/api/companies/salcomp/boards/1", headers={"Authorization": f"Bearer {token}", "X-Company-Slug": "salcomp"})
+    assert r.status_code == 403
+    r = rig.client.get("/api/companies/salcomp/boards/1", headers={"Authorization": f"Bearer {token}", "X-Company-Slug": "lity"})
+    assert r.status_code == 400
+    assert rig.opened == []
+
+
+def test_company_header_is_checked_before_the_token(rig):
+    r = rig.client.get("/api/companies/lity/boards/1", headers={"Authorization": "Bearer not-a-jwt", "X-Company-Slug": "salcomp"})
+    assert r.status_code == 400
+    assert rig.opened == []

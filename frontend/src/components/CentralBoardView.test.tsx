@@ -32,7 +32,10 @@ describe("central read layer", () => {
     expect(boardUrl).toMatch(/\/api\/companies\/a%20b\/boards\/3$/);
     for (const init of [meInit, boardInit]) {
       expect((init.headers as Record<string, string>).Authorization).toBe("Bearer tok");
-      expect(init.signal).toBe(controller.signal);
+      // The request carries a live signal (the caller's, combined with the active-company signal); that it follows
+      // an abort while the request is under way is covered in lib/companyScope.test.ts and lib/central.test.ts.
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      expect(init.signal?.aborted).toBe(false);
     }
   });
 

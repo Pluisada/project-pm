@@ -162,13 +162,20 @@ def company_context_dependency(
     session). A route using the result must declare a `company_slug` path parameter
     (e.g. `/api/companies/{company_slug}/...`): the slug is explicit, never inferred
     from the user, a header or a token.
+
+    An optional `X-Company-Slug` header is a consistency assertion by the client, nothing more: when present
+    it must equal the path slug, or the request is refused (400) before any token, membership or database is
+    looked at. It never selects a company and never grants anything; an absent header changes nothing.
     """
 
     def get_company_context(
         company_slug: str,
         authorization: str | None = Header(None),
+        x_company_slug: str | None = Header(None),
         session: Session = Depends(identity_db),
     ) -> CompanyContext:
+        if x_company_slug is not None and x_company_slug != company_slug:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Company mismatch")
         try:
             return resolve_company_context(session, bearer_token(authorization), company_slug)
         except AuthenticationFailed:
