@@ -3,6 +3,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CentralApp } from "@/components/CentralApp";
 import { getActiveCompany, resetActiveCompanyForTests } from "@/lib/activeCompany";
+import { listCompanyBoards } from "@/lib/api";
 
 const json = (status: number, body: unknown = {}) => new Response(JSON.stringify(body), { status });
 const board = { id: 3, user_id: 1, title: "Pipeline", created_at: "", updated_at: "" };
@@ -111,6 +112,166 @@ describe("CentralApp", () => {
     await screen.findAllByLabelText(/password/i);
     expect(screen.queryByRole("button", { name: "LOGIN" })).not.toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  describe("an authentication change made in another tab", () => {
+    // Synthetic storage events in jsdom prove this tab's logic, not real multi-tab browser behavior.
+    const two = [
+      { slug: "salcomp", name: "Salcomp", role: "super_admin" },
+      { slug: "lity", name: "Lity", role: "super_admin" },
+    ];
+    let account: { email: string; companies: typeof two };
+    const signedInOnLity = async () => {
+      account = { email: "a@b.com", companies: two };
+      localStorage.setItem("pm_auth_token", "tok");
+      localStorage.setItem("pm_auth_user", "a@b.com");
+      const fetchMock = route({
+        "/api/central/me": () => json(200, { ...account, is_global_admin: false }),
+        "/api/companies/salcomp/boards": () => json(200, [board]),
+        "/api/companies/lity/boards": () => json(200, [board]),
+      });
+      render(<CentralApp />);
+      await userEvent.selectOptions(await screen.findByLabelText("Company"), "lity");
+      await screen.findByRole("button", { name: "Export Current Database" });
+      fetchMock.mockClear();
+      return fetchMock;
+    };
+    const tokenChanged = (newValue: string | null) => {
+      if (newValue === null) localStorage.removeItem("pm_auth_token");
+      else localStorage.setItem("pm_auth_token", newValue);
+      act(() => {
+        window.dispatchEvent(new StorageEvent("storage", { key: "pm_auth_token", oldValue: "tok", newValue }));
+      });
+    };
+    const calls = (fetchMock: ReturnType<typeof route>, part: string) =>
+      fetchMock.mock.calls.map(([u]) => String(u)).filter((u) => u.includes(part));
+
+    it("keeps the same account and company after asking the server who the new token belongs to", async () => {
+      const fetchMock = await signedInOnLity();
+      tokenChanged("tok2");
+      await screen.findByRole("button", { name: "Export Current Database" });
+      expect(getActiveCompany()).toBe("lity");
+      expect(calls(fetchMock, "/api/central/me")).toHaveLength(1);
+      expect(screen.queryByText(/account signed in on this browser changed/)).not.toBeInTheDocument();
+      expect(calls(fetchMock, "/api/companies/salcomp/")).toEqual([]);
+    });
+
+    it("drops the previous account's company and data when the token belongs to someone else", async () => {
+      const fetchMock = await signedInOnLity();
+      account = { email: "c@d.com", companies: two };
+      tokenChanged("tok2");
+      expect(await screen.findByText(/account signed in on this browser changed to c@d.com/)).toBeInTheDocument();
+      expect(screen.getByText("c@d.com", { selector: "p" })).toBeInTheDocument();
+      expect(screen.queryByText("a@b.com")).not.toBeInTheDocument();
+      expect(getActiveCompany()).toBeNull();
+      expect(screen.getByLabelText("Company")).toHaveValue("");
+      expect(screen.queryByRole("button", { name: "Export Current Database" })).not.toBeInTheDocument();
+      // Nothing was requested for any company with the new token while the old account's company was shown.
+      expect(calls(fetchMock, "/api/companies/")).toEqual([]);
+    });
+
+    it("returns to sign-in, with no company, when the other tab signed out", async () => {
+      const fetchMock = await signedInOnLity();
+      tokenChanged(null);
+      expect(await screen.findByText(/You signed out in another tab/)).toBeInTheDocument();
+      expect(screen.getByLabelText("Email")).toBeInTheDocument();
+      expect(getActiveCompany()).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("cancels a read still under way for the old account without showing an error", async () => {
+      localStorage.setItem("pm_auth_token", "tok");
+      localStorage.setItem("pm_auth_user", "a@b.com");
+      let hungSignal: AbortSignal | null | undefined;
+      vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+        const u = String(url);
+        if (u.endsWith("/api/central/me")) return json(200, { email: "a@b.com", is_global_admin: false, companies: [{ slug: "lity", name: "Lity", role: "super_admin" }] });
+        if (u.endsWith("/api/companies/lity/boards")) return json(200, [board]);
+        if (/\/api\/companies\/lity\/boards\/3$/.test(u)) {
+          hungSignal = init?.signal;
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+          });
+        }
+        return json(404);
+      }));
+      render(<CentralApp />);
+      await vi.waitFor(() => expect(hungSignal).toBeDefined());
+      expect(hungSignal?.aborted).toBe(false);
+      tokenChanged(null);
+      expect(hungSignal?.aborted).toBe(true);
+      await screen.findByText(/You signed out in another tab/);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("ignores events that do not change the token, other keys, and a tab that is not signed in", async () => {
+      const fetchMock = await signedInOnLity();
+      act(() => {
+        window.dispatchEvent(new StorageEvent("storage", { key: "pm_auth_token", oldValue: "tok", newValue: "tok" }));
+        // Another tab remembering a different company is only a hint: it never moves this tab.
+        window.dispatchEvent(new StorageEvent("storage", { key: "pm_central_company", oldValue: "lity", newValue: "salcomp" }));
+      });
+      expect(getActiveCompany()).toBe("lity");
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Export Current Database" })).toBeInTheDocument();
+    });
+
+    const authOf = (call: unknown) =>
+      ((call as [string, RequestInit])[1].headers as Record<string, string>).Authorization;
+    const lastAuthFor = (fetchMock: ReturnType<typeof route>, part: string) => {
+      const hit = fetchMock.mock.calls.filter(([u]) => String(u).includes(part));
+      return authOf(hit[hit.length - 1]);
+    };
+
+    it("keeps sending this tab's own token until the new one has been verified, then switches to it", async () => {
+      const fetchMock = await signedInOnLity();
+      // Another tab replaced the token, and this tab has not processed the storage event yet.
+      localStorage.setItem("pm_auth_token", "tok2");
+      await listCompanyBoards("lity");
+      expect(lastAuthFor(fetchMock, "/api/companies/lity/boards")).toBe("Bearer tok");
+      // The event arrives: the server is asked about the new token (and only that call carries it) ...
+      act(() => {
+        window.dispatchEvent(new StorageEvent("storage", { key: "pm_auth_token", oldValue: "tok", newValue: "tok2" }));
+      });
+      await screen.findByRole("button", { name: "Export Current Database" });
+      expect(lastAuthFor(fetchMock, "/api/central/me")).toBe("Bearer tok2");
+      // ... and once it is verified, this tab runs it.
+      await listCompanyBoards("lity");
+      expect(lastAuthFor(fetchMock, "/api/companies/lity/boards")).toBe("Bearer tok2");
+    });
+
+    it("never sends the new token under the old account while it is being verified", async () => {
+      const fetchMock = await signedInOnLity();
+      localStorage.setItem("pm_auth_token", "tok2");
+      account = { email: "c@d.com", companies: two };
+      act(() => {
+        window.dispatchEvent(new StorageEvent("storage", { key: "pm_auth_token", oldValue: "tok", newValue: "tok2" }));
+      });
+      await screen.findByText(/changed to c@d.com/);
+      // Every request made for the old account, before and during the check, used the old token; the only
+      // request with the new token is the one that asks who it belongs to.
+      const withNew = fetchMock.mock.calls.filter((c) => authOf(c) === "Bearer tok2").map(([u]) => String(u));
+      expect(withNew.every((u) => u.endsWith("/api/central/me"))).toBe(true);
+      expect(fetchMock.mock.calls.filter((c) => authOf(c) === "Bearer tok").every(([u]) => !String(u).endsWith("/api/central/me"))).toBe(true);
+    });
+
+    it("signs out this tab's own session, not the one another tab has stored", async () => {
+      const fetchMock = await signedInOnLity();
+      localStorage.setItem("pm_auth_token", "tok2"); // another tab signed in; no event processed yet
+      localStorage.setItem("pm_auth_user", "c@d.com");
+      await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+      expect(lastAuthFor(fetchMock, "/api/central/logout")).toBe("Bearer tok");
+      expect(localStorage.getItem("pm_auth_token")).toBe("tok2"); // the other tab's session is left alone
+    });
+
+    it("does nothing in a tab that is on the sign-in screen", async () => {
+      const fetchMock = route({});
+      render(<CentralApp />);
+      await screen.findByRole("button", { name: "LOGIN" });
+      tokenChanged("tok2");
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "LOGIN" })).toBeInTheDocument();
+    });
   });
 
   it("signs in, loads the company and shows both buttons to a super admin", async () => {

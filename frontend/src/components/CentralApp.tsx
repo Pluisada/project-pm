@@ -1,7 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { centralLogin, centralLogout, getAuthState, SESSION_EXPIRED_EVENT } from "@/lib/auth";
+import {
+  bindSessionToken,
+  centralLogin,
+  centralLogout,
+  getAuthState,
+  getSessionToken,
+  isBoundSessionToken,
+  readStoredToken,
+  SESSION_EXPIRED_EVENT,
+  TOKEN_KEY,
+} from "@/lib/auth";
 import {
   getCentralMe,
   getErrorMessage,
@@ -135,16 +145,46 @@ export const CentralApp = () => {
     setActiveCompany(next);
     setCompanySlug(next);
   }, []);
-  useEffect(() => () => setActiveCompany(null), []);
+  useEffect(
+    () => () => {
+      setActiveCompany(null);
+      bindSessionToken(null);
+    },
+    []
+  );
 
-  const loadMe = useCallback(async () => {
+  // The signed-in account of this tab. The token itself lives in storage shared by every tab of the browser, so a
+  // sign-in or sign-out in another tab changes what this tab would send; `sessionEpoch` ends the account this tab
+  // was showing (see the storage listener below) and drops any answer still on its way for it.
+  const meRef = useRef<CentralMe | null>(null);
+  const sessionEpoch = useRef(0);
+  const [accountNotice, setAccountNotice] = useState<string | null>(null);
+  useEffect(() => {
+    meRef.current = me;
+  }, [me]);
+
+  // `resume` is the account and company this tab was showing when another tab replaced the token: if the
+  // token turns out to belong to the same account, the tab goes back to that company without asking again.
+  // `candidate` is a token this tab has not adopted yet. Until the server has said whose it is, requests keep using
+  // the token this tab already runs (see bindSessionToken), so the page never sends the new one under the old account.
+  const loadMe = useCallback(async (resume?: { email: string; slug: string | null }, candidate?: string) => {
+    const epoch = sessionEpoch.current;
+    const used = candidate ?? getSessionToken();
     try {
-      const identity = await getCentralMe();
+      const identity = await getCentralMe(used ?? undefined);
+      if (epoch !== sessionEpoch.current) return; // the account changed again while this answer was on its way
+      bindSessionToken(used); // verified: this tab now runs this session
       setMe(identity);
+      const sameAccount = resume !== undefined && resume.email === identity.email;
+      if (resume && !sameAccount) {
+        denied.current.clear();
+        remember(null); // the remembered company was the previous account's choice, not this account's
+        setAccountNotice(`The account signed in on this browser changed to ${identity.email}. Nothing from the previous account is shown.`);
+      }
       const remembered = rememberedCompany();
       const listed = identity.companies.map((c) => c.slug);
       const pickable = listed.filter((slug) => !denied.current.has(slug));
-      const current = companyRef.current;
+      const current = sameAccount ? resume.slug : companyRef.current;
       applyCompany(
         current && listed.includes(current)
           ? current
@@ -155,6 +195,8 @@ export const CentralApp = () => {
               : null
       );
     } catch (err) {
+      if (epoch !== sessionEpoch.current) return;
+      if (candidate) bindSessionToken(null); // unverified: a retry reads the stored token again
       // A 401 already cleared the session and fired the expiry event; anything else is shown.
       if ((err as Partial<ApiError>).status_code !== 401) {
         setProblem(getErrorMessage(err, "Could not load your account."));
@@ -164,6 +206,40 @@ export const CentralApp = () => {
     }
   }, [applyCompany]);
 
+  // Another tab replaced or removed the token. This tab drops everything of the account it was showing at once (its
+  // company, its boards, and, through the company change, its reads under way) and then either goes back to sign-in
+  // (the other tab signed out) or asks the server who the new token belongs to before showing anything. The token
+  // is never read or logged here; the active company is never taken from the event.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== null && event.key !== TOKEN_KEY) return;
+      const shown = meRef.current;
+      if (!shown) return; // nobody is signed in in this tab: there is nothing to protect
+      if (event.key !== null && event.newValue === event.oldValue) return;
+      const candidate = event.key === null ? null : readStoredToken();
+      if (isBoundSessionToken(candidate)) return; // the token this tab already runs was only rewritten
+      sessionEpoch.current += 1;
+      const resume = { email: shown.email, slug: companyRef.current };
+      applyCompany(null);
+      setLoaded(null);
+      setPickedBoardId(null);
+      setProblem(null);
+      setBoardsFailed(null);
+      setAccountNotice(null);
+      setMe(null);
+      meRef.current = null;
+      if (candidate === null) {
+        bindSessionToken(null);
+        setNotice("You signed out in another tab. Sign in again.");
+        return;
+      }
+      setReady(false);
+      void loadMe(resume, candidate);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [applyCompany, loadMe]);
+
   useEffect(() => {
     // Take the token out of the address bar (history, referrers, screenshots).
     if (link) window.history.replaceState(null, "", window.location.pathname);
@@ -171,7 +247,10 @@ export const CentralApp = () => {
 
   useEffect(() => {
     const start = async () => {
-      if (getAuthState().isAuthenticated) await loadMe();
+      if (getAuthState().isAuthenticated) {
+        bindSessionToken(readStoredToken()); // adopt the session this page was opened with, once
+        await loadMe();
+      }
       else setReady(true);
     };
     start();
@@ -179,6 +258,8 @@ export const CentralApp = () => {
 
   useEffect(() => {
     const onExpired = () => {
+      sessionEpoch.current += 1;
+      setAccountNotice(null);
       setMe(null);
       applyCompany(null);
       setLoaded(null);
@@ -249,6 +330,7 @@ export const CentralApp = () => {
     await centralLogout();
     remember(null);
     setLoginOpen(false);
+    setAccountNotice(null);
     setMe(null);
     applyCompany(null);
     setLoaded(null);
@@ -301,7 +383,7 @@ export const CentralApp = () => {
   if (!me) {
     return (
       <CentralLanding open={loginOpen || Boolean(notice)} onLogin={() => setLoginOpen(true)}>
-        <CentralLogin notice={notice} onForgot={() => setForgot(true)} onSuccess={() => { setNotice(null); setProblem(null); loadMe(); }} />
+        <CentralLogin notice={notice} onForgot={() => setForgot(true)} onSuccess={() => { setNotice(null); setProblem(null); setAccountNotice(null); loadMe(); }} />
       </CentralLanding>
     );
   }
@@ -318,6 +400,7 @@ export const CentralApp = () => {
           Sign out
         </button>
       </header>
+      {accountNotice && <p role="status" className="mt-6 text-sm font-medium text-amber-900">{accountNotice}</p>}
       {problem && <p role="alert" className="mt-6 text-sm font-medium text-red-800">{problem}</p>}
       {boardsFailed !== null && boardsFailed === companySlug && (
         <button type="button" onClick={retryBoards}

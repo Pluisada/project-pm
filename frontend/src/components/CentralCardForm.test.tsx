@@ -57,6 +57,22 @@ describe("central card create/edit", () => {
     for (const c of calls) expect(c.url).toMatch(/\/api\/companies\/acme\//);
   });
 
+  it("does not abort a save in flight when the form goes away, so its outcome is not hidden", async () => {
+    let release: (r: Response) => void = () => {};
+    const calls = backend({ write: () => new Promise<Response>((resolve) => { release = resolve; }) });
+    const view = render(<CentralBoardView companySlug="acme" boardId={3} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Add a card" }));
+    await userEvent.type(screen.getByLabelText("Title"), "Lead");
+    await userEvent.click(screen.getByRole("button", { name: "Add card" }));
+    await waitFor(() => expect(writes(calls)).toHaveLength(1));
+    const post = (vi.mocked(fetch).mock.calls as unknown as [string, RequestInit][]).find(([, init]) => init?.method === "POST")!;
+    view.unmount(); // the company or board changed while the card was being saved
+    expect(post[1].signal?.aborted ?? false).toBe(false);
+    release(json(201, card(50, 30, "Lead", 7)));
+    await Promise.resolve();
+    expect(post[1].signal?.aborted ?? false).toBe(false);
+  });
+
   it("requires a title and rejects negative values before calling the server", async () => {
     const calls = backend({});
     render(<CentralBoardView companySlug="acme" boardId={3} />);

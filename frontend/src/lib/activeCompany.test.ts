@@ -86,3 +86,44 @@ describe("active company", () => {
     await expect(runInCompanyScope("lity", async () => 42)).resolves.toBe(42);
   });
 });
+
+describe("how a workspace handler must use runInCompanyScope (write, then refetch)", () => {
+  const apiError = { status_code: 409, detail: "The card changed" };
+
+  it("rethrows a real failure unchanged, even if the company changed meanwhile", async () => {
+    setActiveCompany("lity");
+    const error = await runInCompanyScope("lity", async () => {
+      setActiveCompany("salcomp");
+      throw apiError;
+    }).catch((e) => e);
+    expect(error).toBe(apiError);
+    expect(isAbortError(error)).toBe(false);
+  });
+
+  it("marks a finished write whose answer was discarded, so it is not reported as cancelled", async () => {
+    setActiveCompany("lity");
+    let written = false;
+    const error = await runInCompanyScope("lity", async () => {
+      written = true; // the write completed on the server
+      setActiveCompany("salcomp");
+      return "refetched";
+    }).catch((e) => e);
+    expect(error).toBeInstanceOf(CompanyScopeError);
+    expect((error as CompanyScopeError).workCompleted).toBe(true);
+    expect(written).toBe(true);
+  });
+
+  it("surfaces a later step refused after the switch as a cancellation of that step only", async () => {
+    setActiveCompany("lity");
+    const steps: string[] = [];
+    const error = await runInCompanyScope("lity", async (scope) => {
+      steps.push("write"); // applied
+      setActiveCompany("salcomp");
+      scope.assertCurrent(); // the refetch must not be sent to salcomp with lity's ids
+      steps.push("refetch");
+    }).catch((e) => e);
+    expect(error).toBeInstanceOf(CompanyScopeError);
+    expect((error as CompanyScopeError).workCompleted).toBe(false);
+    expect(steps).toEqual(["write"]);
+  });
+});

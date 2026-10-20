@@ -174,13 +174,16 @@ export const CentralCardForm = ({ companySlug, boardId, target, onSaved, onReloa
         ...(values.details.trim() ? { details: values.details.trim() } : {}),
         ...(values.dealValue !== "" ? { deal_value: Number(values.dealValue) } : {}),
         ...(values.dealValueNextYear !== "" ? { deal_value_next_year: Number(values.dealValueNextYear) } : {}),
-      }, controller.signal);
+      });
     } else {
       const updates = buildCardUpdates(target.card, values);
       if (Object.keys(updates).length === 0) return onClose();
-      call = updateCompanyCard(companySlug, boardId, target.card.id, updates, controller.signal);
+      call = updateCompanyCard(companySlug, boardId, target.card.id, updates);
     }
 
+    // The write carries no AbortSignal on purpose: if the form goes away mid-save (the company or board changed) the
+    // server may still apply it, and aborting would hide an outcome nobody can see. The guards below only keep a
+    // discarded form from showing the answer.
     inFlight.current = true;
     setSaving(true);
     setAcceptDuplicate(false); // each further attempt needs its own confirmation

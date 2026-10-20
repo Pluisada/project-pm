@@ -211,3 +211,69 @@ def test_invitation_to_one_company_grants_nothing_in_another(s):
     assert s.client.get("/api/central/companies/salcomp/members", headers=n).status_code == 403
     assert s.client.get("/api/central/companies/lity/members", headers=n).status_code == 403  # a sales member is no manager
     assert s.client.put("/api/central/companies/lity/members/1/role", headers=n, json={"role": "visitor"}).status_code == 403
+
+
+# --- X-Company-Slug on the company administration routes: a consistency assertion, never a credential ---
+
+ADMIN_ROUTES = [
+    ("get", "/api/central/companies/{slug}/members", None),
+    ("get", "/api/central/companies/{slug}/invitations", None),
+    ("post", "/api/central/companies/{slug}/invitations", {"email": "x@example.com", "role": "visitor"}),
+    ("post", "/api/central/companies/{slug}/members/1/deactivate", None),
+    ("put", "/api/central/companies/{slug}/members/1/role", {"role": "visitor"}),
+]
+
+
+def call(s, method, path, headers, body):
+    return getattr(s.client, method)(path, headers=headers, **({"json": body} if body is not None else {}))
+
+
+@pytest.mark.parametrize("method,path,body", ADMIN_ROUTES)
+@pytest.mark.parametrize("sent", ["salcomp", "valor-log", "LITY", "lity ", ""])
+def test_admin_routes_refuse_a_mismatched_company_header_before_authentication(s, method, path, body, sent):
+    # An invalid token is never examined: the mismatch is answered first, and nothing is created or changed.
+    r = call(s, method, path.format(slug="lity"), {"Authorization": "Bearer junk", "X-Company-Slug": sent}, body)
+    assert r.status_code == 400 and r.json()["detail"] == "Company mismatch"
+    with s.factory() as session:
+        assert session.query(IdentityInvitation).count() == 0 and session.query(IdentityMembership).count() == 0
+
+
+@pytest.mark.parametrize("method,path,body", ADMIN_ROUTES)
+def test_admin_routes_still_authenticate_with_a_matching_or_absent_header(s, method, path, body):
+    for extra in ({}, {"X-Company-Slug": "lity"}):
+        r = call(s, method, path.format(slug="lity"), dict(extra), body)
+        assert r.status_code == 401  # no token: the header neither replaces nor bypasses authentication
+
+
+def test_matching_header_changes_nothing_for_the_global_administrator(s):
+    base = bearer(s, "admin@example.com")
+    plain = s.client.get("/api/central/companies/salcomp/members", headers=base)
+    with_header = s.client.get("/api/central/companies/salcomp/members", headers={**base, "X-Company-Slug": "salcomp"})
+    assert plain.status_code == with_header.status_code == 200
+    assert plain.json() == with_header.json()
+    invited = s.client.post("/api/central/companies/salcomp/invitations", json={"email": "n@example.com", "role": "visitor"},
+                            headers={**base, "X-Company-Slug": "salcomp"})
+    assert invited.status_code == 202
+
+
+def test_company_header_never_grants_authority_over_a_company(s):
+    with s.factory() as session:
+        admin_id = svc.get_user_by_email(session, "admin@example.com").id
+        ca.accept_invitation_with_password(session, svc.create_invitation(session, admin_id, "m@example.com", "lity", "sales_member").token, GOOD)
+    member = bearer(s, "m@example.com")
+    # Naming the company in the header does not make a Sales Member a manager of it.
+    r = s.client.get("/api/central/companies/lity/members", headers={**member, "X-Company-Slug": "lity"})
+    assert r.status_code == 403
+    r = s.client.post("/api/central/companies/lity/invitations", headers={**member, "X-Company-Slug": "lity"},
+                      json={"email": "x@example.com", "role": "visitor"})
+    assert r.status_code == 403
+    # And a header for another company cannot be used to reach it from this URL.
+    assert s.client.get("/api/central/companies/lity/members", headers={**member, "X-Company-Slug": "salcomp"}).status_code == 400
+
+
+def test_global_central_endpoints_ignore_the_company_header(s):
+    h = bearer(s, "admin@example.com")
+    assert s.client.get("/api/central/me", headers={**h, "X-Company-Slug": "anything"}).status_code == 200
+    assert s.client.post("/api/central/password/forgot", json={"email": "nobody@example.com"},
+                         headers={"X-Company-Slug": "anything"}).status_code == 200
+    assert s.client.post("/api/central/logout", headers={**h, "X-Company-Slug": "anything"}).status_code == 204

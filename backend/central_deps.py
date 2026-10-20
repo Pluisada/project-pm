@@ -153,6 +153,22 @@ def bearer_token(authorization: str | None) -> str:
     return parts[1]
 
 
+def reject_company_mismatch(company_slug: str, x_company_slug: str | None) -> None:
+    """400 when the client's `X-Company-Slug` assertion is present and differs from the URL's company.
+
+    A consistency check only: it runs before any token, membership or database is looked at, never selects a
+    company and never grants anything. An absent header is accepted.
+    """
+    if x_company_slug is not None and x_company_slug != company_slug:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Company mismatch")
+
+
+def require_matching_company_header(company_slug: str, x_company_slug: str | None = Header(None)) -> None:
+    """Route dependency for company-scoped routes that do not build a CompanyContext (the /api/central/companies/
+    administration routes). Declared on the route, so it runs before the route's own token and role checks."""
+    reject_company_mismatch(company_slug, x_company_slug)
+
+
 def company_context_dependency(
     identity_db: Callable[[], Iterator[Session]],
 ) -> Callable[..., CompanyContext]:
@@ -174,8 +190,7 @@ def company_context_dependency(
         x_company_slug: str | None = Header(None),
         session: Session = Depends(identity_db),
     ) -> CompanyContext:
-        if x_company_slug is not None and x_company_slug != company_slug:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Company mismatch")
+        reject_company_mismatch(company_slug, x_company_slug)
         try:
             return resolve_company_context(session, bearer_token(authorization), company_slug)
         except AuthenticationFailed:
@@ -191,6 +206,7 @@ def company_context_dependency(
 
 
 __all__ = [
+    "reject_company_mismatch", "require_matching_company_header",
     "CompanyContext", "CompanyAccessDenied", "company_capabilities", "resolve_company_context", "can_modify_opportunity",
     "bearer_token", "company_context_dependency", "assignable_user_ids", "sync_assignable_users", "sync_company_user", "IdentityServiceError",
     "ROLE_SUPER_ADMIN", "ROLE_SALES_MEMBER", "ROLE_VISITOR",

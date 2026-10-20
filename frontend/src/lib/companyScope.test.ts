@@ -1,6 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetActiveCompanyForTests, setActiveCompany } from "@/lib/activeCompany";
-import { COMPANY_HEADER, downloadCompanyExcel, getCompanyBoard, isAbortError, listCompanyBoards } from "@/lib/api";
+import {
+  COMPANY_HEADER,
+  centralForgotPassword,
+  downloadCompanyExcel,
+  getCentralMe,
+  getCompanyBoard,
+  inviteCompanyMember,
+  isAbortError,
+  listCompanyBoards,
+  listCompanyMembers,
+  moveCompanyCard,
+} from "@/lib/api";
 
 const json = (status: number, body: unknown = {}) => new Response(JSON.stringify(body), { status });
 const board = (id: number) => ({ id, user_id: 1, title: "B", created_at: "", updated_at: "", columns: [] });
@@ -127,5 +138,107 @@ describe("company-scoped requests", () => {
     }
     setActiveCompany("salcomp"); // a switch does not abort calls that are not company calls
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("company administration requests (/api/central/companies/{slug}/...)", () => {
+  beforeEach(() => localStorage.setItem("pm_auth_token", "tok"));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.clear();
+    resetActiveCompanyForTests();
+  });
+  const stub = (handler: (url: string, init: RequestInit) => Promise<Response>) => {
+    const fetchMock = vi.fn(handler);
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  };
+
+  it("sends the company of its own URL in X-Company-Slug and the token", async () => {
+    setActiveCompany("lity");
+    const fetchMock = stub(async () => json(200, []));
+    await listCompanyMembers("lity");
+    const [url, init] = fetchMock.mock.calls[0] as unknown as Call;
+    expect(String(url)).toMatch(/\/api\/central\/companies\/lity\/members$/);
+    const headers = init.headers as Record<string, string>;
+    expect(headers[COMPANY_HEADER]).toBe("lity");
+    expect(headers.Authorization).toBe("Bearer tok");
+  });
+
+  it("refuses to send an administration request for a company that is no longer active", async () => {
+    setActiveCompany("lity");
+    const fetchMock = stub(async () => json(202, {}));
+    setActiveCompany("salcomp");
+    expect(isAbortError(await listCompanyMembers("lity").catch((e) => e))).toBe(true);
+    expect(isAbortError(await inviteCompanyMember("lity", "x@example.com", "visitor").catch((e) => e))).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("aborts a read under way when the active company changes", async () => {
+    setActiveCompany("lity");
+    let seen: AbortSignal | null | undefined;
+    stub((_url, init) => new Promise<Response>((_resolve, reject) => {
+      seen = init.signal;
+      init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    }));
+    const pending = listCompanyMembers("lity");
+    await vi.waitFor(() => expect(seen).toBeDefined());
+    setActiveCompany("salcomp");
+    expect(isAbortError(await pending.catch((e) => e))).toBe(true);
+  });
+
+  it("leaves company-less central endpoints alone: no header, no abort on a switch", async () => {
+    setActiveCompany("lity");
+    const fetchMock = stub(async (url) => json(200, String(url).endsWith("/me") ? { email: "a@b.c", is_global_admin: false, companies: [] } : {}));
+    await getCentralMe();
+    await centralForgotPassword("a@b.c");
+    setActiveCompany("salcomp");
+    for (const [, init] of fetchMock.mock.calls as unknown as Call[]) {
+      expect((init.headers as Record<string, string>)[COMPANY_HEADER]).toBeUndefined();
+    }
+  });
+});
+
+describe("a write is never aborted by a company switch", () => {
+  beforeEach(() => localStorage.setItem("pm_auth_token", "tok"));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.clear();
+    resetActiveCompanyForTests();
+  });
+
+  it("lets a write in flight finish under the company it started in, so its outcome is known", async () => {
+    setActiveCompany("lity");
+    let release: (r: Response) => void = () => {};
+    let sent: AbortSignal | null | undefined;
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => {
+      sent = init.signal;
+      return new Promise<Response>((resolve) => { release = resolve; });
+    }));
+    const pending = inviteCompanyMember("lity", "x@example.com", "visitor");
+    await vi.waitFor(() => expect(sent).toBeDefined());
+    setActiveCompany("salcomp"); // the person switched while the invitation was being sent
+    expect(sent?.aborted).toBe(false);
+    release(json(202, {}));
+    await expect(pending).resolves.toBeUndefined();
+  });
+
+  it("reports a failed write as the real error, not as a cancellation", async () => {
+    setActiveCompany("lity");
+    vi.stubGlobal("fetch", vi.fn(async () => json(409, { detail: "The membership changed; retry" })));
+    const error = await moveCompanyCard("lity", 3, 7, 11, 0).catch((e) => e);
+    expect(isAbortError(error)).toBe(false);
+    expect(error).toMatchObject({ status_code: 409, detail: "The membership changed; retry" });
+  });
+
+  it("still lets the caller abort its own write", async () => {
+    setActiveCompany("lity");
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    })));
+    const controller = new AbortController();
+    const pending = moveCompanyCard("lity", 3, 7, 11, 0, controller.signal);
+    controller.abort();
+    expect(isAbortError(await pending.catch((e) => e))).toBe(true);
   });
 });

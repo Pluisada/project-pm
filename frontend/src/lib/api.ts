@@ -33,7 +33,9 @@ export function getErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-const COMPANY_ENDPOINT = /^\/api\/companies\/([^/?#]+)/;
+// /api/companies/{slug}/... (the workspace) and /api/central/companies/{slug}/... (members and invitations). The
+// other central endpoints (me, login, logout, password, invitations/accept|join) belong to no company.
+const COMPANY_ENDPOINT = /^\/api\/(?:central\/)?companies\/([^/?#]+)/;
 
 /** The company header lets the server refuse a request whose URL and caller disagree. It proves nothing: the
  *  server still validates the token, the membership and the role from the URL. */
@@ -41,22 +43,28 @@ export const COMPANY_HEADER = "X-Company-Slug";
 
 /**
  * Bind a request to the company named in its own URL, at the moment it starts. A request for a company other than
- * the active one is refused before it is sent (CompanyScopeError); one already under way is aborted when the
- * active company changes. Anything that is not a company endpoint (legacy and central account calls) is untouched.
+ * the active one is refused before it is sent (CompanyScopeError).
+ *
+ * A read under way is aborted when the active company changes. A write is not: the server may already have applied
+ * it, and aborting would leave its outcome unknown to the person, so it runs to completion under the company it
+ * started in and the caller discards the answer if that company is no longer current. Only the caller's own signal
+ * can abort a write. Anything that is not a company endpoint (legacy and central account calls) is untouched.
  * Call `release` when the request has finished.
  */
 function scopeCompanyRequest(
   endpoint: string,
-  callerSignal?: AbortSignal | null
+  callerSignal?: AbortSignal | null,
+  method: string = "GET"
 ): { headers: Record<string, string>; signal: AbortSignal | undefined; release: () => void } {
   const match = COMPANY_ENDPOINT.exec(endpoint);
   if (!match) return { headers: {}, signal: callerSignal ?? undefined, release: () => {} };
   const companySlug = decodeURIComponent(match[1]);
   const scope = captureScope(companySlug);
+  const isRead = method.toUpperCase() === "GET" || method.toUpperCase() === "HEAD";
   const merged = new AbortController();
   const abort = () => merged.abort();
-  if (scope.signal.aborted || callerSignal?.aborted) merged.abort();
-  scope.signal.addEventListener("abort", abort, { once: true });
+  if ((isRead && scope.signal.aborted) || callerSignal?.aborted) merged.abort();
+  if (isRead) scope.signal.addEventListener("abort", abort, { once: true });
   callerSignal?.addEventListener("abort", abort, { once: true });
   return {
     headers: { [COMPANY_HEADER]: companySlug },
@@ -76,7 +84,7 @@ async function apiCall<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`;
-  const scoped = scopeCompanyRequest(endpoint, options.signal);
+  const scoped = scopeCompanyRequest(endpoint, options.signal, options.method);
   // A FormData body needs the browser to set its own multipart boundary.
   const contentType: Record<string, string> =
     options.body instanceof FormData ? {} : { "Content-Type": "application/json" };
@@ -181,8 +189,9 @@ export interface CentralMe {
 export const ROLE_SUPER_ADMIN = "super_admin";
 export const ROLE_COMPANY_ADMIN = "admin";
 
-export async function getCentralMe(): Promise<CentralMe> {
-  return apiCall<CentralMe>("/api/central/me");
+/** Who the signed-in token belongs to. Pass `token` to ask about a token this tab has not adopted yet. */
+export async function getCentralMe(token?: string): Promise<CentralMe> {
+  return apiCall<CentralMe>("/api/central/me", token ? { headers: { Authorization: `Bearer ${token}` } } : {});
 }
 
 export async function listCompanyBoards(companySlug: string, signal?: AbortSignal): Promise<BoardResponse[]> {

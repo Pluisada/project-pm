@@ -16,7 +16,7 @@ import mailer
 import rate_limit
 from auth import APP_BASE_URL
 from central_auth import AuthenticationFailed, authenticate
-from central_deps import bearer_token
+from central_deps import bearer_token, require_matching_company_header
 from central_runtime import CentralIdentityRuntime, central_runtime
 from database_targets import COMPANY_SLUGS
 
@@ -166,7 +166,7 @@ def build_central_router(runtime: CentralIdentityRuntime) -> APIRouter:
         rate_limit.clear_login_failures(account, ip)
         return {"message": "You have joined the company. It now appears in your company list."}
 
-    @router.post("/companies/{company_slug}/invitations", status_code=202)
+    @router.post("/companies/{company_slug}/invitations", status_code=202, dependencies=[Depends(require_matching_company_header)])
     def invite(company_slug: str, body: InviteRequest, background: BackgroundTasks,
                user=Depends(current_user), session: Session = Depends(runtime.get_session)):
         """Global administrators only. The link goes to the invitee by email and is never returned."""
@@ -194,21 +194,21 @@ def build_central_router(runtime: CentralIdentityRuntime) -> APIRouter:
         except ca.IdentityServiceError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
 
-    @router.get("/companies/{company_slug}/members")
+    @router.get("/companies/{company_slug}/members", dependencies=[Depends(require_matching_company_header)])
     def members(company_slug: str, user=Depends(current_user), session: Session = Depends(runtime.get_session)):
         return _managed(ca.list_members, session, user.id, company_slug)
 
-    @router.get("/companies/{company_slug}/invitations")
+    @router.get("/companies/{company_slug}/invitations", dependencies=[Depends(require_matching_company_header)])
     def pending_invitations(company_slug: str, user=Depends(current_user),
                             session: Session = Depends(runtime.get_session)):
         return _managed(ca.list_pending_invitations, session, user.id, company_slug)
 
-    @router.post("/companies/{company_slug}/members/{user_id}/deactivate", status_code=204)
+    @router.post("/companies/{company_slug}/members/{user_id}/deactivate", status_code=204, dependencies=[Depends(require_matching_company_header)])
     def deactivate_member(company_slug: str, user_id: int, user=Depends(current_user),
                           session: Session = Depends(runtime.get_session)):
         _managed(ca.deactivate_membership, session, user.id, company_slug, user_id)
 
-    @router.put("/companies/{company_slug}/members/{user_id}/role", status_code=204)
+    @router.put("/companies/{company_slug}/members/{user_id}/role", status_code=204, dependencies=[Depends(require_matching_company_header)])
     def change_role(company_slug: str, user_id: int, body: RoleChangeRequest, user=Depends(current_user),
                     session: Session = Depends(runtime.get_session)):
         _managed(ca.change_membership_role, session, user.id, company_slug, user_id, body.role)

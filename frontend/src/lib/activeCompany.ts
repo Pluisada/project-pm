@@ -20,10 +20,14 @@ import { useSyncExternalStore } from "react";
  *  not a failure: it carries the name "AbortError", so callers that already ignore aborted requests ignore it. */
 export class CompanyScopeError extends Error {
   readonly companySlug: string;
-  constructor(companySlug: string) {
+  /** True when the work had already finished (a write, say) and only its result was discarded. A caller that must
+   *  tell the person what happened to a write has to look at this: "cancelled" would be wrong when it is true. */
+  readonly workCompleted: boolean;
+  constructor(companySlug: string, workCompleted = false) {
     super(`The active company is no longer "${companySlug}".`);
     this.name = "AbortError";
     this.companySlug = companySlug;
+    this.workCompleted = workCompleted;
   }
 }
 
@@ -87,8 +91,13 @@ export function captureScope(companySlug: string): CompanyScope {
 
 /**
  * Run a multi-step operation in one company. The scope is captured before the first step and is the only
- * place the steps take the company from, so a later step cannot be sent to a different company. If the
- * company changed meanwhile the result is discarded and CompanyScopeError is thrown instead.
+ * place the steps take the company from, so a later step cannot be sent to a different company.
+ *
+ * - A real failure of `work` (an API or network error) is rethrown unchanged, even if the company has changed.
+ * - If `work` finished but the company changed meanwhile, its result is discarded and CompanyScopeError is thrown
+ *   with `workCompleted: true`: the work happened, only the answer is dropped.
+ * - If the company changed and a later step was refused, `work` throws CompanyScopeError itself; the steps that
+ *   already ran (a write, for instance) are not undone, so `work` must record what it completed if that matters.
  */
 export async function runInCompanyScope<T>(
   companySlug: string,
@@ -96,7 +105,7 @@ export async function runInCompanyScope<T>(
 ): Promise<T> {
   const scope = captureScope(companySlug);
   const result = await work(scope);
-  scope.assertCurrent();
+  if (!scope.isCurrent()) throw new CompanyScopeError(companySlug, true);
   return result;
 }
 
