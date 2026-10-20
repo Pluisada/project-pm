@@ -232,7 +232,7 @@ SMTP status: direct delivery from the Mac to `pluisada@gmail.com` was observed o
 Scope of the first publication: **legacy single-database mode only** (`/api/mode` answers `{"auth":"legacy"}`). Central / multi-company mode is not part of it and was not validated. The release candidate is commit `175a549` (12 commits over base `69e3419`). Nothing has been published or deployed, and no migration has been run on any commercial database; this section does not claim otherwise.
 
 What it changes for operators:
-- New `cards.confidence_level`, shown in the app as "Probability level" (LOW / MEDIUM / HIGH or NULL = "Not assigned", set by hand, never inferred); the Reports screen has a "Probability level" filter and a "By probability level" table; Bid Revenue (BRL cents) is reported beside the USD Deal Value and never mixed with it (`docs/KPIS.md`).
+- New `cards.confidence_level`, shown in the app as "Probability level" (LOW / MEDIUM / HIGH or NULL = "Not assigned", set by hand, never inferred); the Reports screen has a "Probability level" filter and a "By probability level" table; commit `175a549` also reported Bid Revenue (BRL cents) beside the USD Deal Value, but that reporting was withdrawn afterwards in the working tree (2026-10-19; committed locally in `086a4a5`, not pushed): reports and KPIs carry no Bid Revenue, and Deal Value is the only financial measure (`docs/KPIS.md`). The Bid revenue columns and the importer are kept.
 - The obsolete Bid confidence columns (`card_bid_details.confidence`, `card_source_refs.source_confidence`) are dropped and their values discarded on purpose.
 - An existing legacy database must be migrated **before** starting this code, with `migrate_legacy_bid_confidence.py`. Full procedure, stop conditions and audit record: `docs/MIGRATION_PROTOCOL_BID_CONFIDENCE.md`. Summary: stop the app; consistent SQLite backup plus an external copy, with hashes; dry run (it does not print the hash, compute it with `shasum -a 256`); `--apply --expect-sha256 <approved hash>`, which writes an exclusive backup, verifies it against the approved content before changing anything, quarantines a failed one as `*.UNVERIFIED.db.bak` and rolls back on any failure; post-migration checks (obsolete columns gone, `confidence_level` NULL on every card, `integrity_check` ok, `foreign_key_check` empty, row counts unchanged); start with `PM_REQUIRE_EXISTING_DB=1`. Restore: with the app stopped, put back the verified external copy or the tool's verified `.bak` (never an `*.UNVERIFIED*` one) and deploy the previous code; confirm the hash, integrity and counts.
 
@@ -265,3 +265,62 @@ Practical schedule for the single-instance deployment (no service is added; plai
 - always an extra backup immediately before any migration, import or rollover, and before upgrading the image;
 - monthly restore test: `restore` the newest off-host copy into a scratch path, check integrity, foreign keys and row counts against the source, log date and result; never test against the live path;
 - alert (any mail or monitor you already have) when the newest backup is older than 26 hours.
+
+## Cards Excel import ledger (central mode)
+
+The Cards workbook import records every applied workbook (create or update) in `card_excel_imports`, one row per board and logical workbook (`repeat_guard`, unique per board). Operational consequences:
+
+- The record is permanent. Deleting cards does not release their workbook: importing the same workbook again is refused with 409 `already_imported` (the message gives the import number and date). To import similar data, change a business value in the workbook. Restoring older values by re-importing an earlier workbook (A, B, A) is refused for the same reason.
+- There is no undo or automatic restoration, and no purge or reset feature. Clearing a ledger row is a manual database operation on a backed-up company database and needs explicit authorization.
+- Diagnosis: `changes_json` of the row holds the created card ids and the old/new values of every updated field; the preview and the 409 answer give the import number and time.
+- Without the table the import answers 503 `import_not_initialized` (`applied: false`: nothing was read or written). Create it with `init_company_excel_imports.py` (dry run by default).
+- If the table exists but does not have the current columns or the unique `(board_id, repeat_guard)` guard (a table made by an earlier build), the import answers 503 `import_ledger_incompatible` (`applied: false`) on preview and confirm and does nothing else. The application never alters, rewrites or purges the table; `init_company_excel_imports.py` only creates a missing table and will not repair this one. The repair is a separate, explicitly authorized, backed-up operator task.
+- Fingerprint versions: the fingerprint includes its version (now 2). A ledger row recorded under version 1 has a different fingerprint, and rows from older builds have `repeat_guard` NULL, so the guard does not recognize them: a logical workbook whose only ledger record is a version-1 row can be applied once more, and then it is guarded normally. Nothing rewrites old rows: no automatic migration, purge, rewrite or reset is implemented. Whether any real database holds such rows has not been established (it cannot be known from the code, and none was inspected). Before a pilot or production import into an environment that may contain legacy ledger records, an authorized operator must perform the read-only check below on a backed-up copy; do not rely on the assumption that no such rows exist.
+- Read-only check for an authorized operator, on a COPY of the company database taken after a backup (never `backend/pm.db`, never the live file): `sqlite3 <copy> "PRAGMA table_info(card_excel_imports); SELECT COUNT(*), SUM(repeat_guard IS NULL) FROM card_excel_imports;"`. A table without `repeat_guard`, or any row with `repeat_guard` NULL, needs review before importing a workbook that may have been applied before. The query returns counts only, no card data.
+- Export and template downloads are Super Admin or the company Admin of that company (Part 2D-G12); other roles and other companies are refused before the company database opens.
+
+## Central mode (Salcomp, Lity, Valor Log): configuration, users and boards (Part 2A; nothing here has been run on a server)
+
+Status: prepared and tested in development only, on disposable databases. No commercial or production database was created or opened (disposable development databases were), no container was started, and the VPS was not touched. The first publication (C6 section above) is legacy-only; central mode is a separate release.
+
+### Which file to use
+
+`docker-compose.central.yml` is a standalone file, used **instead of** `docker-compose.yml` + `docker-compose.prod.yml`, never together with them:
+
+```bash
+docker compose --env-file /secure/pm-central.env -p pm-central -f docker-compose.central.yml config
+```
+
+Why a new file rather than editing the two existing ones: they are built around one legacy database (`DATABASE_URL`, a `pm.db` bind mount, `PM_REQUIRE_EXISTING_DB`). Compose cannot remove an inherited variable or mount through an override, so a central deployment built on them would still carry the legacy defaults, which is the silent fallback to `pm.db` / `pm-commercial.db` that must not exist. The two existing files are unchanged, so legacy behaviour is unchanged. The central file sets `PM_ENV=production` and `PM_AUTH_MODE=central`, has no `DATABASE_URL`, and every database variable is required with no default (compose refuses to run until each is named).
+
+### Required variables (names and purpose; values live in the env file kept outside the repository)
+
+| Variable | Purpose |
+|---|---|
+| `PM_IDENTITY_DATABASE_URL` (becomes `IDENTITY_DATABASE_URL`) | identity database: users, companies, memberships, invitations, tokens, audit. `sqlite:////data/<file>` (four slashes, container path) |
+| `PM_COMPANY_DB_SALCOMP`, `PM_COMPANY_DB_LITY`, `PM_COMPANY_DB_VALOR_LOG` | the three operational databases, one file each, same URL form |
+| `PM_CENTRAL_DATA_HOST_PATH`, `PM_CENTRAL_DATA_CONTAINER_PATH` | host directory holding the four files, and where it is mounted (for example `/data`); SQLite writes journal files beside the databases, so it is a directory mount, writable by uid 10001 |
+| `SECRET_KEY` | JWT signing key, at least 32 characters, no default |
+| `PM_PUBLIC_URL` | public https origin used in emailed invitation and reset links |
+| `SMTP_HOST`, `SMTP_FROM` (and optional `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`) | invitations and password resets are emailed; without working SMTP nobody can be activated |
+| `OPENROUTER_API_KEY` | optional, only for the AI assistant |
+| `RATE_LIMIT_TRUSTED_PROXIES`, `PM_BEHIND_PROXY`, `CORS_ALLOWED_ORIGINS`, `HSTS_ENABLED` | optional, as in the legacy file |
+
+Startup validation (`production_config.central_database_problems`, run in production when `PM_AUTH_MODE=central`; `DATABASE_URL` is not required and not consulted for anything but collision checks): all four variables must be set; each must be a plain SQLite file URL (no query string, no `..`, no `file:` URI); each file must already exist (nothing is created at startup); the four files must be distinct and distinct from `DATABASE_URL`'s file; and none may be a development or commercial database (`pm.db`, `pm.db.bak`, `pm-commercial.db`, the permanent Salcomp path) or a SQLite sidecar. Every problem is reported at once and the app does not start. Legacy mode is unchanged: it still requires `DATABASE_URL` and `PM_REQUIRE_EXISTING_DB=1`. Not verified: file ownership on a Linux host, the TLS proxy, real SMTP, and an actual start of the container.
+
+### Users, roles and invitations
+
+- **Who may invite:** only the global administrator (Super Admin, `identity_users.is_global_admin`; reported as role `super_admin` in every company; created with `identity_admin_cli.py`, no HTTP path grants it). There is no public sign-up in central mode and the legacy `SIGNUP_ALLOWED_*` domain list does not apply: any email address may be invited, because Lity and Valor Log users may use other domains. Whether to restrict invitations to approved domains is a business decision that has **not** been taken; the behaviour is unchanged (the Super Admin decides each address).
+- **How:** after signing in, the Super Admin selects a company; the "Users of <company>" panel has an email field and a role (Sales Member or Visitor) and sends `POST /api/central/companies/{slug}/invitations`. The single-use link (`/?central_invite_token=...`, valid 7 days) is emailed and never shown or logged; only its SHA-256 is stored.
+- **Accepting:** the link opens "Accept your invitation". A new person chooses a password (8 to 128 characters with upper-case, lower-case, number and symbol) and the account, verified email and membership are created in one transaction. A person who already has an account uses "I already have an account" and proves it with their own email and password (`/invitations/join`) to join another company. Invalid, expired, revoked and already-used links all give the same answer. The page removes the token from the address bar immediately and keeps it in memory only; it is never written to browser storage.
+- **Password reset:** "Forgot my password?" on the sign-in page sends a single-use one-hour link (`/?central_reset_token=...`); the answer is the same for every address.
+- **Roles:** Super Admin (global, all companies, administers boards, columns, cards, imports, products, members); Sales Member (`sales_member`: edits and moves only their own cards, moves forward only); Visitor (`visitor`: read only). The company-level `admin` role exists in the schema but is reserved: the interface never offers it and no invitation can carry it (the Super Admin's role-change API, `PUT /api/central/companies/{slug}/members/{id}/role`, does accept it, but nothing in the interface calls it that way). The Super Admin can change a member between Sales Member and Visitor and deactivate a membership; a Sales Member or Visitor cannot see or call any of this (403).
+- **Availability for assignment:** a person is assignable in a company when the central database says they are an active Sales Member there (or an active Super Admin). Before the Cards import validates `salesperson_email`, the import preview and confirmation create the missing company-local reference rows of exactly those people (idempotent, one row per person, no role or credential stored, nothing for visitors, deactivated members or other companies), so an invited salesperson who has not yet written anything is not rejected. The import is still all-or-nothing and the email rules are unchanged. Remaining limitation: assigning a card by hand (card edit, lead options list) still needs the local row, which exists once the person has written in the company or after any Cards import preview of that company.
+
+### Boards and columns
+
+No initializer creates a board or a column, and none is added automatically. The Super Admin prepares each company in the app: pick the company, create a board (any title), then add stages. Nothing depends on a fixed board id; the Excel template and export are per board and the Cards import matches the workbook's `stage` against the board's column titles (case-insensitive). A stage kind is `open`, `won` or `lost` (at most one won and one lost per board). The recommended starting set, the same as the legacy seeded pipeline, is: `1st Contact` (open), `F2F Meeting` (open), `RFI` (open), `Proposal` (open), `Award` (won), `Lost` (lost). It is created by hand through the interface, once per company, so it cannot be duplicated by a restart; the existing stages of a board are never changed except by the Super Admin through the same screen.
+
+### Pending decisions and limits
+
+- Invitation domain policy (above); Admin-per-company role (reserved, no privileges); manual assignment before first write (above); real SMTP, TLS proxy, Linux ownership of the mounted directory and the real start of the stack are unverified; the full backend suite has not been run for this change.
