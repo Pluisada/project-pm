@@ -13,12 +13,15 @@ revert run here too. Both reuse the legacy engines over the company session: the
 Undo steps carry `expect` (a conflict answers 409), a Visitor is refused before the company database is opened, and
 import previews are bound to the company they were made in.
 """
+import hmac
+import logging
 from collections.abc import Callable, Iterator
 from datetime import date
 from typing import List, Optional
 
 import rate_limit
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from card_rules import (
@@ -28,6 +31,7 @@ from card_rules import (
     audit_deletion,
     audit_new_card_owner,
     move_denial,
+    new_card_deal_fields,
     new_card_fields,
 )
 from central_deps import (
@@ -37,11 +41,15 @@ from central_deps import (
     can_manage_cards,
     can_manage_imports,
     company_access,
+    company_capabilities,
     company_context_dependency,
     read_only,
+    sync_assignable_users,
     sync_company_user,
 )
+from bid_import_revert import is_lock_error
 from central_runtime import central_runtime
+from company_database import begin_write
 from company_runtime import CompanyRuntime, company_runtime
 from models import Board, Card, Column, CompanyUser, UndoEntry
 from lead_options import ConfidenceFilter
@@ -59,7 +67,15 @@ from routes import (
     load_board_detail,
 )
 from product_catalog import ProductError, card_count, catalog_names, create_product, delete_product, has_catalog, list_products, rename_product
+from cards_excel_import import ImportRefused, apply_plan, build_plan, issue_dict, plan_body
+from commercial_excel_reader import read_commercial_excel
+from excel_cards_writer import XLSX_MEDIA_TYPE, build_workbook, export_rows
+from excel_import_ledger import has_ledger, ledger_compatible
+from identity_models import IdentityUser
 from import_routes import (
+    REVERT_RETRY_AFTER_SECONDS,
+    _file_too_large,
+    _read_form,
     confirm_import_impl,
     get_import_impl,
     list_imports_impl,
@@ -100,6 +116,8 @@ from schemas import (
     RevertResult,
     UndoStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def build_company_router(
@@ -146,6 +164,13 @@ def build_company_router(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
         return context
 
+    def get_excel_context(context: CompanyContext = Depends(get_writer_context)) -> CompanyContext:
+        """Excel export and template: Super Admin or this company's Admin (the company comes from the token's context
+        and the path, never from the request body), before any company database opens."""
+        if not context.can_manage_imports:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        return context
+
     def fresh_role(identity: Session, context: CompanyContext) -> str:
         """The caller's role in this company read again from the identity database now (not the request-start
         snapshot): 403 when the user, the membership or the company is no longer active, or is read-only."""
@@ -158,18 +183,28 @@ def build_company_router(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
         return access.role
 
+    def sync_local_references(sync) -> None:
+        """Run a company-local reference sync; contention answers 503 database_busy, any other failure a fixed 503."""
+        try:
+            sync()
+        except IdentityServiceError as exc:
+            if is_lock_error(exc.__cause__):  # temporary contention: same answer as main.database_error_handler
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={"code": "database_busy", "message": "The database is busy. Try again shortly."},
+                    headers={"Retry-After": REVERT_RETRY_AFTER_SECONDS},
+                ) from None
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Company data is unavailable"
+            ) from None
+
     def writer_session(identity: Session, context: CompanyContext) -> Iterator[Session]:
         """A company session for a writer, with the actor's local reference row ensured and stage events attributed.
 
         The row is created only here (a write the central membership already authorized), never on a GET.
         """
         for db in runtime.session_for(context):
-            try:
-                sync_company_user(identity, db, context.user_id, context.company_slug)
-            except IdentityServiceError:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Company data is unavailable"
-                ) from None
+            sync_local_references(lambda: sync_company_user(identity, db, context.user_id, context.company_slug))
             set_stage_context(db, context, SOURCE_API)
             yield db
 
@@ -224,13 +259,14 @@ def build_company_router(
         db: Session = Depends(get_writer_db),
     ):
         """Create a card. A Sales Member's card is assigned to them; admins may assign later."""
+        begin_write(db)  # the target column must still exist when the card is inserted (a column delete may race)
         find_board(db, board_id)
         column = db.query(Column).filter(Column.id == card.column_id, Column.board_id == board_id).first()
         if column is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Column not found")
         db_card = Card(
             column_id=card.column_id, title=card.title, details=card.details, position=card.position,
-            **new_card_fields(context, {}),
+            **new_card_fields(context, new_card_deal_fields(card)),
         )
         db.add(db_card)
         db.flush()
@@ -277,6 +313,7 @@ def build_company_router(
         context: CompanyContext = Depends(get_writer_context),
         db: Session = Depends(get_writer_db),
     ):
+        begin_write(db)  # origin, target and both columns' positions are read under the write lock
         find_board(db, board_id)
         target = db.query(Column).filter(Column.id == move.column_id, Column.board_id == board_id).first()
         if target is None:
@@ -288,8 +325,24 @@ def build_company_router(
         if (card.column_id, card.position) != (move.column_id, move.position):
             record_undo(db, context, board_id, f'Move "{card.title}" back to {card.column.title}',
                         [undo_move(card, move.column_id)])
+        source_id = card.column_id
         card.column_id = move.column_id
-        card.position = move.position
+        # `position` is the index the card takes among the target column's cards: the column is renumbered
+        # 0..n-1 so the order is exact (no ties). Only positions change here, never card content.
+        others = sorted(
+            (c for c in db.query(Card).filter(Card.column_id == move.column_id, Card.id != card.id).all()),
+            key=lambda c: (c.position, c.id),
+        )
+        others.insert(min(move.position, len(others)), card)
+        for index, member in enumerate(others):
+            if member.position != index:
+                member.position = index
+        if source_id != move.column_id:  # close the gap the card left behind, keeping the others' order
+            rest = sorted(db.query(Card).filter(Card.column_id == source_id, Card.id != card.id).all(),
+                          key=lambda c: (c.position, c.id))
+            for index, member in enumerate(rest):
+                if member.position != index:
+                    member.position = index
         db.commit()
         db.refresh(card)
         return card
@@ -357,13 +410,28 @@ def build_company_router(
         context: CompanyContext = Depends(get_board_admin_context),
         db: Session = Depends(get_board_admin_db),
     ):
+        begin_write(db)  # the stage-kind check and the renumbering must see the committed state
         find_board(db, board_id)
         _check_stage_kind(db, board_id, column.stage_kind)
         db_column = Column(board_id=board_id, title=column.title, position=column.position, stage_kind=column.stage_kind)
         db.add(db_column)
-        db.commit()
+        db.flush()  # the new id is the tie-break when legacy data already has duplicate positions
+        place_column(db, board_id, db_column, column.position)
+        db.commit()  # one commit: the insert and the renumbering are applied together or not at all
         db.refresh(db_column)
         return db_column
+
+    def place_column(db: Session, board_id: int, column: Column, index: int) -> None:
+        """Put `column` at 0-based `index` among the board's columns and renumber the board 0..n-1 (unique, no gaps).
+        An index past the end means last. Only `position` changes; the caller commits."""
+        others = sorted(
+            db.query(Column).filter(Column.board_id == board_id, Column.id != column.id).all(),
+            key=lambda c: (c.position, c.id),
+        )
+        others.insert(min(index, len(others)), column)
+        for number, member in enumerate(others):
+            if member.position != number:
+                member.position = number
 
     def find_column(db: Session, board_id: int, column_id: int) -> Column:
         find_board(db, board_id)
@@ -380,14 +448,15 @@ def build_company_router(
         context: CompanyContext = Depends(get_board_admin_context),
         db: Session = Depends(get_board_admin_db),
     ):
+        begin_write(db)
         column = find_column(db, board_id, column_id)
         if column_update.title is not None:
             column.title = column_update.title
-        if column_update.position is not None:
-            column.position = column_update.position
         if column_update.stage_kind is not None:
             _check_stage_kind(db, board_id, column_update.stage_kind, column)
             column.stage_kind = column_update.stage_kind
+        if column_update.position is not None:
+            place_column(db, board_id, column, column_update.position)
         db.commit()
         db.refresh(column)
         return column
@@ -399,14 +468,52 @@ def build_company_router(
         context: CompanyContext = Depends(get_admin_context),
         db: Session = Depends(get_admin_db),
     ):
-        """Delete a column and its cards. Administrators only."""
-        db.delete(find_column(db, board_id, column_id))
+        """Delete an empty column. Administrators only; a column that still holds cards is refused (409)."""
+        begin_write(db)  # the 'column is empty' check and the delete (which cascades to cards) are one unit
+        column = find_column(db, board_id, column_id)
+        if db.query(Card.id).filter(Card.column_id == column.id).first() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Column cannot be deleted while it contains cards. Move the cards to another column first.",
+            )
+        db.delete(column)
         db.commit()
 
     @router.get("/boards/{board_id}", response_model=BoardDetail)
     def get_company_board(board_id: int, db: Session = Depends(get_company_db)) -> BoardDetail:
         """Board with all columns and cards, from the company's database."""
         return load_board_detail(db, board_id)
+
+    def excel_response(content: bytes, filename: str) -> Response:
+        # The filename is built by the server from validated values only, never from client input.
+        return Response(
+            content=content,
+            media_type=XLSX_MEDIA_TYPE,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"},
+        )
+
+    @router.get("/boards/{board_id}/excel/export")
+    def export_company_cards(
+        board_id: int,
+        context: CompanyContext = Depends(get_excel_context),
+        db: Session = Depends(get_company_db),
+        identity: Session = Depends(identity_db),
+    ):
+        """The board's cards as the commercial Excel workbook. Super Admin or this company's Admin (the file carries salesperson emails):
+        the role check runs before the company database opens; the company comes from the token's context."""
+        find_board(db, board_id)
+        ids = {i for (i,) in db.query(Card.salesperson_id).join(Column).filter(
+            Column.board_id == board_id, Card.salesperson_id.isnot(None)).distinct()}
+        emails = {}
+        if ids:
+            emails = {u.id: u.email for u in identity.query(IdentityUser).filter(IdentityUser.id.in_(ids)).all()}
+        filename = f"cards-{context.company_slug}-board-{board_id}-{date.today():%Y%m%d}.xlsx"
+        return excel_response(build_workbook(export_rows(db, board_id, emails)), filename)
+
+    @router.get("/boards/{board_id}/excel/template")
+    def download_cards_template(board_id: int, context: CompanyContext = Depends(get_excel_context)):
+        """The empty import template (same workbook, zero cards). Needs no company data, so no database is opened."""
+        return excel_response(build_workbook([]), "cards-import-template.xlsx")
 
     @router.get("/boards/{board_id}/report", response_model=BoardReport)
     def get_company_board_report(
@@ -481,6 +588,7 @@ def build_company_router(
         db: Session = Depends(get_writer_db),
     ):
         """Reverse the caller's last change on this board in one transaction (same rules as the legacy undo)."""
+        begin_write(db)  # the entry, the cards it expects and the positions it restores are read under the lock
         try:
             description = apply_undo(db, context, board_id, admin=context.can_manage_cards)
             db.commit()
@@ -564,6 +672,141 @@ def build_company_router(
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
         return revert_import_impl(db, batch_id, context, body.plan_fingerprint, recheck=recheck)
+
+    # --- Cards workbook import (not the Bid import): same roles as the Bid import, checked before the company DB opens ---
+
+    def refusal_http(exc: ImportRefused) -> HTTPException:
+        return HTTPException(status_code=exc.status, detail={"code": exc.code, "message": exc.message, **exc.extra})
+
+    def busy_http() -> HTTPException:
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "import_busy", "message": "The database is busy; nothing was changed. Try again shortly.",
+                    "applied": False},
+            headers={"Retry-After": REVERT_RETRY_AFTER_SECONDS},
+        )
+
+    def require_import_ledger(db: Session) -> None:
+        """Without its ledger a repeated request could not be made safe, so the import is off (see excel_import_ledger)."""
+        if not has_ledger(db):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"code": "import_not_initialized", "message": "The Excel import is not set up for this company yet",
+                        "applied": False},  # raised before anything is read or written
+            )
+        if not ledger_compatible(db):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"code": "import_ledger_incompatible",
+                        "message": "The Excel import ledger of this company has an unexpected structure; the import is off until an operator reviews it",
+                        "applied": False},  # nothing was read from or written to the ledger
+            )
+
+    def assignable_by_email(identity: Session, slug: str, db: Session) -> dict[str, int]:
+        """Lower-cased e-mail -> canonical user id of everyone the central database lets this company assign to.
+
+        Their company-local reference rows are ensured first (idempotent, central eligibility only), so an invited
+        salesperson who never wrote in the company is not rejected by the all-or-nothing import. Runs before the
+        import's write lock is taken; the rows are references, not import data."""
+        sync_local_references(lambda: sync_assignable_users(identity, db, slug))
+        ids = assignable_user_ids(identity, slug)
+        if not ids:
+            return {}
+        return {u.email.lower(): u.id for u in identity.query(IdentityUser).filter(IdentityUser.id.in_(ids)).all()}
+
+    async def read_cards_workbook(request: Request):
+        data, filename, _, fields = await _read_form(request)
+        read = read_commercial_excel(data, filename)
+        if not read.ok:
+            if any(issue.code == "file_too_large" for issue in read.file_errors):
+                raise _file_too_large()
+            raise HTTPException(status_code=422, detail={
+                "code": "file_rejected", "message": "The file can't be imported",
+                "file_errors": [issue_dict(issue) for issue in read.file_errors],
+            })
+        return read, fields
+
+    @router.post("/boards/{board_id}/excel/import/preview")
+    async def preview_cards_import(
+        board_id: int,
+        request: Request,
+        context: CompanyContext = Depends(get_import_admin_context),
+        _: None = Depends(limit_company_imports),
+        db: Session = Depends(get_import_admin_db),
+        identity: Session = Depends(identity_db),
+    ):
+        """Validate the Cards workbook against this board and report what a confirmation would create and update.
+        Writes nothing."""
+        find_board(db, board_id)
+        require_import_ledger(db)
+        read, _fields = await read_cards_workbook(request)
+        plan = build_plan(db, board_id, context.company_slug, read, assignable_by_email(identity, context.company_slug, db))
+        return plan_body(plan, read)
+
+    @router.post("/boards/{board_id}/excel/import/confirm", status_code=201)
+    async def confirm_cards_import(
+        board_id: int,
+        request: Request,
+        context: CompanyContext = Depends(get_import_admin_context),
+        _: None = Depends(limit_company_imports),
+        db: Session = Depends(get_import_admin_db),
+        identity: Session = Depends(identity_db),
+    ):
+        """Apply the workbook (fields: file, confirm=true, plan_digest from the preview) all-or-nothing. The server
+        validates everything again under the write lock; a repeated or concurrent confirmation of a workbook of new
+        cards, or of any workbook applied before on this board, is refused with 409 already_imported and changes nothing."""
+        find_board(db, board_id)
+        require_import_ledger(db)
+        read, fields = await read_cards_workbook(request)
+        if fields.get("confirm") != "true":
+            raise HTTPException(status_code=422, detail={"code": "confirm_required", "message": "Set confirm=true to apply the import"})
+
+        def recheck():
+            if not can_manage_imports(fresh_role(identity, context)):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+        recheck()
+        people = assignable_by_email(identity, context.company_slug, db)  # syncs references (commits): before the write lock
+        try:
+            begin_write(db)  # everything below is decided on the state this request will write to
+            plan = build_plan(db, board_id, context.company_slug, read, people)
+            refusal = plan.refusal()
+            if refusal:
+                raise refusal
+            if not hmac.compare_digest(plan.digest, fields.get("plan_digest") or ""):
+                raise ImportRefused(409, "preview_stale", "The workbook or the board changed since the preview; build the preview again")
+            result = apply_plan(db, board_id, plan, context, filename=read.file.filename,
+                                file_sha256=read.file.sha256, recheck=recheck)
+            db.commit()
+        except ImportRefused as exc:
+            db.rollback()
+            raise refusal_http(exc) from None
+        except CardPermissionDenied:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied") from None
+        except InvalidCardUpdate:
+            db.rollback()
+            raise HTTPException(status_code=422, detail={"code": "invalid_card_data", "message": "A row could not be applied; nothing was imported"}) from None
+        except HTTPException:
+            db.rollback()
+            raise
+        except Exception as exc:
+            db.rollback()
+            if isinstance(exc, OperationalError) and is_lock_error(exc):
+                raise busy_http() from None
+            logger.error("Cards import failed (%s)", type(exc).__name__)
+            raise HTTPException(status_code=500, detail={
+                "code": "import_failed", "message": "The import failed and nothing was changed", "applied": False}) from None
+        return {**result, "applied": True}
+
+    @router.get("/me")
+    def get_company_me(context: CompanyContext = Depends(get_context)):
+        """Who the caller is in this company and what they may do. Central database only: no company database is
+        opened and no personal data is returned. `user_id` is identity_users.id, the value of CompanyUser.id and
+        of Card.salesperson_id for cards assigned to the caller. Everything is resolved from the token and the
+        slug in the path; a user with no active access to the company gets the same 403 as any other route."""
+        return {"user_id": context.user_id, "company_slug": context.company_slug, "role": context.role,
+                "capabilities": company_capabilities(context)}
 
     @router.get("/lead-options", response_model=LeadOptionsResponse)
     def get_company_lead_options(

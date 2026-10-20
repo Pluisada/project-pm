@@ -40,8 +40,8 @@ def test_creates_the_complete_versioned_schema(tmp_path, slug):
     assert path == (tmp_path / f"{slug}.db").resolve()
     names, version = tables(path)
     assert version == COMPANY_SCHEMA_VERSION == 4
-    # products: the optional catalog table, outside the required contract
-    assert names == set(REQUIRED_COMPANY_SCHEMA) | {"products"} and "users" in names
+    # products and the Cards-import ledger: optional tables, outside the required contract
+    assert names == set(REQUIRED_COMPANY_SCHEMA) | {"products", "card_excel_imports"} and "users" in names
     assert validate_company_schema(slug, env) is None
     assert sorted(p.name for p in tmp_path.iterdir()) == [f"{slug}.db"]  # no sidecars left behind
 

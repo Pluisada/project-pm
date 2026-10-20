@@ -24,6 +24,7 @@ import json
 from datetime import date
 
 from pydantic import ValidationError
+from sqlalchemy.orm import object_session
 
 from card_rules import CardPermissionDenied, apply_card_updates, audit_deletion, can_edit_card
 from stage_history import SOURCE_UNDO, set_stage_context
@@ -67,6 +68,24 @@ def undo_update(card: Card, updates: dict) -> dict | None:
 def undo_create(card: Card) -> dict:
     """Step removing a just-created card (call after creating it)."""
     return {"op": "delete", "card_id": card.id, "expect": {"column_id": card.column_id, **card_fields(card)}}
+
+
+def _restore_position(card: Card, column_id: int, index: int) -> None:
+    """Put `card` back at `index` in `column_id`, renumbering both columns 0..n-1 (no ties, no gaps)."""
+    db = object_session(card)
+    source_id = card.column_id
+    card.column_id = column_id
+    others = sorted(db.query(Card).filter(Card.column_id == column_id, Card.id != card.id).all(),
+                    key=lambda c: (c.position, c.id))
+    others.insert(min(max(index, 0), len(others)), card)
+    columns = [others]
+    if source_id != column_id:
+        columns.append(sorted(db.query(Card).filter(Card.column_id == source_id, Card.id != card.id).all(),
+                              key=lambda c: (c.position, c.id)))
+    for members in columns:
+        for i, member in enumerate(members):
+            if member.position != i:
+                member.position = i
 
 
 UNRESTORABLE = {"op": "unrestorable"}
@@ -172,8 +191,7 @@ def apply_undo(db, user: User, board_id: int, *, admin: bool | None = None) -> s
             card = _board_card(db, board_id, step["card_id"])
             if not can_edit_card(user, card, admin=admin):
                 raise UndoError("Can't undo: you can only move opportunities assigned to you")
-            card.column_id = step["column_id"]
-            card.position = step["position"]
+            _restore_position(card, step["column_id"], step["position"])
         elif op == "update":
             card = _board_card(db, board_id, step["card_id"])
             # Goes through the normal update path, so a member's undo of an

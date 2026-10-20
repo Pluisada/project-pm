@@ -184,3 +184,30 @@ def test_invite_authority_is_read_from_the_database_not_the_token(s, monkeypatch
     assert s.client.post("/api/central/companies/lity/invitations", headers=h, json=body).status_code == 403
     with s.factory() as session:
         assert session.query(IdentityInvitation).count() == 0
+
+
+def test_expired_invitation_link_is_refused_and_creates_nothing(s):
+    from datetime import timedelta
+
+    with s.factory() as session:
+        admin_id = svc.get_user_by_email(session, "admin@example.com").id
+        issued = svc.create_invitation(session, admin_id, "late@example.com", "lity", "sales_member",
+                                       now=svc._now() - timedelta(days=30))
+    r = s.client.post("/api/central/invitations/accept", json={"token": issued.token, "password": GOOD})
+    assert r.status_code == 400 and issued.token not in r.text
+    assert s.client.post("/api/central/invitations/accept", json={"token": "not-a-token", "password": GOOD}).status_code == 400
+    with s.factory() as session:
+        assert svc.get_user_by_email(session, "late@example.com") is None
+        assert session.query(IdentityMembership).count() == 0
+
+
+def test_invitation_to_one_company_grants_nothing_in_another(s):
+    h = bearer(s, "admin@example.com")
+    s.client.post("/api/central/companies/lity/invitations", headers=h, json={"email": "n@example.com", "role": "sales_member"})
+    token = s.sent[-1][2].split("central_invite_token=")[1].split()[0]
+    assert s.client.post("/api/central/invitations/accept", json={"token": token, "password": GOOD}).status_code == 200
+    n = bearer(s, "n@example.com")
+    assert [c["slug"] for c in s.client.get("/api/central/me", headers=n).json()["companies"]] == ["lity"]
+    assert s.client.get("/api/central/companies/salcomp/members", headers=n).status_code == 403
+    assert s.client.get("/api/central/companies/lity/members", headers=n).status_code == 403  # a sales member is no manager
+    assert s.client.put("/api/central/companies/lity/members/1/role", headers=n, json={"role": "visitor"}).status_code == 403

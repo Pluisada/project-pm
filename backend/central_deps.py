@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from central_auth import AuthenticationFailed, user_for_token
 from identity_service import (
     SUPER_ADMIN_ROLE, IdentityServiceError, assignable_user_ids, can_grant_admin, can_manage_boards, can_manage_cards, can_manage_imports, can_manage_members, can_manage_products, can_review,
-    company_access, is_admin_level, is_super, read_only, sync_company_user,
+    company_access, is_admin_level, is_super, read_only, sync_assignable_users, sync_company_user,
 )
 
 ROLE_SUPER_ADMIN = SUPER_ADMIN_ROLE
@@ -114,6 +114,25 @@ def resolve_company_context(session: Session, token: str, company_slug: str) -> 
     )
 
 
+def company_capabilities(context: CompanyContext) -> dict[str, bool]:
+    """What the caller may do in the company, derived only from the predicates the write routes already enforce.
+
+    A report for the UI, never an authority: every route still checks for itself. "canEditOwnCards" is a
+    ceiling (a Sales Member edits and moves forward only cards assigned to them; unassigned cards are admin-only).
+    "canManageBoards" covers board creation and column create/edit; deleting a column stays Super Admin only.
+    """
+    return {
+        "readOnly": context.read_only,
+        "canEditOwnCards": not context.read_only,
+        "canEditAnyCard": context.can_manage_cards,
+        "canMoveBack": context.can_manage_cards,
+        "canDeleteCards": context.can_manage_cards,
+        "canAssignSalesperson": context.can_manage_cards,
+        "canManageBoards": context.can_manage_boards,
+        "canImport": context.can_manage_imports,
+    }
+
+
 def can_modify_opportunity(context: CompanyContext, assigned_user_id: int | None) -> bool:
     """Coarse write gate only: the business rules (stage transitions, assignment) stay in card_rules.
 
@@ -165,8 +184,8 @@ def company_context_dependency(
 
 
 __all__ = [
-    "CompanyContext", "CompanyAccessDenied", "resolve_company_context", "can_modify_opportunity",
-    "bearer_token", "company_context_dependency", "assignable_user_ids", "sync_company_user", "IdentityServiceError",
+    "CompanyContext", "CompanyAccessDenied", "company_capabilities", "resolve_company_context", "can_modify_opportunity",
+    "bearer_token", "company_context_dependency", "assignable_user_ids", "sync_assignable_users", "sync_company_user", "IdentityServiceError",
     "ROLE_SUPER_ADMIN", "ROLE_SALES_MEMBER", "ROLE_VISITOR",
     # re-exported so the company routes never import identity_service directly (test_identity_service guard)
     "can_manage_cards", "can_manage_imports", "company_access", "read_only",

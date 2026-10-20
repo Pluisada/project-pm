@@ -45,7 +45,18 @@ def test_company_admin_creates_boards_and_creates_and_edits_columns(rig):
     col = send(rig, "post", "/boards/1/columns", token, json={"title": "Extra", "position": 5, "stage_kind": "open"})
     assert col.status_code == 201 and col.json()["title"] == "Extra"
     upd = send(rig, "put", f"/boards/1/columns/{col.json()['id']}", token, json={"title": "Renamed", "position": 6})
-    assert upd.status_code == 200 and (upd.json()["title"], upd.json()["position"]) == ("Renamed", 6)
+    # A position past the end is normalized to the last valid index (the board holds three columns here, so 2):
+    # the response reports the effective position, a later read of the board shows the same order, and the
+    # positions of all columns stay unique and contiguous.
+    assert upd.status_code == 200 and (upd.json()["title"], upd.json()["position"]) == ("Renamed", 2)
+    detail = send(rig, "get", "/boards/1", token)
+    assert detail.status_code == 200
+    cols = sorted(detail.json()["columns"], key=lambda c: c["position"])
+    assert len(cols) == 3
+    assert [c["position"] for c in cols] == [0, 1, 2]
+    assert cols[-1]["id"] == col.json()["id"] and cols[-1]["title"] == "Renamed"
+    assert rig.sql("SELECT id, position FROM columns WHERE board_id = 1 ORDER BY position") == [
+        (c["id"], c["position"]) for c in cols]
 
 
 def test_validation_and_errors_match_the_super_admin(rig):

@@ -144,6 +144,14 @@ def test_member_create_is_assigned_to_self_with_audit_and_event(rig):
         ("created", uid, "api")]
 
 
+def test_create_stores_annual_values_in_usd_and_rejects_negatives(rig):
+    r = rig.call("post", "/cards", admin(rig), json={"column_id": 1, "title": "v", "deal_value": 100, "deal_value_next_year": 40})
+    assert r.status_code == 201
+    assert (r.json()["deal_value"], r.json()["deal_value_next_year"], r.json()["currency"]) == (100, 40, "USD")
+    bad = rig.call("post", "/cards", admin(rig), json={"column_id": 1, "title": "v", "deal_value_next_year": -1})
+    assert bad.status_code == 422
+
+
 def test_create_validates_column(rig):
     assert rig.call("post", "/cards", admin(rig), json={"column_id": 99, "title": "x"}).status_code == 404
     assert rig.call("post", "/cards", admin(rig), json={"column_id": 1, "title": "x"}).json()["salesperson_id"] is None
@@ -194,6 +202,31 @@ def test_move_rules(rig):
     assert rig.call("put", "/cards/1/position", token, json={"column_id": 1}).status_code == 403  # backward
     assert rig.call("put", "/cards/1/position", admin(rig), json={"column_id": 1}).status_code == 200
     assert rig.call("put", "/cards/1/position", admin(rig), json={"column_id": 99}).status_code == 404
+
+
+def test_move_renumbers_target_column_so_order_is_exact(rig):
+    order = lambda col: [r[0] for r in rig.sql("SELECT id FROM cards WHERE column_id = ? ORDER BY position, id", (col,))]
+    positions = lambda col: [r[0] for r in rig.sql("SELECT position FROM cards WHERE column_id = ? ORDER BY position", (col,))]
+    assert rig.call("put", "/cards/2/position", admin(rig), json={"column_id": 1, "position": 0}).status_code == 200
+    assert order(1) == [2, 1] and positions(1) == [0, 1]  # reorder inside the same column
+    assert rig.call("put", "/cards/1/position", admin(rig), json={"column_id": 2, "position": 0}).status_code == 200
+    assert rig.call("put", "/cards/2/position", admin(rig), json={"column_id": 2, "position": 0}).status_code == 200
+    assert order(2) == [2, 1] and positions(2) == [0, 1]  # between columns, inserted at the index
+    assert rig.call("put", "/cards/1/position", admin(rig), json={"column_id": 2, "position": 99}).status_code == 200
+    assert order(2) == [2, 1]  # an index past the end means last
+    assert rig.call("put", "/cards/1/position", admin(rig), json={"column_id": 2, "position": -1}).status_code == 422
+
+
+def test_member_cannot_move_or_reorder_cards_of_others(rig):
+    uid, token = member(rig)
+    rig.assign(1, uid)
+    # card 2 is unassigned: neither another column nor a reorder of its own column is allowed
+    for body in ({"column_id": 2, "position": 0}, {"column_id": 1, "position": 0}):
+        assert rig.call("put", "/cards/2/position", token, json=body).status_code == 403
+    assert rig.sql("SELECT id, column_id, position FROM cards ORDER BY id") == [(1, 1, 1), (2, 1, 2)]
+    # reordering an own card in its column is allowed, and renumbers the others without changing them otherwise
+    assert rig.call("put", "/cards/1/position", token, json={"column_id": 1, "position": 1}).status_code == 200
+    assert rig.sql("SELECT id, position FROM cards ORDER BY id") == [(1, 1), (2, 0)]
 
 
 def test_delete_is_admin_only_and_audited(rig):
@@ -303,3 +336,38 @@ def test_ai_admin_assignment_limited_to_centrally_eligible(rig, monkeypatch):
     applied = ai(rig, admin(rig)).json()["actions_applied"]
     assert len(applied["successful"]) == 1 and len(applied["failed"]) == 1
     assert rig.sql("SELECT id, salesperson_id FROM cards ORDER BY id") == [(1, uid), (2, None)]
+
+
+# --- Creation contract by role (the owner of a new card is decided by the server alone) ---
+
+def _created_owner(rig, token, **extra):
+    r = rig.call("post", "/cards", token, json={"column_id": 1, "title": "t", **extra})
+    assert r.status_code == 201
+    return r.json()["id"], r.json()["salesperson_id"]
+
+
+def test_create_super_admin_card_is_unassigned_and_audited_without_assign(rig):
+    card_id, owner = _created_owner(rig, admin(rig))
+    assert owner is None
+    assert [a for (a,) in rig.sql("SELECT action FROM audit_events WHERE card_id = ? ORDER BY id", (card_id,))] == ["create"]
+
+
+def test_create_company_admin_card_is_assigned_to_self_today(rig):
+    """Documents current behaviour: new_card_fields judges is_admin(context), which only the global administrator
+    satisfies, so a company Admin creates like a Sales Member (assigned to self) although it may reassign later."""
+    from test_company_admin_products import company_admin
+    uid, token = company_admin(rig)
+    card_id, owner = _created_owner(rig, token)
+    assert owner == uid
+    assert [a for (a,) in rig.sql("SELECT action FROM audit_events WHERE card_id = ? ORDER BY id", (card_id,))] == ["create", "assign"]
+
+
+@pytest.mark.parametrize("who", ["member", "super_admin"])
+def test_create_ignores_a_client_supplied_salesperson_id(rig, who):
+    other_uid, _ = member(rig, "other@example.com")
+    rig.assign(2, other_uid, "other@example.com")
+    uid, token = member(rig) if who == "member" else (None, admin(rig))
+    card_id, owner = _created_owner(rig, token, salesperson_id=other_uid)  # unknown field, not part of CardCreate
+    assert owner == (uid if who == "member" else None)
+    assert owner != other_uid
+    assert rig.sql("SELECT salesperson_id FROM cards WHERE id = ?", (card_id,)) == [(owner,)]

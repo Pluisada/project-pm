@@ -61,3 +61,22 @@ def company_session_factory(engine: Engine) -> sessionmaker[Session]:
     if slug is None:
         raise ValueError("engine was not created by open_company_engine")
     return sessionmaker(autocommit=False, autoflush=False, bind=engine, info={COMPANY_SLUG_INFO_KEY: slug})
+
+
+def begin_write(session: Session) -> None:
+    """Take SQLite's write lock now, before the caller reads the state its decision depends on.
+
+    pysqlite opens a transaction only when the first DML runs, so a read-compute-write route would otherwise decide
+    on a snapshot another request can invalidate before this one writes (duplicate positions, two won stages, a card
+    lost to a column delete). `BEGIN IMMEDIATE` makes the whole route a single serialized unit, also across
+    processes. Call it first in the route, after sync_company_user committed: the session then has no open SQLite
+    transaction. commit()/rollback()/close() release the lock as for any transaction. When another connection holds
+    the lock past the busy timeout this raises OperationalError, which main.database_error_handler answers as 503
+    with Retry-After; nothing was read or written. If a DML already ran in this transaction the lock is held and
+    this does nothing.
+    """
+    connection = session.connection()
+    if connection.connection.driver_connection.in_transaction:
+        return
+    connection.exec_driver_sql("BEGIN IMMEDIATE")
+    session.expire_all()  # nothing loaded before the lock may be trusted

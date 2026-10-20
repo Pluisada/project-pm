@@ -729,7 +729,41 @@ def sync_company_user(identity_session: Session, company_session: Session, user_
         elif local.username != email:
             local.username = email
         company_session.commit()
-    except SQLAlchemyError:
+    except SQLAlchemyError as exc:
         company_session.rollback()
-        raise LocalSyncError("the company reference could not be written; retry") from None
+        # Kept as __cause__ only so the route can tell SQLite contention from other failures; never shown to a caller.
+        raise LocalSyncError("the company reference could not be written; retry") from exc
     return local
+
+
+def sync_assignable_users(identity_session: Session, company_session: Session, slug: str) -> int:
+    """Create or refresh the company-local reference of every person the central database lets this company assign to.
+
+    Same rules as sync_company_user, applied to the whole eligible set (assignable_user_ids: active global
+    admins and active `sales_member` memberships of an active company), so someone who accepted an invitation
+    but never wrote in the company can still be assigned. Idempotent: existing rows are kept (only a changed
+    e-mail is refreshed), nothing is duplicated, no one outside the eligible set gets a row, and no credential
+    or role is written. Not atomic with the central database; a failure raises LocalSyncError and changes
+    nothing. Returns how many rows were created.
+    """
+    if company_session.info.get("company_slug") != slug:
+        raise InvalidInput("the company session does not belong to this company")
+    ids = assignable_user_ids(identity_session, slug)
+    if not ids:
+        return 0
+    emails = dict(identity_session.execute(select(IdentityUser.id, IdentityUser.email).where(IdentityUser.id.in_(ids))).all())
+    try:
+        local = {u.id: u for u in company_session.scalars(select(CompanyUser).where(CompanyUser.id.in_(ids)))}
+        created = 0
+        for user_id, email in emails.items():
+            row = local.get(user_id)
+            if row is None:
+                company_session.add(CompanyUser(id=user_id, username=email))
+                created += 1
+            elif row.username != email:
+                row.username = email
+        company_session.commit()
+    except SQLAlchemyError as exc:
+        company_session.rollback()
+        raise LocalSyncError("the company references could not be written; retry") from exc
+    return created
