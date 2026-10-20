@@ -56,18 +56,7 @@ async function apiCall<T>(
     });
 
     if (!response.ok) {
-      // Only a request that carried a token can mean "session expired"; without
-      // one the 401 is just the caller's answer, and no event means no loop.
-      if (response.status === 401 && "Authorization" in headers) {
-        clearAuth();
-        window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
-      }
-      const errorData = await response.json().catch(() => ({}));
-      throw {
-        status_code: response.status,
-        detail: extractErrorDetail(errorData, `HTTP ${response.status}`),
-        ...structuredError(errorData),
-      } as ApiError;
+      await throwApiError(response, "Authorization" in headers);
     }
 
     // Handle 204 No Content
@@ -77,14 +66,396 @@ async function apiCall<T>(
 
     return await response.json();
   } catch (error) {
-    if (error instanceof TypeError) {
-      throw {
-        status_code: 0,
-        detail: "Network error - check connection",
-      } as ApiError;
-    }
-    throw error;
+    throw asNetworkError(error);
   }
+}
+
+/** Throw the ApiError for a failed response; a 401 on a request that carried a token ends the session. */
+async function throwApiError(response: Response, hadToken: boolean): Promise<never> {
+  // Only a request that carried a token can mean "session expired"; without
+  // one the 401 is just the caller's answer, and no event means no loop.
+  if (response.status === 401 && hadToken) {
+    clearAuth();
+    window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+  }
+  const errorData = await response.json().catch(() => ({}));
+  throw {
+    status_code: response.status,
+    detail: extractErrorDetail(errorData, `HTTP ${response.status}`),
+    ...structuredError(errorData),
+  } as ApiError;
+}
+
+/** True for the error fetch raises when its AbortSignal fires: an expected interruption, not a failure. */
+export function isAbortError(error: unknown): boolean {
+  return (error as { name?: unknown } | null)?.name === "AbortError";
+}
+
+function asNetworkError(error: unknown): unknown {
+  return error instanceof TypeError
+    ? ({ status_code: 0, detail: "Network error - check connection" } as ApiError)
+    : error;
+}
+
+/**
+ * Authenticated GET of a binary file. The Authorization header is sent through
+ * fetch (a plain link or navigation would lose it); errors match apiCall's.
+ */
+async function apiBlob(
+  endpoint: string,
+  signal?: AbortSignal
+): Promise<{ blob: Blob; contentDisposition: string | null }> {
+  const headers = getAuthHeader();
+  try {
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, { headers, signal });
+    if (!response.ok) {
+      await throwApiError(response, "Authorization" in headers);
+    }
+    return { blob: await response.blob(), contentDisposition: response.headers.get("Content-Disposition") };
+  } catch (error) {
+    throw asNetworkError(error);
+  }
+}
+
+// ============================================================================
+// CENTRAL IDENTITY API (PM_AUTH_MODE=central)
+// ============================================================================
+
+/** A company the signed-in person may enter, with their role there (as the backend resolved it). */
+export interface CentralCompany {
+  slug: string;
+  name: string;
+  role: string;
+}
+
+export interface CentralMe {
+  email: string;
+  is_global_admin: boolean;
+  companies: CentralCompany[];
+}
+
+export const ROLE_SUPER_ADMIN = "super_admin";
+export const ROLE_COMPANY_ADMIN = "admin";
+
+export async function getCentralMe(): Promise<CentralMe> {
+  return apiCall<CentralMe>("/api/central/me");
+}
+
+export async function listCompanyBoards(companySlug: string, signal?: AbortSignal): Promise<BoardResponse[]> {
+  return apiCall<BoardResponse[]>(`${companyPath(companySlug)}/boards`, { signal });
+}
+
+/** What the backend allows the caller to do in one company (GET /api/companies/{slug}/me). A report for the UI only. */
+export interface CompanyCapabilities {
+  readOnly: boolean;
+  canEditOwnCards: boolean;
+  canEditAnyCard: boolean;
+  canMoveBack: boolean;
+  canDeleteCards: boolean;
+  canAssignSalesperson: boolean;
+  canManageBoards: boolean;
+  canImport: boolean;
+}
+
+export interface CompanyMe {
+  user_id: number;
+  company_slug: string;
+  role: string;
+  capabilities: CompanyCapabilities;
+}
+
+function companyPath(companySlug: string): string {
+  return `/api/companies/${encodeURIComponent(companySlug)}`;
+}
+
+/** Identity and capabilities of the caller in one company. Throws if the answer is for another company. */
+export async function getCompanyMe(companySlug: string, signal?: AbortSignal): Promise<CompanyMe> {
+  const me = await apiCall<CompanyMe>(`${companyPath(companySlug)}/me`, { signal });
+  if (me?.company_slug !== companySlug) throw { status_code: 0, detail: "Unexpected response from the server." } as ApiError;
+  return me;
+}
+
+/** One board with its columns and cards, read from the company's own database. Throws if it is not the board asked for. */
+export async function getCompanyBoard(companySlug: string, boardId: number, signal?: AbortSignal): Promise<BoardDetail> {
+  const board = await apiCall<BoardDetail>(`${companyPath(companySlug)}/boards/${Number(boardId)}`, { signal });
+  if (board?.id !== boardId || !Array.isArray(board.columns)) {
+    throw { status_code: 0, detail: "Unexpected response from the server." } as ApiError;
+  }
+  return board;
+}
+
+/** Lead field choices of one company (selects of the card form). The salespeople list is not used by the central form. */
+export async function getCompanyLeadOptions(companySlug: string, signal?: AbortSignal): Promise<LeadOptions> {
+  return apiCall<LeadOptions>(`${companyPath(companySlug)}/lead-options`, { signal });
+}
+
+/** Create a card in one column of one company board. The central contract takes only title, details, position and Deal Value. */
+export async function createCompanyCard(
+  companySlug: string,
+  boardId: number,
+  payload: { column_id: number; title: string; details?: string; deal_value?: number; deal_value_next_year?: number },
+  signal?: AbortSignal
+): Promise<CardResponse> {
+  return apiCall<CardResponse>(`${companyPath(companySlug)}/boards/${Number(boardId)}/cards`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+    signal,
+  });
+}
+
+/** Create a board in one company (POST .../boards; Super Admin or company Admin, the backend decides). */
+export async function createCompanyBoard(
+  companySlug: string,
+  payload: { title: string; description?: string },
+  signal?: AbortSignal
+): Promise<BoardResponse> {
+  return apiCall<BoardResponse>(`${companyPath(companySlug)}/boards`, { method: "POST", body: JSON.stringify(payload), signal });
+}
+
+/** Create a column. `position` is a 0-based index; past the end means last (the backend renumbers the board). */
+export async function createCompanyColumn(
+  companySlug: string,
+  boardId: number,
+  payload: { title: string; position: number; stage_kind: StageKind },
+  signal?: AbortSignal
+): Promise<ColumnResponse> {
+  return apiCall<ColumnResponse>(`${companyPath(companySlug)}/boards/${Number(boardId)}/columns`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+    signal,
+  });
+}
+
+/** Partial update of a column (title, stage_kind, 0-based position); only the fields sent change. */
+export async function updateCompanyColumn(
+  companySlug: string,
+  boardId: number,
+  columnId: number,
+  updates: { title?: string; position?: number; stage_kind?: StageKind },
+  signal?: AbortSignal
+): Promise<ColumnResponse> {
+  return apiCall<ColumnResponse>(`${companyPath(companySlug)}/boards/${Number(boardId)}/columns/${Number(columnId)}`, {
+    method: "PUT",
+    body: JSON.stringify(updates),
+    signal,
+  });
+}
+
+/** Delete an empty column (204; Super Admin only, 409 while it holds cards). Never retried automatically. */
+export async function deleteCompanyColumn(companySlug: string, boardId: number, columnId: number, signal?: AbortSignal): Promise<void> {
+  await apiCall<void>(`${companyPath(companySlug)}/boards/${Number(boardId)}/columns/${Number(columnId)}`, { method: "DELETE", signal });
+}
+
+/** Partial update of one card of one company board (only the fields in `updates` change; null clears a lead field). */
+export async function updateCompanyCard(
+  companySlug: string,
+  boardId: number,
+  cardId: number,
+  updates: CardUpdatePayload,
+  signal?: AbortSignal
+): Promise<CardResponse> {
+  return apiCall<CardResponse>(`${companyPath(companySlug)}/boards/${Number(boardId)}/cards/${Number(cardId)}`, {
+    method: "PUT",
+    body: JSON.stringify(updates),
+    signal,
+  });
+}
+
+/**
+ * Move one card of one company board. `position` is the index the card takes among the target column's
+ * other cards (the backend renumbers the column). Never retried automatically: a failed attempt may
+ * or may not have been applied, so the caller re-reads the board instead.
+ */
+export async function moveCompanyCard(
+  companySlug: string,
+  boardId: number,
+  cardId: number,
+  columnId: number,
+  position: number,
+  signal?: AbortSignal
+): Promise<CardResponse> {
+  return apiCall<CardResponse>(`${companyPath(companySlug)}/boards/${Number(boardId)}/cards/${Number(cardId)}/position`, {
+    method: "PUT",
+    body: JSON.stringify({ column_id: columnId, position }),
+    signal,
+  });
+}
+
+/**
+ * Delete one card of one company board (204; admins only, the backend decides). Never retried automatically:
+ * after a network or 5xx failure the card may or may not be gone, so the caller re-reads the board instead.
+ */
+export async function deleteCompanyCard(companySlug: string, boardId: number, cardId: number, signal?: AbortSignal): Promise<void> {
+  await apiCall<void>(`${companyPath(companySlug)}/boards/${Number(boardId)}/cards/${Number(cardId)}`, { method: "DELETE", signal });
+}
+
+/**
+ * Member-edit history of one card of one company board (GET .../history, every role with a membership may read).
+ * Newest first, exactly as the backend stored it: only edits made by Sales Members are recorded there, with the
+ * old and new value of each changed field. It is not the audit log (creations, assignments, deletions are not in it).
+ */
+export async function getCompanyCardHistory(
+  companySlug: string,
+  boardId: number,
+  cardId: number,
+  signal?: AbortSignal
+): Promise<CardEditHistoryEntry[]> {
+  const entries = await apiCall<CardEditHistoryEntry[]>(
+    `${companyPath(companySlug)}/boards/${Number(boardId)}/cards/${Number(cardId)}/history`,
+    { signal }
+  );
+  if (!Array.isArray(entries)) throw { status_code: 0, detail: "Unexpected response from the server." } as ApiError;
+  return entries;
+}
+
+/** The caller's undoable last change on one company board (GET .../undo; writers only, a Visitor gets 403). */
+export async function getCompanyUndoStatus(companySlug: string, boardId: number, signal?: AbortSignal): Promise<UndoStatus> {
+  return apiCall<UndoStatus>(`${companyPath(companySlug)}/boards/${Number(boardId)}/undo`, { signal });
+}
+
+/**
+ * Reverse the caller's last change on one company board (POST .../undo). Never retried automatically: after a
+ * network or 5xx failure the undo may or may not have been applied, so the caller re-reads the board instead.
+ * 404: nothing to undo; 409: the change can no longer be undone (the entry is used up either way).
+ */
+export async function undoCompanyChange(companySlug: string, boardId: number, signal?: AbortSignal): Promise<UndoStatus> {
+  return apiCall<UndoStatus>(`${companyPath(companySlug)}/boards/${Number(boardId)}/undo`, { method: "POST", signal });
+}
+
+export type ExcelDownload = "export" | "template";
+
+const EXCEL_FALLBACK_NAMES: Record<ExcelDownload, string> = {
+  export: "cards-export.xlsx",
+  template: "cards-import-template.xlsx",
+};
+
+/** The server's filename only if it is a plain, safe .xlsx name; otherwise our fixed fallback. */
+export function safeExcelFilename(contentDisposition: string | null, kind: ExcelDownload): string {
+  const name = contentDisposition?.match(/filename="?([^";]+)"?/i)?.[1];
+  return name && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.xlsx$/.test(name) ? name : EXCEL_FALLBACK_NAMES[kind];
+}
+
+/**
+ * Download one of the board's Excel files (export or import template) and save it in the browser. The backend
+ * decides who may: the Super Admin, and the Admin of that company for its own company only.
+ * Aborting `signal` rejects with an AbortError (see isAbortError) and nothing is saved, even if the bytes
+ * had already arrived.
+ */
+export async function downloadCompanyExcel(
+  companySlug: string,
+  boardId: number,
+  kind: ExcelDownload,
+  signal?: AbortSignal
+): Promise<string> {
+  const { blob, contentDisposition } = await apiBlob(
+    `/api/companies/${encodeURIComponent(companySlug)}/boards/${Number(boardId)}/excel/${kind}`,
+    signal
+  );
+  signal?.throwIfAborted();
+  const filename = safeExcelFilename(contentDisposition, kind);
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  return filename;
+}
+
+// ---- Cards workbook import (central mode; not the Bid import) ----
+
+export interface CardsImportIssue {
+  row: number | null;
+  column: string | null;
+  code: string;
+  message: string;
+}
+
+export type CardsImportAction = "create" | "update" | "unchanged" | "invalid";
+
+/** One changed field of an update: the card's current value and the proposed one (null = empty or unassigned). */
+export interface CardsImportDiff {
+  field: string;
+  old: string | null;
+  new: string | null;
+}
+
+export interface CardsImportRow {
+  row: number;
+  action: CardsImportAction;
+  card_id: number | null;
+  title: string | null;
+  stage: string | null;
+  /** Names of the fields an update changes. */
+  changed: string[];
+  /** Current and proposed value of each changed field (updates only). */
+  diffs: CardsImportDiff[];
+  errors: CardsImportIssue[];
+  warnings: CardsImportIssue[];
+}
+
+/** What an applied import recorded: counts and time only. */
+export interface CardsImportSummary {
+  import_id: number;
+  created: number;
+  updated: number;
+  unchanged: number;
+  applied_at: string;
+}
+
+export interface CardsImportPreview {
+  filename: string;
+  file_sha256: string;
+  summary: { rows: number; creates: number; updates: number; unchanged: number; invalid: number; warnings: number };
+  rows: CardsImportRow[];
+  file_warnings: CardsImportIssue[];
+  confirmable: boolean;
+  /** already_imported | validation_errors | no_changes when not confirmable. */
+  blocked_reason: string | null;
+  /** The recorded import of this same workbook on this board, when there is one. */
+  already_imported: CardsImportSummary | null;
+  previous_import: CardsImportSummary | null;
+  /** Binds a confirmation to this preview; sent back unchanged. */
+  plan_digest: string;
+}
+
+export interface CardsImportResult extends CardsImportSummary {
+  applied: true;
+}
+
+function cardsImportPath(companySlug: string, boardId: number, step: "preview" | "confirm"): string {
+  return `${companyPath(companySlug)}/boards/${Number(boardId)}/excel/import/${step}`;
+}
+
+/** Validate a Cards workbook against one board; writes nothing. */
+export async function previewCompanyCardsImport(
+  companySlug: string,
+  boardId: number,
+  file: File,
+  signal?: AbortSignal
+): Promise<CardsImportPreview> {
+  const form = new FormData();
+  form.append("file", file);
+  return apiCall<CardsImportPreview>(cardsImportPath(companySlug, boardId, "preview"), { method: "POST", body: form, signal });
+}
+
+/**
+ * Apply the previewed workbook, all or nothing. A single attempt: never retried here, because after a lost response
+ * the outcome is unknown and the caller must check it (a new preview) instead of sending this again.
+ */
+export async function confirmCompanyCardsImport(
+  companySlug: string,
+  boardId: number,
+  file: File,
+  planDigest: string
+): Promise<CardsImportResult> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("confirm", "true");
+  form.append("plan_digest", planDigest);
+  return apiCall<CardsImportResult>(cardsImportPath(companySlug, boardId, "confirm"), { method: "POST", body: form });
 }
 
 // ============================================================================
@@ -278,11 +649,12 @@ export async function createCard(
   columnId: number,
   title: string,
   details?: string,
-  position: number = 0
+  position: number = 0,
+  deal: { deal_value?: number; deal_value_next_year?: number } = {}
 ): Promise<CardResponse> {
   return apiCall<CardResponse>(`/api/boards/${boardId}/cards`, {
     method: "POST",
-    body: JSON.stringify({ column_id: columnId, title, details, position }),
+    body: JSON.stringify({ column_id: columnId, title, details, position, ...deal }),
   });
 }
 
@@ -359,15 +731,6 @@ export async function getLeadOptions(): Promise<LeadOptions> {
 /** Money totals keyed by currency code - never summed across currencies. */
 export type CurrencyTotals = Record<string, number>;
 
-/** Bid report revenue (integer cents, the bid's own currency). Never added to Deal Value; NULL years are not counted. */
-export interface BidRevenueMeasure {
-  currency: string;
-  current_cents: number;
-  current_count: number;
-  next_cents: number;
-  next_count: number;
-}
-
 export interface ReportGroup {
   /** Display label. */
   key: string;
@@ -394,8 +757,6 @@ export interface BoardReport {
     won_totals: CurrencyTotals;
     won_next_totals?: CurrencyTotals;
     won_sum_totals?: CurrencyTotals;
-    open_bid_revenue?: BidRevenueMeasure[];
-    won_bid_revenue?: BidRevenueMeasure[];
     lost_count: number;
     win_rate: number | null;
   };
@@ -407,7 +768,6 @@ export interface BoardReport {
     totals: CurrencyTotals;
     next_totals?: CurrencyTotals;
     sum_totals?: CurrencyTotals;
-    bid_revenue?: BidRevenueMeasure[];
   }[];
   /** Years the amounts were entered for (the cards' stored deal_year); several = totals span years. */
   deal_years?: number[];
@@ -613,7 +973,6 @@ export interface KpiPipeline {
     without_value: number;
     next_year_values?: MoneyTotals;
     total_values?: MoneyTotals;
-    bid_revenue?: BidRevenueMeasure[];
   })[];
   deal_years?: number[];
 }
@@ -970,4 +1329,90 @@ export async function revertBidImport(batchId: number, planFingerprint: string):
     method: "POST",
     body: JSON.stringify({ plan_fingerprint: planFingerprint }),
   });
+}
+
+// ============================================================================
+// CENTRAL INVITATIONS, PASSWORD RESET AND MEMBERS (PM_AUTH_MODE=central)
+// ============================================================================
+
+/**
+ * POST to an unauthenticated central endpoint (invitation, reset). It never sends a stored token and a 401 here is
+ * the caller's answer (a wrong password), not an expired session. The one-time token only travels in the body.
+ */
+async function publicPost<T>(endpoint: string, body: unknown): Promise<T> {
+  try {
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) await throwApiError(response, false);
+    return (await response.json()) as T;
+  } catch (error) {
+    throw asNetworkError(error);
+  }
+}
+
+export async function centralForgotPassword(email: string): Promise<void> {
+  await publicPost("/api/central/password/forgot", { email });
+}
+
+export async function centralResetPassword(token: string, newPassword: string): Promise<void> {
+  await publicPost("/api/central/password/reset", { token, new_password: newPassword });
+}
+
+/** First password for an invited person with no account yet. */
+export async function centralAcceptInvitation(token: string, password: string): Promise<void> {
+  await publicPost("/api/central/invitations/accept", { token, password });
+}
+
+/** An existing account joins another company; it proves who it is with its own password. */
+export async function centralJoinInvitation(token: string, email: string, password: string): Promise<void> {
+  await publicPost("/api/central/invitations/join", { token, email, password });
+}
+
+/** Roles a Super Admin may invite to. The reserved company Admin role is never offered. */
+export type InviteRole = "sales_member" | "visitor";
+
+export interface CompanyMember {
+  user_id: number;
+  email: string;
+  role: string;
+  is_active: boolean;
+  user_is_active: boolean;
+  email_verified: boolean;
+  joined_at: string;
+}
+
+export interface PendingInvitation {
+  invitation_id: number;
+  email: string;
+  role: string;
+  expires_at: string;
+}
+
+export async function inviteCompanyMember(companySlug: string, email: string, role: InviteRole): Promise<void> {
+  await apiCall(`/api/central/companies/${encodeURIComponent(companySlug)}/invitations`, {
+    method: "POST",
+    body: JSON.stringify({ email, role }),
+  });
+}
+
+export async function listCompanyMembers(companySlug: string, signal?: AbortSignal): Promise<CompanyMember[]> {
+  return apiCall<CompanyMember[]>(`/api/central/companies/${encodeURIComponent(companySlug)}/members`, { signal });
+}
+
+export async function listCompanyInvitations(companySlug: string, signal?: AbortSignal): Promise<PendingInvitation[]> {
+  return apiCall<PendingInvitation[]>(`/api/central/companies/${encodeURIComponent(companySlug)}/invitations`, { signal });
+}
+
+export async function changeCompanyMemberRole(companySlug: string, userId: number, role: InviteRole): Promise<void> {
+  await apiCall(`/api/central/companies/${encodeURIComponent(companySlug)}/members/${userId}/role`, {
+    method: "PUT",
+    body: JSON.stringify({ role }),
+  });
+}
+
+export async function deactivateCompanyMember(companySlug: string, userId: number): Promise<void> {
+  await apiCall(`/api/central/companies/${encodeURIComponent(companySlug)}/members/${userId}/deactivate`, { method: "POST" });
 }

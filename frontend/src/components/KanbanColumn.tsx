@@ -4,7 +4,7 @@ import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import type { Card, Column } from "@/lib/kanban";
 import { KanbanCard } from "@/components/KanbanCard";
-import { NewCardForm } from "@/components/NewCardForm";
+import { NewCardForm, type NewCardDeal } from "@/components/NewCardForm";
 
 const OPEN_TONES = ["blue", "cyan", "turquoise", "lime"] as const;
 
@@ -30,7 +30,7 @@ type KanbanColumnProps = {
   onRename: (columnId: string, title: string) => void | Promise<boolean>;
   // False renders the title as plain text (members can't rename stages).
   canRename?: boolean;
-  onAddCard: (columnId: string, title: string, details: string) => void;
+  onAddCard: (columnId: string, title: string, details: string, deal: NewCardDeal) => void;
   onDeleteCard: (columnId: string, cardId: string) => void;
   onOpenCardHistory: (cardId: string) => void;
   onOpenDetails?: (cardId: string) => void;
@@ -155,7 +155,7 @@ export const KanbanColumn = ({
         )}
       </div>
       <NewCardForm
-        onAdd={(title, details) => onAddCard(column.id, title, details)}
+        onAdd={(title, details, deal) => onAddCard(column.id, title, details, deal)}
       />
     </section>
   );

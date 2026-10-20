@@ -1,5 +1,5 @@
-import { ProtectedRoute } from "@/components/ProtectedRoute";
+import { AuthModeGate } from "@/components/AuthModeGate";
 
 export default function Home() {
-  return <ProtectedRoute />;
+  return <AuthModeGate />;
 }

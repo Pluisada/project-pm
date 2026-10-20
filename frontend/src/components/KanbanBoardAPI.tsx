@@ -20,6 +20,7 @@ import { CardHistoryModal } from "@/components/CardHistoryModal";
 import { CardDetailsModal } from "@/components/CardDetailsModal";
 import { LeadEditModal } from "@/components/LeadEditModal";
 import { LoadingScreen } from "@/components/LoadingScreen";
+import type { NewCardDeal } from "@/components/NewCardForm";
 import { dealValueTotal, isValidIsoDate, todayIso } from "@/lib/format";
 import { getAuthState, type UserRole } from "@/lib/auth";
 import {
@@ -249,11 +250,11 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
     }
   };
 
-  const handleAddCard = async (columnId: number, title: string, details: string) => {
+  const handleAddCard = async (columnId: number, title: string, details: string, deal: NewCardDeal) => {
     if (!board) return;
 
     try {
-      const newCard = await createCard(boardId, columnId, title, details);
+      const newCard = await createCard(boardId, columnId, title, details, 0, deal);
       refreshUndo();
       updateColumns((col) => (col.id === columnId ? { ...col, cards: [...(col.cards || []), newCard] } : col));
     } catch (err: unknown) {
@@ -465,7 +466,7 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
                 })) || []}
                 canDeleteCards={isAdminUser}
                 onRename={(_colId, title) => handleRenameColumn(column.id, title)}
-                onAddCard={(_colId, title, details) => handleAddCard(column.id, title, details)}
+                onAddCard={(_colId, title, details, deal) => handleAddCard(column.id, title, details, deal)}
                 onDeleteCard={(_colId, cardDndIdValue) =>
                   handleDeleteCard(column.id, cardIdFromDndId(cardDndIdValue))
                 }

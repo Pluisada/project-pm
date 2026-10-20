@@ -165,6 +165,59 @@ export async function login(credentials: LoginRequest): Promise<LoginResponse> {
   return data;
 }
 
+export type AuthMode = "legacy" | "central";
+
+/**
+ * Which sign-in flow the backend runs (/api/mode, unauthenticated). The answer must be exactly
+ * {"auth": "legacy" | "central"}; a network error, timeout, HTTP error or any other body throws, so the
+ * caller can offer a retry instead of guessing a mode.
+ */
+export async function getAuthMode(): Promise<AuthMode> {
+  const response = await fetch(`${API_BASE_URL}/api/mode`, { signal: AbortSignal.timeout(10000) });
+  if (!response.ok) throw new Error(`Could not determine the sign-in mode (HTTP ${response.status}).`);
+  const data: unknown = await response.json().catch(() => null);
+  const auth = (data as { auth?: unknown } | null)?.auth;
+  if (auth !== "legacy" && auth !== "central") throw new Error("Unexpected response from the server.");
+  return auth;
+}
+
+/**
+ * Central sign-in (POST /api/central/login). The access token is stored under the
+ * same key as the legacy one so apiCall sends it; the email stands in for the
+ * username. No role is stored: roles come from /api/central/me, per company.
+ */
+export async function centralLogin(email: string, password: string): Promise<string> {
+  const response = await fetch(`${API_BASE_URL}/api/central/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!response.ok) {
+    throw new Error(response.status === 401 ? "Invalid email or password" : "Sign in failed");
+  }
+  const data: { access_token: string } = await response.json();
+  clearAuth();
+  localStorage.setItem(TOKEN_KEY, data.access_token);
+  localStorage.setItem(USER_KEY, email.trim());
+  return email.trim();
+}
+
+/** Central sign-out: revokes the person's sessions server-side, then clears the stored one. */
+export async function centralLogout(): Promise<void> {
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (token) {
+    try {
+      await fetch(`${API_BASE_URL}/api/central/logout`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {
+      // Ignore errors on logout
+    }
+  }
+  clearAuth();
+}
+
 export function clearAuth(): void {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
