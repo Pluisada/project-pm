@@ -533,3 +533,75 @@ def test_embedded_nul_never_reaches_the_filesystem(tmp_path):
     with pytest.raises(ValueError):
         sqlite3.connect(str(tmp_path / "x.db") + "\x00junk")
     assert list(tmp_path.iterdir()) == []
+
+
+# --- central mode (PM_AUTH_MODE=central): four explicit databases, no legacy DATABASE_URL ---
+
+CENTRAL_VARS = ("IDENTITY_DATABASE_URL", "PM_COMPANY_DB_SALCOMP", "PM_COMPANY_DB_LITY", "PM_COMPANY_DB_VALOR_LOG")
+
+
+@pytest.fixture
+def central(prod, monkeypatch, tmp_path):
+    """Production + central mode over empty placeholder files in tmp_path (existence is all that is checked)."""
+    monkeypatch.setenv("PM_AUTH_MODE", "central")
+    monkeypatch.delenv("DATABASE_URL")  # central must not need the legacy database
+    monkeypatch.delenv("PM_REQUIRE_EXISTING_DB")
+    for name, var in zip(("identity", "salcomp", "lity", "valor-log"), CENTRAL_VARS):
+        path = tmp_path / f"{name}.db"
+        path.touch()
+        monkeypatch.setenv(var, f"sqlite:///{path}")
+    return tmp_path
+
+
+def test_central_production_passes_without_database_url(central):
+    assert problems() == []
+    validate_config()
+
+
+def test_central_production_ignores_legacy_database_requirements(central, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///./pm.db")  # a stray development value is not validated or used
+    assert problems() == []
+
+
+@pytest.mark.parametrize("var", CENTRAL_VARS)
+def test_central_production_fails_when_a_database_variable_is_missing(central, monkeypatch, var):
+    monkeypatch.delenv(var)
+    found = problems()
+    assert found and any(var in item or "identity" in item.lower() for item in found)
+
+
+@pytest.mark.parametrize("var", CENTRAL_VARS)
+def test_central_production_fails_when_a_database_file_is_missing(central, monkeypatch, var):
+    monkeypatch.setenv(var, f"sqlite:///{central}/absent.db")
+    assert problems()
+
+
+def test_central_production_refuses_a_shared_file_and_protected_names(central, monkeypatch):
+    monkeypatch.setenv("PM_COMPANY_DB_LITY", f"sqlite:///{central}/salcomp.db")
+    assert any("same file" in item for item in problems())
+    monkeypatch.setenv("PM_COMPANY_DB_LITY", f"sqlite:///{central}/lity.db")
+    (central / "pm-commercial.db").touch()
+    monkeypatch.setenv("PM_COMPANY_DB_VALOR_LOG", f"sqlite:///{central}/pm-commercial.db")
+    assert any("development or commercial" in item for item in problems())
+
+
+def test_central_production_does_not_apply_in_legacy_mode(prod, monkeypatch):
+    monkeypatch.delenv("PM_AUTH_MODE", raising=False)
+    monkeypatch.delenv("DATABASE_URL")
+    assert any("DATABASE_URL" in item for item in problems())  # legacy still demands its database
+
+
+def test_central_compose_file_selects_central_mode_without_legacy_database():
+    """docker-compose.central.yml is standalone: production + central, the four databases required, no legacy fallback."""
+    text = (Path(__file__).resolve().parent.parent / "docker-compose.central.yml").read_text()
+    env = [line.strip()[2:] for line in text.splitlines() if line.strip().startswith("- ") and "=" in line]
+    names = {item.split("=", 1)[0] for item in env}
+    assert {"PM_ENV=production", "PM_AUTH_MODE=central"} <= set(env)
+    assert {"IDENTITY_DATABASE_URL", "PM_COMPANY_DB_SALCOMP", "PM_COMPANY_DB_LITY", "PM_COMPANY_DB_VALOR_LOG"} <= names
+    assert not names & {"DATABASE_URL", "PM_REQUIRE_EXISTING_DB", "PM_SETUP_TOKEN", "SIGNUP_ALLOWED_DOMAINS"}
+    for item in env:
+        name, value = item.split("=", 1)
+        if name in ("IDENTITY_DATABASE_URL", "SECRET_KEY", "APP_BASE_URL", "SMTP_HOST", "SMTP_FROM") or name.startswith("PM_COMPANY_DB_"):
+            assert ":?" in value, f"{name} must be required with no default"
+    code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    assert "pm.db" not in code and "pm-commercial" not in code  # no development/commercial database mount or default

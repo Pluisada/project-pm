@@ -1,4 +1,7 @@
 """Tests for static file serving and frontend integration."""
+import re
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 from main import app
@@ -85,3 +88,35 @@ class TestProductionBuild:
         response = client.get("/api/health")
         assert response.status_code == 200
         assert "application/json" in response.headers.get("content-type", "")
+
+
+STATIC = Path(__file__).parent / "static"
+OUT = Path(__file__).parent.parent / "frontend" / "out"
+
+
+@pytest.mark.skipif(not STATIC.exists(), reason="static export not generated")
+class TestServedFrontend:
+    """The page the browser really receives: caching, bundles, and that the one-time-link screens are in it."""
+
+    def test_pages_must_revalidate_and_hashed_assets_are_immutable(self, client):
+        assert client.get("/").headers["cache-control"] == "no-cache"
+        bundle = re.search(r'/_next/static/[^"]+\.js', client.get("/").text).group(0)
+        assert "immutable" in client.get(bundle).headers["cache-control"]
+
+    def test_every_bundle_named_by_the_page_is_served_unchanged(self, client):
+        html = client.get("/?central_reset_token=SYNTHETIC_TEST_TOKEN").text
+        bundles = set(re.findall(r'/_next/static/[^"]+\.js', html))
+        assert bundles
+        for path in bundles:
+            response = client.get(path)
+            assert response.status_code == 200
+            assert response.content == (STATIC / path.lstrip("/")).read_bytes()
+
+    def test_served_bundles_handle_the_central_one_time_links(self, client):
+        html = client.get("/").text
+        code = "".join(client.get(p).text for p in set(re.findall(r'/_next/static/[^"]+\.js', html)))
+        assert "central_reset_token" in code and "central_invite_token" in code
+
+    @pytest.mark.skipif(not OUT.exists(), reason="frontend/out not built")
+    def test_static_matches_the_current_build(self):
+        assert (STATIC / "index.html").read_bytes() == (OUT / "index.html").read_bytes()

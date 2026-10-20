@@ -454,9 +454,22 @@ app.include_router(company_router)
 
 
 # Serve static frontend files at root
+class FrontendFiles(StaticFiles):
+    """Static export with explicit caching. Pages are not content-hashed, so without a Cache-Control header a browser
+    may reuse a stale index.html (which names old bundles) after a rebuild; `no-cache` makes it revalidate every time.
+    Files under /_next/static/ carry a content hash in their name and can be cached forever."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        if response.status_code in (200, 304):
+            hashed = path.startswith("_next/static/")
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable" if hashed else "no-cache"
+        return response
+
+
 static_dir = Path(__file__).parent / "static"
 if static_dir.exists():
-    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+    app.mount("/", FrontendFiles(directory=static_dir, html=True), name="static")
 
 
 if __name__ == "__main__":

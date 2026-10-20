@@ -64,4 +64,6 @@ def test_production_central_mode_does_not_require_the_legacy_database(monkeypatc
         monkeypatch.delenv(name, raising=False)
     assert any("DATABASE_URL" in p for p in production_config.problems())  # legacy still demands it
     monkeypatch.setenv("PM_AUTH_MODE", "central")
-    assert production_config.problems() == []
+    found = production_config.problems()
+    assert not any("DATABASE_URL" in p and "IDENTITY" not in p for p in found)  # the legacy database is never required
+    assert any("IDENTITY_DATABASE_URL" in p for p in found)  # the four central databases are (test_production_config)

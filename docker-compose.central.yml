@@ -1,0 +1,58 @@
+# Central (multi-company) production deployment. A standalone file: use it INSTEAD of docker-compose.yml /
+# docker-compose.prod.yml, never together with them (those two are built around the single legacy database:
+# DATABASE_URL, pm.db and PM_REQUIRE_EXISTING_DB have no meaning here and would reintroduce a legacy fallback).
+#
+#   docker compose --env-file /secure/pm-central.env -p pm-central -f docker-compose.central.yml config
+#
+# The app serves one identity database (users, companies, memberships, invitations, tokens, audit) and three
+# isolated company databases (Salcomp, Lity, Valor Log). Nothing here has a default for a database: compose
+# refuses to run until the operator names every file and the directory that holds them, and the app repeats the
+# checks at startup (production_config.central_database_problems): all four files must already exist, be
+# distinct, and not be a development/commercial database; none is ever created by the app. DATABASE_URL is
+# deliberately not set. Secrets (SECRET_KEY, SMTP_PASSWORD, OPENROUTER_API_KEY) come from the env file kept
+# outside the repository. See docs/DEPLOYMENT.md, "Central mode".
+services:
+  app:
+    build: .
+    ports:
+      # Loopback by default: reach the app through a TLS reverse proxy on the host.
+      - "${PM_BIND_ADDRESS:-127.0.0.1}:8000:8000"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    environment:
+      - PORT=8000
+      - PM_ENV=production
+      - PM_AUTH_MODE=central
+      # Container paths (four slashes = absolute), all under the directory mounted below.
+      - IDENTITY_DATABASE_URL=${PM_IDENTITY_DATABASE_URL:?PM_IDENTITY_DATABASE_URL must name the identity database, e.g. sqlite:////data/identity.db}
+      - PM_COMPANY_DB_SALCOMP=${PM_COMPANY_DB_SALCOMP:?PM_COMPANY_DB_SALCOMP must name the Salcomp database, e.g. sqlite:////data/salcomp.db}
+      - PM_COMPANY_DB_LITY=${PM_COMPANY_DB_LITY:?PM_COMPANY_DB_LITY must name the Lity database, e.g. sqlite:////data/lity.db}
+      - PM_COMPANY_DB_VALOR_LOG=${PM_COMPANY_DB_VALOR_LOG:?PM_COMPANY_DB_VALOR_LOG must name the Valor Log database, e.g. sqlite:////data/valor-log.db}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY must be set in the env file - see docs/SECURITY.md}
+      - APP_BASE_URL=${PM_PUBLIC_URL:?PM_PUBLIC_URL must be the public https origin}
+      # Invitations and password resets are emailed: SMTP is required, with no invented defaults.
+      - SMTP_HOST=${SMTP_HOST:?SMTP_HOST must be the SMTP server used for invitation and password-reset emails}
+      - SMTP_FROM=${SMTP_FROM:?SMTP_FROM must be the sender address, e.g. PM <noreply@example.com>}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - RATE_LIMIT_TRUSTED_PROXIES=${RATE_LIMIT_TRUSTED_PROXIES:-}
+      - PM_BEHIND_PROXY=${PM_BEHIND_PROXY:-}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
+      - HSTS_ENABLED=${HSTS_ENABLED:-}
+    volumes:
+      # One host DIRECTORY holding the four SQLite files (SQLite also writes journal files next to them); it must
+      # be writable by uid 10001. Created and populated by the operator, never by this file.
+      - ${PM_CENTRAL_DATA_HOST_PATH:?PM_CENTRAL_DATA_HOST_PATH must be the host directory that holds the four databases}:${PM_CENTRAL_DATA_CONTAINER_PATH:?PM_CENTRAL_DATA_CONTAINER_PATH must be set, e.g. /data}
+    restart: unless-stopped

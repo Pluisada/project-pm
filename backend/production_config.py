@@ -146,6 +146,35 @@ def database_problems() -> list[str]:
     return found
 
 
+def central_database_problems() -> list[str]:
+    """Central production must name the identity database and the three company databases, all existing.
+
+    Uses database_targets, which owns the path rules (protected development/commercial names, sidecars, query
+    parameters, '..', collisions between the four files and with DATABASE_URL). Only stat calls: nothing is
+    opened, created or read. DATABASE_URL is neither required nor used as a fallback.
+    """
+    import os.path
+
+    from database_targets import (
+        COMPANY_SLUGS, DatabaseTargetError, company_database_path, company_env_name, identity_database_path,
+    )
+
+    found = []
+    try:
+        identity_database_path()  # unset, protected, colliding or missing file
+    except DatabaseTargetError as exc:
+        found.append(str(exc))
+    for slug in COMPANY_SLUGS:
+        try:
+            path = company_database_path(slug)
+        except DatabaseTargetError as exc:
+            found.append(str(exc))
+            continue
+        if not os.path.isfile(path):
+            found.append(f"{company_env_name(slug)} names a file that does not exist; company databases are never created at startup")
+    return found
+
+
 def problems() -> list[str]:
     if not is_production():
         behind_proxy()  # an invalid declaration is an error in every environment
@@ -167,8 +196,9 @@ def problems() -> list[str]:
 
     if auth_mode.auth_mode() == auth_mode.LEGACY:
         found.extend(database_problems())
-    # Central mode has no legacy database: auth_mode.validate_config() requires the identity and company
-    # databases explicitly, and database_targets validates each one before it is opened.
+    else:
+        # Central mode has no legacy database and does not need DATABASE_URL: the four databases are validated here.
+        found.extend(central_database_problems())
     found.extend(smtp_problems())
 
     # Imported here to avoid a circular import (http_security uses is_production).
