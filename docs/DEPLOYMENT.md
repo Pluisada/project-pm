@@ -292,7 +292,7 @@ Phases 2 and 3 of the central mode added behaviour that needs tables a company d
 | `card_excel_imports` (unique `board_id, repeat_guard`) | `init_company_excel_imports.py` | The Cards import answers 503 `import_not_initialized`. |
 | `products` | `init_company_products.py` | The lead options fall back to the built-in defaults and catalog writes answer 409. |
 
-All four tables are additive and outside the required schema contract: the schema version stays 4. `create_company_db.py` creates them (and the default products) in a new database. The four scripts are independent: each validates the database first (`validate_company_schema`: file exists, version exactly 4, every required table and column) and creates only its own tables, so none needs another to have run and the order does not matter (both orders are tested). Each is idempotent, dry run by default and never creates or stamps a database. Their limits: an init script only creates a MISSING table. It does not add a column or index to an existing table, so an older or hand-made table is reported by the diagnostic as `INCOMPATIBLE` and stays that way until a separately authorized, backed-up repair. A database below version 4 is refused by every script (`migrate_confidence_level.py` upgrades versions 2 and 3; there is no migration from version 1). The target comes only from the company's own `PM_COMPANY_DB_<SLUG>` variable; protected paths (including `pm.db`, `pm-commercial.db`, `DATABASE_URL`'s file) are refused, so the Salcomp database cannot be targeted while it is protected by policy.
+All five tables (`card_versions`, `card_review_obligations`, `card_loss_events`, `card_excel_imports`, `products`) are additive, are created by four scripts, and are outside the required schema contract: the schema version stays 4. `create_company_db.py` creates them (and the default products) in a new database. The four scripts are independent: each validates the database first (`validate_company_schema`: file exists, version exactly 4, every required table and column) and creates only its own tables, so none needs another to have run and the order does not matter (both orders are tested). Each is idempotent, dry run by default and never creates or stamps a database. Their limits: an init script only creates a MISSING table. It does not add a column or index to an existing table, so an older or hand-made table is reported by the diagnostic as `INCOMPATIBLE` and stays that way until a separately authorized, backed-up repair. A database below version 4 is refused by every script (`migrate_confidence_level.py` upgrades versions 2 and 3; there is no migration from version 1). The target comes only from the company's own `PM_COMPANY_DB_<SLUG>` variable; protected paths (including `pm.db`, `pm-commercial.db`, `DATABASE_URL`'s file) are refused, so the Salcomp database cannot be targeted while it is protected by policy.
 
 ### 1. Inspect without changing anything
 
@@ -301,7 +301,7 @@ cd backend
 PM_COMPANY_DB_LITY=sqlite:////abs/path/to/copy/lity.db uv run python diagnose_company_schema.py --company lity
 ```
 
-`diagnose_company_schema.py` opens the file with SQLite `mode=ro` and `query_only`, reads only `sqlite_master` and `PRAGMA` metadata, and never runs an init or migration script. The report names versions, tables, columns and the script that fixes each missing table; it contains no paths and no row values. Exit status: 0 schema complete, 1 incomplete (version or required-table problems, missing tables with their script, or `INCOMPATIBLE` additive tables), 2 not runnable (company not configured or rejected, file missing or unreadable). It does not create a missing file. The diagnostic checks only that each required table exists, that its required columns are present by name, and that its unique guards exist; it does not validate column types, nullability, defaults, foreign keys or non-unique indexes, so a table that passes can still differ from the intended schema in those respects.
+`diagnose_company_schema.py` opens the file with SQLite `mode=ro` and `query_only`, reads only `sqlite_master` and `PRAGMA` metadata, and never runs an init or migration script. The report names versions, tables, columns and the script that fixes each missing table; it contains no paths and no row values. Exit status: 0 schema complete, 1 incomplete (version or required-table problems, missing tables with their script, or `INCOMPATIBLE` additive tables), 2 not runnable (company not configured or rejected, file missing or unreadable). It does not create a missing file. The diagnostic checks only that each required table exists, that its required columns are present by name, that its unique guards exist, and that each named partial unique index (`uq_card_review_pending`) exists as a UNIQUE index on the expected columns with the expected `WHERE` clause; it does not validate column types, nullability, defaults, foreign keys or non-unique indexes, so a table that passes can still differ from the intended schema in those respects.
 
 ### 2. Dry run, apply, verify (verified order and commands)
 
@@ -335,6 +335,39 @@ Before any future upgrade of a real company database: stop the application, take
 
 - Manual: choosing the target through `PM_COMPANY_DB_<SLUG>`, stopping the application, the backup, running each script, running the diagnostic, repairing an `INCOMPATIBLE` table, and migrating a database below version 4.
 - Validated only on temporary databases built in automated tests: the diagnostic, dry-run no-write checks, the four scripts on a legacy-shaped database in both orders, repeat runs, a simulated partial failure and recovery, and Card, review and loss operations afterwards. Not validated: any real company database, the Salcomp database, a server, Docker, a concurrent application during the upgrade, large data.
+
+## Deployment-readiness checklist (central mode; a template, nothing here has been run against a real database)
+
+Use it for each deployment review and keep the filled-in record with the deployment approval. Known deferred risks (F4, F8, F10) are described in `docs/SECURITY.md`, section 11 (subsection "Deferred technical risks (F4, F8, F10)"); they are accepted limitations, not checklist failures.
+
+### Automated checks (scripts and tests; repeatable)
+
+1. Intended commit: `git rev-parse HEAD` equals the approved commit, the branch is the intended one and `git status --short` prints nothing.
+2. Full backend suite, from `backend/`:
+   ```bash
+   uv run pytest -q
+   ```
+   Record the totals (passed, skipped, failed). The suite uses temporary databases and a random key; it does not touch any company database. Run it on the exact commit being deployed and record the commit hash with the totals; no earlier result is carried over.
+3. Schema diagnostic, once per applicable company database (read-only, from `backend/`, see "1. Inspect without changing anything"):
+   ```bash
+   PM_COMPANY_DB_<SLUG>=sqlite:////abs/path/to/<company>.db uv run python diagnose_company_schema.py --company <slug>
+   ```
+   The variable name is derived from the slug (`database_targets.company_env_name`: upper-case, `-` becomes `_`): `salcomp` uses `PM_COMPANY_DB_SALCOMP`, `lity` uses `PM_COMPANY_DB_LITY`, `valor-log` uses `PM_COMPANY_DB_VALOR_LOG`. Only `salcomp`, `lity` and `valor-log` are accepted by `--company`.
+   Required result: exit 0 and "Schema complete." Exit 1 (incomplete) or 2 (not runnable) stops the deployment. Run it on a verified copy of the file unless the operator has authorized reading the live file; the diagnostic opens `mode=ro` and never runs a repair.
+4. `uq_card_review_pending`: the diagnostic in step 3 already verifies it (table `card_review_obligations`, unique, columns `card_id, reviewer_role`, condition `status = 'pending'`). The diagnostic is the authoritative check provided by the repository: it reads the index metadata (`PRAGMA index_list` / `index_info`) and compares uniqueness, the ordered columns and the partial-index condition. Optional visual cross-check only, on the same copy: `SELECT sql FROM sqlite_master WHERE name = 'uq_card_review_pending'` should show a `CREATE UNIQUE INDEX` on `card_review_obligations (card_id, reviewer_role)` ending in `WHERE status = 'pending'`. Reading that text does not by itself prove uniqueness, column order or the condition as SQLite applies them, and it never replaces a diagnostic exit 0.
+
+### Manual operational checks (an operator; not automated)
+
+5. Schema versions and elements: for every company database, version 4 and the five additive tables present, created by the four init scripts (table in "Existing company databases"), confirmed by step 3 on that database's own file.
+6. If the diagnostic reports a missing or incorrect index (`INCOMPATIBLE`), **stop the deployment and investigate**. The init scripts never repair an existing table or index; the repair is a separately authorized, backed-up task. The existing procedure is "Backup and recovery prerequisites": stop the application, take a verified copy of the file and keep it off the server, run the diagnostic and dry runs on the copy first, repair only with explicit authorization, re-run the diagnostic (exit 0), and restore the verified copy if anything fails. No dedicated index-repair script exists, and none is documented here; an index that is missing because its whole table is missing is created by `init_company_card_reviews.py` (dry run first, then `--apply`).
+7. Environment and secrets: confirm, through the approved deployment process and without printing values, that the variables listed in "Required variables" are set for the environment (`SECRET_KEY` of at least 32 characters, `PM_IDENTITY_DATABASE_URL`, one `PM_COMPANY_DB_<SLUG>` per company, `PM_PUBLIC_URL`, SMTP settings, and the proxy and CORS settings that apply), that the env file is outside the repository, and that production startup validation passes (the app refuses to start and lists every problem). Never paste a value into a ticket, log or chat.
+8. Record, with date and operator: commit, test totals, diagnostic result per company database (exit status), target version or image tag, and who approved the deployment.
+
+### Assumptions and unresolved operational details
+
+- The target host, the real database paths, the backup location and the approver are not defined in the repository and are left to the operator.
+- The checklist covers central mode. For legacy single-database deployments use "C6 release" and "Backup, migration and restore procedure" above.
+- No diagnostic or deployment has been run against a production database, VPS or real company database.
 
 ## Central mode (Salcomp, Lity, Valor Log): configuration, users and boards (Part 2A; nothing here has been run on a server)
 
