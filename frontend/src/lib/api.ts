@@ -228,6 +228,7 @@ export interface CompanyCapabilities {
   canImport: boolean;
   canExport: boolean;
   canManageProducts: boolean;
+  canReview: boolean;
 }
 
 export interface CompanyMe {
@@ -246,6 +247,52 @@ export async function getCompanyMe(companySlug: string, signal?: AbortSignal): P
   const me = await apiCall<CompanyMe>(`${companyPath(companySlug)}/me`, { signal });
   if (me?.company_slug !== companySlug) throw { status_code: 0, detail: "Unexpected response from the server." } as ApiError;
   return me;
+}
+
+/** A pending review of the caller's own role (Admin or Super Admin), as persisted by the backend. */
+export interface ReviewItem {
+  id: number;
+  board_id: number;
+  card_id: number;
+  card_title: string;
+  column_title: string;
+  reviewer_role: "admin" | "super_admin";
+  /** The version of the card this review refers to; clearing must send the version the reviewer saw. */
+  card_version: number;
+  created_at: string;
+  updated_at: string;
+  refresh_count: number;
+  triggers: {
+    kind: "member_edit" | "backward_move";
+    version: number;
+    at: string;
+    changes?: Record<string, { old: unknown; new: unknown }>;
+    from_title?: string;
+    to_title?: string;
+  }[];
+}
+
+/** Pending reviews of the caller's role on one board (403 for a Sales Member or Visitor). */
+export async function getCompanyReviews(companySlug: string, boardId: number, signal?: AbortSignal): Promise<ReviewItem[]> {
+  const body = await apiCall<{ reviewer_role: string; items: ReviewItem[] }>(
+    `${companyPath(companySlug)}/boards/${Number(boardId)}/reviews`, { signal });
+  if (!body || !Array.isArray(body.items)) throw { status_code: 0, detail: "Unexpected response from the server." } as ApiError;
+  return body.items;
+}
+
+/** Clear the caller's own review of a card. `cardVersion` is the version shown to the reviewer; a card that has changed
+ *  since answers 409 (code "review_stale") and nothing is cleared. */
+export async function clearCompanyReview(
+  companySlug: string,
+  boardId: number,
+  cardId: number,
+  reviewerRole: "admin" | "super_admin",
+  cardVersion: number
+): Promise<void> {
+  await apiCall<unknown>(
+    `${companyPath(companySlug)}/boards/${Number(boardId)}/cards/${Number(cardId)}/reviews/${reviewerRole}/clear`,
+    { method: "POST", body: JSON.stringify({ card_version: cardVersion }) }
+  );
 }
 
 /** One board with its columns and cards, read from the company's own database. Throws if it is not the board asked for. */

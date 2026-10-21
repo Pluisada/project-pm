@@ -24,8 +24,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+import card_reviews
 from card_rules import (
     CardPermissionDenied,
+    record_audit,
     InvalidCardUpdate,
     apply_card_updates,
     audit_deletion,
@@ -89,6 +91,9 @@ from stage_history import SOURCE_API, set_stage_context
 from undo import UNRESTORABLE, UndoError, apply_undo, get_undo, record_undo, undo_create, undo_delete, undo_move, undo_update
 from schemas import (
     AIChatRequest,
+    ReviewClearRequest,
+    ReviewClearResult,
+    ReviewList,
     BoardCreate,
     BoardDetail,
     BoardResponse,
@@ -244,6 +249,34 @@ def build_company_router(
     ) -> Iterator[Session]:
         yield from writer_session(identity, context)
 
+    def review_http(exc: card_reviews.ReviewError) -> HTTPException:
+        return HTTPException(status_code=exc.status, detail={"code": exc.code, "message": exc.message})
+
+    def ensure_reviews(db: Session) -> None:
+        """Changes that can create a review obligation need the review tables; without them they are refused (503)."""
+        try:
+            card_reviews.require_reviews(db)
+        except card_reviews.ReviewError as exc:
+            raise review_http(exc) from None
+
+    def get_reviewer_context(context: CompanyContext = Depends(get_writer_context)) -> CompanyContext:
+        """Only the Super Admin and this company's Admin review; Sales Members and Visitors never do. Runs before the
+        company database opens."""
+        if context.review_role is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        return context
+
+    def get_own_review_context(reviewer_role: str, context: CompanyContext = Depends(get_reviewer_context)) -> CompanyContext:
+        """A review is cleared only by the role it belongs to: the path names the role and must be the caller's own."""
+        if reviewer_role != context.review_role:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        return context
+
+    def get_own_review_db(
+        identity: Session = Depends(identity_db), context: CompanyContext = Depends(get_own_review_context)
+    ) -> Iterator[Session]:
+        yield from writer_session(identity, context)
+
     def find_board(db: Session, board_id: int) -> Board:
         board = db.query(Board).filter(Board.id == board_id).first()
         if board is None:
@@ -307,6 +340,7 @@ def build_company_router(
         context: CompanyContext = Depends(get_writer_context),
         db: Session = Depends(get_writer_db),
     ):
+        ensure_reviews(db)
         card = find_card(db, board_id, card_id)
         updates = card_update.model_dump(exclude_unset=True)
         new_owner = updates.get("salesperson_id")
@@ -335,6 +369,7 @@ def build_company_router(
         context: CompanyContext = Depends(get_writer_context),
         db: Session = Depends(get_writer_db),
     ):
+        ensure_reviews(db)
         begin_write(db)  # origin, target and both columns' positions are read under the write lock
         find_board(db, board_id)
         target = db.query(Column).filter(Column.id == move.column_id, Column.board_id == board_id).first()
@@ -348,6 +383,9 @@ def build_company_router(
             record_undo(db, context, board_id, f'Move "{card.title}" back to {card.column.title}',
                         [undo_move(card, move.column_id)])
         source_id = card.column_id
+        if target.position < card.column.position:
+            # Only an Admin-level caller gets here (move_denial): the Super Admin must review every backward move.
+            card_reviews.note_backward_move(db, card, context, card.column, target)
         card.column_id = move.column_id
         # `position` is the index the card takes among the target column's cards: the column is renumbered
         # 0..n-1 so the order is exact (no ties). Only positions change here, never card content.
@@ -401,6 +439,7 @@ def build_company_router(
         db: Session = Depends(get_writer_db),
     ):
         """AI board assistant. Writers only; assignments limited to people the central database allows; recorded for Undo like the REST edits."""
+        ensure_reviews(db)
         return await board_ai_chat_payload(
             db, board_id, request, context,
             assignable_ids=set(assignable_user_ids(identity, context.company_slug)), record_undo_entry=True,
@@ -640,6 +679,7 @@ def build_company_router(
         db: Session = Depends(get_writer_db),
     ):
         """Reverse the caller's last change on this board in one transaction (same rules as the legacy undo)."""
+        ensure_reviews(db)
         begin_write(db)  # the entry, the cards it expects and the positions it restores are read under the lock
         try:
             description = apply_undo(db, context, board_id, admin=context.can_manage_cards, can_delete=context.can_delete_cards)
@@ -652,6 +692,47 @@ def build_company_router(
             code = status.HTTP_404_NOT_FOUND if str(exc) == "Nothing to undo" else status.HTTP_409_CONFLICT
             raise HTTPException(status_code=code, detail=str(exc))
         return UndoStatus(available=False, description=None, undone=description)
+
+    # --- Card reviews: the Super Admin and the company's Admin each see and clear only their own role's obligations ---
+
+    @router.get("/boards/{board_id}/reviews", response_model=ReviewList)
+    def list_company_reviews(
+        board_id: int,
+        context: CompanyContext = Depends(get_reviewer_context),
+        db: Session = Depends(get_company_db),
+    ):
+        """Pending review obligations of the caller's own role on this board."""
+        find_board(db, board_id)
+        ensure_reviews(db)
+        return ReviewList(reviewer_role=context.review_role, items=card_reviews.pending_for_role(db, board_id, context.review_role))
+
+    @router.post("/boards/{board_id}/cards/{card_id}/reviews/{reviewer_role}/clear", response_model=ReviewClearResult)
+    def clear_company_review(
+        board_id: int,
+        card_id: int,
+        reviewer_role: str,
+        body: ReviewClearRequest,
+        context: CompanyContext = Depends(get_own_review_context),
+        db: Session = Depends(get_own_review_db),
+    ):
+        """Clear the caller's own pending review of a card, bound to the card version the reviewer saw. Atomic: the
+        check, the clearing and its audit row are one transaction under the write lock; any refusal changes nothing
+        (404 nothing pending, 409 the card changed since, 403 not your role's review, 503 reviews not set up)."""
+        ensure_reviews(db)
+        begin_write(db)
+        card = find_card(db, board_id, card_id)
+        try:
+            done = card_reviews.clear_review(db, card, reviewer_role, body.card_version, context.user_id)
+        except card_reviews.ReviewError as exc:
+            db.rollback()
+            raise review_http(exc) from None
+        record_audit(db, board_id, card.id, context, "review_cleared", {
+            "title": card.title, "reviewer_role": reviewer_role, "card_version": body.card_version,
+            "obligation_id": done["id"],
+        })
+        db.commit()
+        return ReviewClearResult(card_id=card.id, reviewer_role=reviewer_role, card_version=body.card_version,
+                                 cleared_at=done["cleared_at"])
 
     # --- Bid import and revert: Super Admin and the company's Admin, checked before the company database opens ------
 

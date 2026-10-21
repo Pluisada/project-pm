@@ -129,6 +129,14 @@ def can_export_cards(role: str) -> bool:
     return is_super(role) or role == ADMIN_ROLE
 
 
+def review_role(role: str) -> str | None:
+    """The review obligations `role` may see and clear: "super_admin" for the Super Admin, "admin" for a company
+    Admin (each only its own), None for everyone else (Sales Member, Visitor, unknown)."""
+    if is_super(role):
+        return SUPER_ADMIN_ROLE
+    return ADMIN_ROLE if role == ADMIN_ROLE else None
+
+
 def read_only(role: str) -> bool:
     """A role that may never write (Visitor). The reserved company Admin is not read-only (Phase 2B), but it is
     no administrator either: every admin-level predicate is false for it, so it acts at most as a Sales Member."""

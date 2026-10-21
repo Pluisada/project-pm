@@ -35,6 +35,7 @@ from company_schema import COMPANY_SCHEMA_VERSION, CompanySchemaError, validate_
 from create_identity_db import _remove_created_file
 from database_targets import COMPANY_SLUGS, DatabaseTargetError, company_database_path
 from models import CompanyBase
+from card_reviews import create_reviews
 from excel_import_ledger import create_ledger
 from product_catalog import initialize_catalog
 
@@ -85,6 +86,7 @@ def create_company_database(slug: str, environ=None) -> Path:
 
         CompanyBase.metadata.create_all(engine)
         create_ledger(engine)  # the Cards-import ledger: outside the required contract, like the product catalog
+        create_reviews(engine)  # card versions and review obligations: additive, outside the required contract too
         with Session(engine) as session:  # a new company starts with the default products
             initialize_catalog(session)
             session.commit()

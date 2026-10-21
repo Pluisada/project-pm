@@ -19,6 +19,7 @@ from product_catalog import ProductError, catalog_names, check_product_line
 from models import ConversationMessage, Card, BoardColumn as Column, CompanyUser
 from schemas import BoardDetail, CardUpdate
 from stage_history import SOURCE_AI, set_stage_context
+import card_reviews
 from undo import UNRESTORABLE, record_undo, undo_create, undo_delete, undo_move, undo_update
 from database import SessionLocal
 from ai import call_ai, AIError
@@ -343,6 +344,9 @@ async def apply_board_actions(
                         results["failed"].append({"action": action, "reason": denial})
                         continue
 
+                    if column.position < card.column.position:
+                        # Only an Admin-level caller passes move_denial for a backward move: the Super Admin reviews it.
+                        card_reviews.note_backward_move(db, card, current_user, card.column, column)
                     undo_steps.append(undo_move(card, column.id))
                     card.column_id = column_id
                     card.position = action.get("position", 0)

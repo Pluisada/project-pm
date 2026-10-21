@@ -25,12 +25,12 @@ from test_company_card_writes import Rig as WriteRig, member as write_member
 NOW = "2026-01-01 00:00:00"
 SUPER = {"readOnly": False, "canEditOwnCards": True, "canEditAnyCard": True, "canMoveBack": True,
          "canDeleteCards": True, "canAssignSalesperson": True, "canManageBoards": True, "canImport": True,
-         "canExport": True, "canManageProducts": True}
+         "canExport": True, "canManageProducts": True, "canReview": True}
 # A company Admin keeps the commercial card operations and the export; delete, imports, boards and products are Super Admin only.
 ADMIN = SUPER | {"canDeleteCards": False, "canManageBoards": False, "canImport": False, "canManageProducts": False}
 MEMBER = {"readOnly": False, "canEditOwnCards": True, "canEditAnyCard": False, "canMoveBack": False,
           "canDeleteCards": False, "canAssignSalesperson": False, "canManageBoards": False, "canImport": False,
-          "canExport": False, "canManageProducts": False}
+          "canExport": False, "canManageProducts": False, "canReview": False}
 VISITOR = {k: False for k in SUPER} | {"readOnly": True}
 
 
@@ -207,6 +207,7 @@ def _probe(w, uid, token):
     caps["canImport"] = not ok("post", "/boards/1/imports/preview", (403,))
     caps["canExport"] = ok("get", "/boards/1/excel/template", (200,))
     caps["canManageProducts"] = ok("post", "/products", (201,), json={"name": "Probe"})
+    caps["canReview"] = ok("get", "/boards/1/reviews", (200,))
     return caps
 
 

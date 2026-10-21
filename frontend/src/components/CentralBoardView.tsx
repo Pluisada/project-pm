@@ -19,6 +19,7 @@ import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalList
 import { CSS } from "@dnd-kit/utilities";
 import { CentralCardForm, type CardFormTarget } from "@/components/CentralCardForm";
 import { CentralCardHistory } from "@/components/CentralCardHistory";
+import { CentralReviews } from "@/components/CentralReviews";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { applyMove, cardDndId, columnDndId, currentIndex, planMove } from "@/lib/centralMove";
 import { DEAL_CURRENCY, formatDate, formatMoney } from "@/lib/format";
@@ -71,7 +72,7 @@ const pointerFirst: CollisionDetection = (args) => {
   return underPointer.length > 0 ? underPointer : closestCenter(args);
 };
 
-const CentralCard = ({ card, onEdit, onDelete, onHistory, movable, overlay }: { card: CardResponse; onEdit?: () => void; onDelete?: () => void; onHistory?: () => void; movable?: boolean; overlay?: boolean }) => {
+const CentralCard = ({ card, onEdit, onDelete, onHistory, movable, overlay, reviewPending }: { card: CardResponse; onEdit?: () => void; onDelete?: () => void; onHistory?: () => void; movable?: boolean; overlay?: boolean; reviewPending?: boolean }) => {
   const sortable = useSortable({ id: cardDndId(card.id), disabled: { draggable: !movable || overlay } });
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = sortable;
   const nextYear = card.deal_value_next_year;
@@ -89,6 +90,11 @@ const CentralCard = ({ card, onEdit, onDelete, onHistory, movable, overlay }: { 
             <circle cx="3" cy="10" r="1" /><circle cx="9" cy="10" r="1" />
           </svg>
         </button>
+      )}
+      {reviewPending && (
+        <p data-testid={`review-badge-${card.id}`} className="mb-1 inline-block rounded-full bg-amber-200 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-950">
+          Review pending
+        </p>
       )}
       <p className="line-clamp-2 break-words font-display text-sm font-semibold leading-5 text-[var(--navy-dark)]">{card.title}</p>
       {card.company && <p className="mt-0.5 truncate text-xs text-[var(--gray-text)]">{card.company}</p>}
@@ -175,6 +181,8 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
   // The open history belongs to one company/board/attempt, like the form.
   const [historyOf, setHistoryOf] = useState<{ key: string; cardId: number } | null>(null);
   const [activeCardId, setActiveCardId] = useState<number | null>(null);
+  // Card ids with a pending review of the caller's role, as last reported by CentralReviews (persisted backend state).
+  const [reviewCardIds, setReviewCardIds] = useState<{ key: string; ids: number[] } | null>(null);
   // Both belong to one selection and are only shown while it is still the current one.
   const [moveErrorFor, setMoveErrorFor] = useState<{ key: string; text: string } | null>(null);
   const [movingFor, setMovingFor] = useState<string | null>(null);
@@ -508,6 +516,11 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
           </button>
         </div>
       )}
+      {caps.canReview && !caps.readOnly && (
+        <CentralReviews key={`${companySlug}:${boardId}`} companySlug={companySlug} boardId={boardId} refreshToken={undoTick}
+          onPendingChange={(ids) => setReviewCardIds({ key, ids })}
+          onOpenHistory={(cardId) => setHistoryOf({ key, cardId })} />
+      )}
       {moveError && <p role="alert" data-testid="move-error" className="mt-2 text-sm font-medium text-red-800">{moveError}</p>}
       <DndContext sensors={sensors} collisionDetection={pointerFirst} onDragStart={handleDragStart}
         onDragEnd={handleDragEnd} onDragCancel={() => setActiveCardId(null)}>
@@ -527,7 +540,7 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
               <p className="text-xs font-semibold text-[var(--gray-text)]">{cards.length} {cards.length === 1 ? "card" : "cards"}</p>
               <DroppableList columnId={column.id} cardIds={cards.map((c) => cardDndId(c.id))}>
                 {cards.map((card) => (
-                  <CentralCard key={card.id} card={card} movable={canMoveCard(card) && !moving && !undoing && !deleting}
+                  <CentralCard key={card.id} card={card} reviewPending={caps.canReview && reviewCardIds?.key === key && reviewCardIds.ids.includes(card.id)} movable={canMoveCard(card) && !moving && !undoing && !deleting}
                     onHistory={() => setHistoryOf({ key, cardId: card.id })}
                     onDelete={!caps.readOnly && caps.canDeleteCards && !deleting ? () => setConfirmDelete({ key, id: card.id, title: card.title }) : undefined}
                     onEdit={canEditCard(card) ? () => setForm({ key, target: { mode: "edit", card } }) : undefined} />

@@ -8,6 +8,7 @@ the same rules whether they act through the UI or ask the AI to do it.
 import json
 from datetime import date, datetime, timezone
 
+import card_reviews
 from lead_options import DEAL_CURRENCY
 from product_catalog import ProductError, check_product_line
 from models import AuditEvent, Card, CardEditHistory, CompanyUser, User, UserRole
@@ -203,3 +204,5 @@ def record_member_edit(db, card: Card, user: User, changes: dict, *, admin: bool
             user_id=user.id,
             changes=json.dumps(changes),
         ))
+        # Company databases only (a no-op in the legacy runtime): both the Admin and the Super Admin must review it.
+        card_reviews.note_member_edit(db, card, user, changes)

@@ -26,6 +26,7 @@ from datetime import date
 from pydantic import ValidationError
 from sqlalchemy.orm import object_session
 
+import card_reviews
 from card_rules import CardPermissionDenied, apply_card_updates, audit_deletion, can_edit_card
 from stage_history import SOURCE_UNDO, set_stage_context
 from models import BoardColumn as Column, Card, UndoEntry, User
@@ -196,6 +197,10 @@ def apply_undo(db, user: User, board_id: int, *, admin: bool | None = None, can_
             card = _board_card(db, board_id, step["card_id"])
             if not can_edit_card(user, card, admin=admin):
                 raise UndoError("Can't undo: you can only move opportunities assigned to you")
+            target = _board_column(db, board_id, step["column_id"])
+            if admin is True and target.position < card.column.position:
+                # An Admin-level undo that sends a card to an earlier column is a backward move like any other.
+                card_reviews.note_backward_move(db, card, user, card.column, target)
             _restore_position(card, step["column_id"], step["position"])
         elif op == "update":
             card = _board_card(db, board_id, step["card_id"])

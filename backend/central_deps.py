@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from central_auth import AuthenticationFailed, user_for_token
 from identity_service import (
     SUPER_ADMIN_ROLE, IdentityServiceError, assignable_user_ids, can_grant_admin, can_delete_cards, can_export_cards, can_manage_boards, can_manage_cards, can_manage_imports, can_manage_members, can_manage_products, can_review,
-    company_access, is_admin_level, is_super, read_only, sync_assignable_users, sync_company_user,
+    company_access, review_role, is_admin_level, is_super, read_only, sync_assignable_users, sync_company_user,
 )
 
 ROLE_SUPER_ADMIN = SUPER_ADMIN_ROLE
@@ -71,6 +71,10 @@ class CompanyContext:
     @property
     def can_manage_cards(self) -> bool:
         return can_manage_cards(self.role)
+
+    @property
+    def review_role(self) -> str | None:
+        return review_role(self.role)
 
     @property
     def can_delete_cards(self) -> bool:
@@ -141,6 +145,7 @@ def company_capabilities(context: CompanyContext) -> dict[str, bool]:
         "canImport": context.can_manage_imports,
         "canExport": context.can_export_cards,
         "canManageProducts": context.can_manage_products,
+        "canReview": context.review_role is not None,
     }
 
 

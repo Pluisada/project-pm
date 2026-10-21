@@ -291,6 +291,39 @@ class CardEditHistoryEntry(BaseModel):
     created_at: datetime
 
 
+class ReviewItem(BaseModel):
+    """One pending review obligation of the caller's role (card_reviews.py)."""
+    id: int
+    board_id: int
+    card_id: int
+    card_title: str
+    column_title: str
+    reviewer_role: str
+    card_version: int
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    refresh_count: int
+    triggers: List[dict]  # newest last: {kind, version, user_id, at, changes | from_title/to_title}
+
+
+class ReviewList(BaseModel):
+    reviewer_role: str
+    items: List[ReviewItem]
+
+
+class ReviewClearRequest(BaseModel):
+    """The version of the card the reviewer is looking at (ReviewItem.card_version)."""
+    card_version: int = Field(..., ge=1)
+
+
+class ReviewClearResult(BaseModel):
+    card_id: int
+    reviewer_role: str
+    card_version: int
+    cleared_at: datetime
+
+
 class SalespersonOption(BaseModel):
     id: int
     username: str
