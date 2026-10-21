@@ -19,6 +19,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from card_reviews import create_reviews, has_reviews
 from company_database import company_session_factory, open_company_engine
 from company_schema import CompanySchemaError, validate_company_schema
+from diagnose_company_schema import refuse_incompatible_tables
 from database_targets import COMPANY_SLUGS, DatabaseTargetError
 
 
@@ -28,6 +29,7 @@ def init_company_card_reviews(slug: str, apply: bool = False, environ=None) -> b
     engine = open_company_engine(slug, environ)
     try:
         with company_session_factory(engine)() as db:
+            refuse_incompatible_tables(db, slug, "init_company_card_reviews.py")
             if has_reviews(db):
                 return False
             if apply:

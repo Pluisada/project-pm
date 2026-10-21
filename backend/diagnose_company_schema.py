@@ -29,7 +29,7 @@ from urllib.parse import quote
 
 from card_loss import CardLossEvent
 from card_reviews import CardVersion, ReviewObligation
-from company_schema import COMPANY_SCHEMA_VERSION, REQUIRED_COMPANY_SCHEMA
+from company_schema import COMPANY_SCHEMA_VERSION, REQUIRED_COMPANY_SCHEMA, CompanySchemaError
 from database_targets import COMPANY_SLUGS, DatabaseTargetError, company_database_path
 from excel_import_ledger import ExcelImport
 from product_catalog import Product
@@ -83,6 +83,35 @@ def _unique_column_sets(connection, table: str) -> list[tuple[str, ...]]:
     return sets
 
 
+def table_gaps(connection: sqlite3.Connection, item: Additive) -> list[str]:
+    """What is wrong with the EXISTING table of `item`: missing columns and missing unique guards (read-only)."""
+    gaps = []
+    columns = {r[1] for r in connection.execute(f'PRAGMA table_info("{item.table}")')}
+    absent = sorted(item.columns - columns)
+    if absent:
+        gaps.append(f"table {item.table} is missing columns: {', '.join(absent)}")
+    unique = _unique_column_sets(connection, item.table)
+    for guard in item.unique_guards:
+        if guard not in unique:
+            gaps.append(f"table {item.table} lacks the unique guard on ({', '.join(guard)})")
+    return gaps
+
+
+def refuse_incompatible_tables(db, slug: str, script: str) -> None:
+    """Raise CompanySchemaError when a table that `script` would create already exists in an incompatible shape.
+
+    An init script only creates MISSING tables (CREATE TABLE IF NOT EXISTS); on an incompatible existing table it would
+    do nothing yet report success. Read-only; call it before any write, in dry run as well."""
+    connection = db.connection().connection.driver_connection
+    existing = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    gaps = [g for item in ADDITIVE if item.script == script and item.table in existing for g in table_gaps(connection, item)]
+    if gaps:
+        raise CompanySchemaError(
+            f"company {slug!r}: {'; '.join(gaps)}. {script} only creates missing tables and never repairs an existing "
+            "one; nothing was written. Repair needs a separately authorized, backed-up task."
+        )
+
+
 def diagnose_connection(connection: sqlite3.Connection) -> Diagnosis:
     """Inspect an open connection (read-only queries only)."""
     result = Diagnosis()
@@ -105,14 +134,7 @@ def diagnose_connection(connection: sqlite3.Connection) -> Diagnosis:
         if item.table not in tables:
             result.missing.append(item)
             continue
-        columns = {r[1] for r in connection.execute(f'PRAGMA table_info("{item.table}")')}
-        absent = sorted(item.columns - columns)
-        if absent:
-            result.incompatible.append(f"table {item.table} is missing columns: {', '.join(absent)}")
-        unique = _unique_column_sets(connection, item.table)
-        for guard in item.unique_guards:
-            if guard not in unique:
-                result.incompatible.append(f"table {item.table} lacks the unique guard on ({', '.join(guard)})")
+        result.incompatible.extend(table_gaps(connection, item))
     return result
 
 

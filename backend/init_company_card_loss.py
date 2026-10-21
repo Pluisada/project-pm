@@ -18,6 +18,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from card_loss import create_loss, has_loss
 from company_database import company_session_factory, open_company_engine
 from company_schema import CompanySchemaError, validate_company_schema
+from diagnose_company_schema import refuse_incompatible_tables
 from database_targets import COMPANY_SLUGS, DatabaseTargetError
 
 
@@ -27,6 +28,7 @@ def init_company_card_loss(slug: str, apply: bool = False, environ=None) -> bool
     engine = open_company_engine(slug, environ)
     try:
         with company_session_factory(engine)() as db:
+            refuse_incompatible_tables(db, slug, "init_company_card_loss.py")
             if has_loss(db):
                 return False
             if apply:

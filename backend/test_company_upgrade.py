@@ -7,6 +7,7 @@ import hashlib
 import sqlite3
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 import init_company_card_reviews as reviews_script
 from company_schema import CompanySchemaError, validate_company_schema
@@ -17,6 +18,7 @@ from init_company_card_loss import init_company_card_loss
 from init_company_card_reviews import init_company_card_reviews
 from init_company_excel_imports import init_company_excel_imports
 from init_company_products import init_company_products
+from lead_options import PRODUCT_LINES
 from test_company_card_loss import LOST, losses, put_move
 from test_company_card_loss import world as loss_world  # noqa: F401  (fixture)
 from test_company_card_reviews import edit, pending, reviews
@@ -145,6 +147,7 @@ def test_exit_codes_complete_and_unrunnable(legacy, tmp_path, monkeypatch, capsy
     env, path, _ = legacy
     for name, value in env.items():
         monkeypatch.setenv(name, value)
+    monkeypatch.delenv(company_env_name("valor-log"), raising=False)
     assert diagnose_main(["--company", "lity"]) == 0 and "Schema complete." in capsys.readouterr().out
     assert diagnose_main(["--company", "valor-log"]) == 2  # not configured: fails closed
     path.unlink()
@@ -208,7 +211,9 @@ def test_applying_all_four_in_any_order_completes_the_schema_and_is_repeatable(l
     assert [r[0] for r in con.execute("SELECT name FROM products ORDER BY id")] == ["Chargers", "Power supplies", "Adapters"]  # kept
     con.close()
     after = digest(path)
-    assert [INIT[name]("lity", apply=True, environ=env) in (False, []) for name in order] == [True] * 4
+    for name in order:
+        again = INIT[name]("lity", apply=True, environ=env)
+        assert again in (False, []), name  # False: tables exist; []: no default product to add
     assert digest(path) == after  # a second full run changes not one byte
 
 
@@ -223,10 +228,15 @@ def test_a_failure_halfway_leaves_a_state_the_diagnostic_names_and_a_rerun_compl
         raise RuntimeError("simulated failure")
 
     monkeypatch.setattr(reviews_script, "create_reviews", half_then_fail)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="simulated failure"):
         init_company_card_reviews("lity", apply=True, environ=env)
-    # Documented limit: the failure may leave one of the two tables. It is never a stamped/complete state.
-    assert not diagnose_company("lity", env).complete
+    # Documented limit: the failure leaves the first table only (the script commits nothing else).
+    assert "card_versions" in tables(path)
+    assert "card_review_obligations" not in tables(path)
+    partial = diagnose_company("lity", env)
+    assert not partial.complete
+    assert [a.table for a in partial.missing] == ["card_review_obligations"]
+    assert partial.problems == [] and partial.incompatible == []
     validate_company_schema("lity", env)  # the required contract is untouched
     monkeypatch.setattr(reviews_script, "create_reviews", real)
     assert init_company_card_reviews("lity", apply=True, environ=env) is True
@@ -258,7 +268,7 @@ def test_a_read_only_file_makes_apply_fail_and_leaves_the_database_unchanged(leg
     before = digest(path)
     path.chmod(0o400)
     try:
-        with pytest.raises(Exception):
+        with pytest.raises(OperationalError):
             init_company_card_loss("lity", apply=True, environ=env)
     finally:
         path.chmod(0o600)
@@ -295,3 +305,84 @@ def test_an_upgraded_legacy_database_supports_card_review_and_loss_operations(lo
     assert losses(rig) == [(1, 1, LOST, "budget cut", uid, "api")]
     assert rig.sql("SELECT title FROM cards WHERE id = 1") == [("after upgrade",)]
     assert rig.call("get", "", atoken).status_code == 200
+
+
+# --- incompatible existing tables ------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("script,damage,gap", [
+    ("init_company_card_reviews.py", "DROP INDEX uq_card_review_pending", "reviewer_role"),
+    ("init_company_card_loss.py", "ALTER TABLE card_loss_events DROP COLUMN source", "source"),
+    ("init_company_excel_imports.py", "ALTER TABLE card_excel_imports DROP COLUMN unchanged_count", "unchanged_count"),
+    ("init_company_products.py", "ALTER TABLE products DROP COLUMN updated_at", "updated_at"),
+])
+@pytest.mark.parametrize("apply", [False, True])
+def test_a_script_refuses_an_incompatible_existing_table_and_writes_nothing(legacy, script, damage, gap, apply):
+    env, path, run = legacy
+    run(damage)
+    before = digest(path)
+    with pytest.raises(CompanySchemaError, match=gap) as excinfo:
+        INIT[script]("lity", apply=apply, environ=env)
+    assert script in str(excinfo.value) and "nothing was written" in str(excinfo.value)
+    assert digest(path) == before
+    assert not diagnose_company("lity", env).complete  # still reported, never "fixed"
+
+
+def test_the_command_exits_1_with_the_gap_and_never_says_created(legacy, monkeypatch, capsys):
+    import init_company_card_loss as script
+    env, path, run = legacy
+    run("ALTER TABLE card_loss_events DROP COLUMN source")
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    before = digest(path)
+    for flags in ([], ["--apply"]):
+        assert script.main(["--company", "lity", *flags]) == 1
+        out = capsys.readouterr()
+        assert "source" in out.err and "init_company_card_loss.py" in out.err
+        assert "Created" not in out.out and "Would create" not in out.out and "nothing to do" not in out.out
+    assert digest(path) == before
+
+
+def test_a_missing_table_next_to_an_incompatible_one_is_still_refused(legacy):
+    env, path, run = legacy
+    run("DROP INDEX uq_card_review_pending", "DROP TABLE card_versions")  # missing card_versions, damaged obligations
+    with pytest.raises(CompanySchemaError, match="reviewer_role"):
+        init_company_card_reviews("lity", apply=True, environ=env)
+    assert "card_versions" not in tables(path)
+
+
+# --- the products script -----------------------------------------------------------------------------------------------
+
+def product_rows(path):
+    con = sqlite3.connect(path)
+    try:
+        return [r[0] for r in con.execute("SELECT name FROM products ORDER BY id")]
+    finally:
+        con.close()
+
+
+def test_products_creates_the_missing_table_and_seeds_the_defaults(legacy):
+    env, path, run = legacy
+    run("DROP TABLE products")
+    assert init_company_products("lity", apply=False, environ=env) == list(PRODUCT_LINES)
+    assert "products" not in tables(path)  # dry run writes nothing
+    assert init_company_products("lity", apply=True, environ=env) == list(PRODUCT_LINES)
+    assert product_rows(path) == list(PRODUCT_LINES)
+    con = sqlite3.connect(path)
+    columns = {r[1] for r in con.execute('PRAGMA table_info("products")')}
+    con.close()
+    assert {"id", "name", "created_at", "updated_at"} <= columns
+    assert diagnose_company("lity", env).complete
+    assert init_company_products("lity", apply=True, environ=env) == []  # repeat: nothing added
+    assert product_rows(path) == list(PRODUCT_LINES)
+
+
+def test_products_keeps_custom_data_and_only_adds_the_missing_defaults(legacy):
+    env, path, run = legacy
+    run("DELETE FROM products",
+        "INSERT INTO products (name, created_at, updated_at) VALUES ('Custom A', '2026-01-01', '2026-01-01')",
+        f"INSERT INTO products (name, created_at, updated_at) VALUES ('{PRODUCT_LINES[0].upper()}', '2026-01-01', '2026-01-01')")
+    expected = ["Custom A", PRODUCT_LINES[0].upper(), *PRODUCT_LINES[1:]]  # defaults match case-insensitively
+    assert init_company_products("lity", apply=True, environ=env) == list(PRODUCT_LINES[1:])
+    assert product_rows(path) == expected
+    assert init_company_products("lity", apply=True, environ=env) == []
+    assert product_rows(path) == expected

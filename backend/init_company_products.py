@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from company_database import company_session_factory, open_company_engine
 from company_schema import CompanySchemaError, validate_company_schema
+from diagnose_company_schema import refuse_incompatible_tables
 from database_targets import COMPANY_SLUGS, DatabaseTargetError
 from lead_options import PRODUCT_LINES
 from product_catalog import Product, has_catalog, initialize_catalog
@@ -33,6 +34,7 @@ def init_company_products(slug: str, apply: bool = False, environ=None) -> list[
     engine = open_company_engine(slug, environ)
     try:
         with company_session_factory(engine)() as db:
+            refuse_incompatible_tables(db, slug, "init_company_products.py")
             if not apply:
                 present = {n.lower() for n in db.scalars(select(Product.name))} if has_catalog(db) else set()
                 return [n for n in PRODUCT_LINES if n.lower() not in present]

@@ -301,7 +301,7 @@ cd backend
 PM_COMPANY_DB_LITY=sqlite:////abs/path/to/copy/lity.db uv run python diagnose_company_schema.py --company lity
 ```
 
-`diagnose_company_schema.py` opens the file with SQLite `mode=ro` and `query_only`, reads only `sqlite_master` and `PRAGMA` metadata, and never runs an init or migration script. The report names versions, tables, columns and the script that fixes each missing table; it contains no paths and no row values. Exit status: 0 schema complete, 1 incomplete (version or required-table problems, missing tables with their script, or `INCOMPATIBLE` additive tables), 2 not runnable (company not configured or rejected, file missing or unreadable). It does not create a missing file.
+`diagnose_company_schema.py` opens the file with SQLite `mode=ro` and `query_only`, reads only `sqlite_master` and `PRAGMA` metadata, and never runs an init or migration script. The report names versions, tables, columns and the script that fixes each missing table; it contains no paths and no row values. Exit status: 0 schema complete, 1 incomplete (version or required-table problems, missing tables with their script, or `INCOMPATIBLE` additive tables), 2 not runnable (company not configured or rejected, file missing or unreadable). It does not create a missing file. The diagnostic checks only that each required table exists, that its required columns are present by name, and that its unique guards exist; it does not validate column types, nullability, defaults, foreign keys or non-unique indexes, so a table that passes can still differ from the intended schema in those respects.
 
 ### 2. Dry run, apply, verify (verified order and commands)
 
@@ -323,7 +323,9 @@ uv run python init_company_products.py --company <slug> --apply
 uv run python diagnose_company_schema.py --company <slug>
 ```
 
-A script that finds nothing to do prints so and exits 0. If a script fails after a partial change, the diagnostic names what is still missing and the same script is simply run again (tested: a failure after the first of the two review tables, then a re-run). The scripts do not use one transaction across tables and do not back up anything.
+A script that finds nothing to do prints so and exits 0. Two different failures can occur. (1) A failure partway through creating the several tables of ONE script (only `init_company_card_reviews.py` creates two): SQLite DDL here is not one transaction across tables, so the first table may remain; the diagnostic names the other as missing and re-running the same script creates it (tested with a simulated failure after the first review table, asserting that exactly that table exists, the diagnostic reports the other as missing and a re-run completes). (2) A failure BETWEEN separate scripts (for example the first of the four succeeds, the second does not): the scripts are independent, the earlier ones stay applied, the diagnostic lists the scripts still needed, and each is run again as needed; no script rolls back another. The scripts do not back up anything.
+
+An existing additive table with missing columns or a missing unique guard is not repaired: the script refuses (dry run too) with an error naming the table and the gap, exit 1, writes nothing and never reports it as created or as already present. Such a table needs a separately authorized, backed-up task.
 
 ### Backup and recovery prerequisites (not rehearsed)
 

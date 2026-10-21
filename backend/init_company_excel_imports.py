@@ -16,6 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from company_database import company_session_factory, open_company_engine
 from company_schema import CompanySchemaError, validate_company_schema
+from diagnose_company_schema import refuse_incompatible_tables
 from database_targets import COMPANY_SLUGS, DatabaseTargetError
 from excel_import_ledger import create_ledger, has_ledger
 
@@ -26,6 +27,7 @@ def init_company_excel_imports(slug: str, apply: bool = False, environ=None) -> 
     engine = open_company_engine(slug, environ)
     try:
         with company_session_factory(engine)() as db:
+            refuse_incompatible_tables(db, slug, "init_company_excel_imports.py")
             if has_ledger(db):
                 return False
             if apply:

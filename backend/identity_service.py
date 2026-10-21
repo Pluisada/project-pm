@@ -90,8 +90,9 @@ def can_manage_members(role: str) -> bool:
 
 
 def can_grant_admin(role: str) -> bool:
-    """May create or promote a company Admin membership or invitation. Nobody: ADMIN_ROLE is not in
-    COMPANY_ROLES, so no service path assigns it, whoever asks. Enabling it is a later phase."""
+    """May an INVITATION carry the company Admin role. Nobody: ADMIN_ROLE is not in COMPANY_ROLES, so invitations never
+    issue or accept it. This does not cover change_membership_role, where the Super Admin may set ADMIN_ROLE on an
+    existing membership (ASSIGNABLE_ROLES)."""
     return False
 
 
@@ -349,7 +350,7 @@ def _may_invite(session: Session, user_id: int, company_slug: str) -> bool:
     """Whether the user, read from the central database now, may issue invitations for this company.
 
     Goes through company_access and can_manage_members, never a stored role string or a token claim. Today
-    only the global administrator qualifies: a company Admin role is not in COMPANY_ROLES and grants nothing.
+    only the global administrator qualifies (can_manage_members); a company Admin may not invite.
     """
     access = company_access(session, user_id, company_slug)
     return access is not None and can_manage_members(access.role)
