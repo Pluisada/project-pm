@@ -690,6 +690,12 @@ async def board_ai_chat_payload(
                 detail=ai_result.get("error", "AI service error"),
             )
 
+        # The model call can take seconds, and get_board_context loaded the cards into this session's identity map:
+        # without this, the queries in apply_board_actions would hand back those objects with their pre-call owner,
+        # column and position, and the ownership and move rules would be decided on stale state. Nothing has been
+        # written in this session yet (only reads above), so expiring everything discards no pending change.
+        db.expire_all()
+
         # The model call can take seconds: authority is read again from the identity database before anything is
         # written, and its fresh card-administration decision replaces the one taken at request start. A callable
         # that raises HTTPException refuses the request with nothing written (company routes only).
