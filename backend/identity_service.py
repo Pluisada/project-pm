@@ -65,8 +65,9 @@ VISITOR_ROLE = "visitor"
 
 
 # Role predicates over the role company_access reports. Every authorization site goes through these, so the
-# Super Admin / company Admin split (a later phase) changes them in one place. Today only the global
-# administrator is administrative: is_admin_level and can_review are equal to is_super.
+# Super Admin / company Admin split changes them in one place. The company Admin (ADMIN_ROLE) has the card operations
+# of can_manage_cards, can_export_cards and can_view_members and its own review_role; boards, products, members,
+# imports and card deletion stay Super Admin only. is_admin_level and can_review are equal to is_super.
 def is_super(role: str) -> bool:
     """The global administrator (IdentityUser.is_global_admin), reported as SUPER_ADMIN_ROLE."""
     return role == SUPER_ADMIN_ROLE
@@ -78,7 +79,8 @@ def is_admin_level(role: str) -> bool:
 
 
 def can_review(role: str) -> bool:
-    """May see and clear audit review state. Nothing is reviewable yet; kept equal to is_admin_level."""
+    """Super Admin only. The card review queues are gated per role by review_role (company Admin and Super Admin each
+    clear their own), not by this predicate."""
     return is_admin_level(role)
 
 

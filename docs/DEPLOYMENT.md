@@ -279,6 +279,61 @@ The Cards workbook import records every applied workbook (create or update) in `
 - Read-only check for an authorized operator, on a COPY of the company database taken after a backup (never `backend/pm.db`, never the live file): `sqlite3 <copy> "PRAGMA table_info(card_excel_imports); SELECT COUNT(*), SUM(repeat_guard IS NULL) FROM card_excel_imports;"`. A table without `repeat_guard`, or any row with `repeat_guard` NULL, needs review before importing a workbook that may have been applied before. The query returns counts only, no card data.
 - Export and template downloads are Super Admin or the company Admin of that company (Part 2D-G12); other roles and other companies are refused before the company database opens.
 
+## Existing company databases: Phase 1-3 schema readiness (central mode; development only, nothing here has been run on a server or a real company database)
+
+Phases 2 and 3 of the central mode added behaviour that needs tables a company database made earlier does not have. A company database that passes `company_schema.validate_company_schema` (schema version 4) can still lack them. The application does not create or alter anything on its own; each missing structure has a visible effect until an operator runs the matching script.
+
+### Required elements and what happens without them
+
+| Table(s) | Created by | Without it |
+|---|---|---|
+| `card_versions`, `card_review_obligations` (unique partial index `uq_card_review_pending` on `card_id, reviewer_role` where `status = 'pending'`) | `init_company_card_reviews.py` | A Sales Member's edit, a backward move and the review list/clear endpoints answer 503 `review_not_initialized`; nothing is skipped silently. Reads and forward moves are unaffected. |
+| `card_loss_events` | `init_company_card_loss.py` | A move or creation into a `lost` stage answers 503 `loss_not_initialized`; no move is recorded without a reason. |
+| `card_excel_imports` (unique `board_id, repeat_guard`) | `init_company_excel_imports.py` | The Cards import answers 503 `import_not_initialized`. |
+| `products` | `init_company_products.py` | The lead options fall back to the built-in defaults and catalog writes answer 409. |
+
+All four tables are additive and outside the required schema contract: the schema version stays 4. `create_company_db.py` creates them (and the default products) in a new database. The four scripts are independent: each validates the database first (`validate_company_schema`: file exists, version exactly 4, every required table and column) and creates only its own tables, so none needs another to have run and the order does not matter (both orders are tested). Each is idempotent, dry run by default and never creates or stamps a database. Their limits: an init script only creates a MISSING table. It does not add a column or index to an existing table, so an older or hand-made table is reported by the diagnostic as `INCOMPATIBLE` and stays that way until a separately authorized, backed-up repair. A database below version 4 is refused by every script (`migrate_confidence_level.py` upgrades versions 2 and 3; there is no migration from version 1). The target comes only from the company's own `PM_COMPANY_DB_<SLUG>` variable; protected paths (including `pm.db`, `pm-commercial.db`, `DATABASE_URL`'s file) are refused, so the Salcomp database cannot be targeted while it is protected by policy.
+
+### 1. Inspect without changing anything
+
+```bash
+cd backend
+PM_COMPANY_DB_LITY=sqlite:////abs/path/to/copy/lity.db uv run python diagnose_company_schema.py --company lity
+```
+
+`diagnose_company_schema.py` opens the file with SQLite `mode=ro` and `query_only`, reads only `sqlite_master` and `PRAGMA` metadata, and never runs an init or migration script. The report names versions, tables, columns and the script that fixes each missing table; it contains no paths and no row values. Exit status: 0 schema complete, 1 incomplete (version or required-table problems, missing tables with their script, or `INCOMPATIBLE` additive tables), 2 not runnable (company not configured or rejected, file missing or unreadable). It does not create a missing file.
+
+### 2. Dry run, apply, verify (verified order and commands)
+
+Unified command: **not implemented, deliberately.** The four scripts are independent and each is a single idempotent step; a wrapper would still run four separate commits (a failure in step 3 leaves steps 1-2 applied) and would add an `--apply` path that touches several tables of a commercial database in one command, while the diagnostic already gives the operator the complete before/after picture. The documented sequence below is the safer, smaller interface.
+
+```bash
+# 0. Diagnose (read-only), 1. take and verify a backup (below), 2. dry run of each script (writes nothing)
+uv run python diagnose_company_schema.py --company <slug>
+uv run python init_company_card_reviews.py --company <slug>
+uv run python init_company_card_loss.py --company <slug>
+uv run python init_company_excel_imports.py --company <slug>
+uv run python init_company_products.py --company <slug>
+# 3. apply, only the ones the diagnostic named, application stopped
+uv run python init_company_card_reviews.py --company <slug> --apply
+uv run python init_company_card_loss.py --company <slug> --apply
+uv run python init_company_excel_imports.py --company <slug> --apply
+uv run python init_company_products.py --company <slug> --apply
+# 4. verify: the diagnostic must exit 0 and print "Schema complete."
+uv run python diagnose_company_schema.py --company <slug>
+```
+
+A script that finds nothing to do prints so and exits 0. If a script fails after a partial change, the diagnostic names what is still missing and the same script is simply run again (tested: a failure after the first of the two review tables, then a re-run). The scripts do not use one transaction across tables and do not back up anything.
+
+### Backup and recovery prerequisites (not rehearsed)
+
+Before any future upgrade of a real company database: stop the application, take a verified copy of the database file (and keep it off the server), run the diagnostic and the dry runs against that copy first, and only then the real file. Restoring means stopping the application and putting the verified copy back. A backup and restore rehearsal for the central company databases has not been performed; none of this was run against a real database. These scripts never take a backup themselves.
+
+### What remains manual, and what is not validated
+
+- Manual: choosing the target through `PM_COMPANY_DB_<SLUG>`, stopping the application, the backup, running each script, running the diagnostic, repairing an `INCOMPATIBLE` table, and migrating a database below version 4.
+- Validated only on temporary databases built in automated tests: the diagnostic, dry-run no-write checks, the four scripts on a legacy-shaped database in both orders, repeat runs, a simulated partial failure and recovery, and Card, review and loss operations afterwards. Not validated: any real company database, the Salcomp database, a server, Docker, a concurrent application during the upgrade, large data.
+
 ## Central mode (Salcomp, Lity, Valor Log): configuration, users and boards (Part 2A; nothing here has been run on a server)
 
 Status: prepared and tested in development only, on disposable databases. No commercial or production database was created or opened (disposable development databases were), no container was started, and the VPS was not touched. The first publication (C6 section above) is legacy-only; central mode is a separate release.

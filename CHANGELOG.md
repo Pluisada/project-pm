@@ -2,6 +2,10 @@
 
 User-facing changes, newest first. For design decisions, test results and known gaps behind each entry, see the matching part in `docs/PLAN.md`.
 
+## 2026-10-21
+
+- **Central mode: database upgrade readiness (Phase 4; development only, no real database opened).** New read-only `backend/diagnose_company_schema.py --company <slug>` reports every missing required or additive element of a company database (versions, tables, columns, unique guards) and the script that creates each missing table; exit 0 complete, 1 incomplete, 2 not runnable. The four existing `init_company_*.py` scripts are unchanged and are documented as independent, idempotent and dry-run-first; there is deliberately no unified upgrade command. New `backend/test_company_upgrade.py` exercises them on temporary legacy-shaped databases. Existing company databases still need the review, loss-reason, import-ledger and product tables created by the operator after a backup (`docs/DEPLOYMENT.md`, "Existing company databases"); not run anywhere. Documentation of the Phase 1-3 roles, card review and mandatory loss reasons added to `docs/CENTRAL_AUTH.md`; two stale comments in `identity_service.py` corrected.
+
 ## 2026-10-20
 
 - **Central mode: explicit "Create default board" (Stage 2B.3; development only, no real database touched).** A company with no board shows a "Create default board" button to callers whose capabilities allow board management (today the Super Admin; the company Admin role stays reserved). `POST /api/companies/{slug}/boards/default` returns the company's first board (lowest id) with 200 and `created: false` if one exists, unchanged; otherwise it creates "Sales Pipeline" ("Company sales pipeline") with the six standard stages and no cards and answers 201 with `created: true`. The check, the board and the stages are one transaction under the write lock, so concurrent requests create at most one board and a failure leaves nothing behind; lock contention answers 503 `database_busy`. Nothing creates a board on its own: startup, reads and page loads never do. Boards cannot be deleted through the API, so there is no "default board marker" and no schema change.

@@ -65,8 +65,8 @@ no database. Contract for the later route migration:
   `company_slug` path parameter, e.g. `/api/companies/{company_slug}/...`; the slug is never
   inferred from the user, a header or a token.
 - It yields a frozen `CompanyContext(user_id, is_global_admin, company_slug, role, read_only)`
-  with no password hash, raw token or token hash. `role` is `admin` (active global admin, every
-  active company), `sales_member` or `visitor` (active membership in that company only).
+  with no password hash, raw token or token hash. `role` is `super_admin` (active global admin, every
+  active company; this note was written when the role string was `admin`, which now means the company-scoped Admin below), `sales_member` or `visitor` (active membership in that company only).
   `read_only` is true for `visitor`.
 - Evaluated from the central database on every request: `central_auth.user_for_token`
   (signed `identity_access` token, active verified user, `pwh`/`sv` match; legacy tokens fail
@@ -83,3 +83,23 @@ no database. Contract for the later route migration:
 - Still needed before wiring: the identity engine opened from `IDENTITY_DATABASE_URL` in
   process wiring, a central login route, and the identity-id to `CompanyUser` mapping
   (items 1, 2 and 4 above).
+
+## Roles, card review and loss reasons as implemented (Phases 1-3; verified in the code, development only)
+
+Source of truth: the predicates in `backend/identity_service.py` and `card_rules.py`, enforced in `company_routes.py` on every request (never in the UI, never from token claims). The role comes from the central database per request.
+
+| Role | Cards | Everything else |
+|---|---|---|
+| `super_admin` (global administrator) | Create for any eligible salesperson, edit any, assign, move forward and backward, delete, export, import | Boards and columns, products, members and invitations |
+| `admin` (company Admin) | Create for an eligible salesperson, edit any, assign, move forward and backward, export | Read-only member list. No delete, imports, boards, products or member changes |
+| `sales_member` | Create (assigned to themself, a client-supplied salesperson is ignored); edit and move only cards assigned to them, never unassigned ones; move forward or within a column only | None |
+| `visitor` | Read only, even a card assigned to them | None |
+
+The company Admin role exists in the schema (version 2) and in the permission predicates, but no invitation can carry it (`can_grant_admin` is always false); only the Super Admin's role-change API can set it. No frontend path does.
+
+**Card review.** Obligations are stored per card and reviewer role (`card_versions`, `card_review_obligations`). A Sales Member's successful edit creates one obligation for the company Admin and one for the Super Admin, independent of each other. An Admin-level user (Admin or Super Admin) moving a card backward creates one for the Super Admin only. Forward moves and Admin/Super Admin edits create none. Each role sees and clears only its own (`GET .../reviews`, `POST .../cards/{id}/reviews/{role}/clear`, other role 403). Every change to a reviewable field or the column raises the card's version and moves pending obligations to it; clearing needs the version the reviewer saw (409 `review_stale` otherwise), and a cleared obligation is never reopened or inherited. Deleting a card closes its pending rows as `void`. REST, AI and undo go through the same listener. Without the tables, changes needing an obligation are refused with 503.
+
+**Loss reasons.** Entering a stage whose `stage_kind` is `lost` (by move or by creating a card there, REST or AI; never by the title) needs a non-empty reason of at most 1000 characters after trimming, supplied by the person (422 `loss_reason_required` / `loss_reason_too_long` otherwise, nothing changes). Each entry writes one `card_loss_events` row (card, board, from/to column, reason, actor, `api`/`ai`, time) in the same flush as the move. Rows are never updated or deleted; leaving the stage, editing, undoing or losing the card again keeps earlier rows and adds a new one. The Cards workbook import cannot move a card into lost. Without the table the move is refused with 503.
+
+Existing company databases need the review and loss tables created by operator scripts: see "Existing company databases: Phase 1-3 schema readiness" in `docs/DEPLOYMENT.md`.
+
