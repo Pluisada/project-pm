@@ -120,6 +120,61 @@ def test_incompatible_additive_tables_are_reported_and_have_no_script(legacy):
     assert not result.complete
 
 
+PENDING_INDEX = "uq_card_review_pending"
+
+
+def test_the_pending_review_index_is_present_and_exactly_defined_on_a_new_database(legacy):
+    env, _, _ = legacy
+    assert diagnose_company("lity", env).complete
+
+
+def test_a_missing_pending_review_index_is_reported_by_name(legacy):
+    env, path, run = legacy
+    run(f"DROP INDEX {PENDING_INDEX}")
+    before = digest(path)
+    result = diagnose_company("lity", env)
+    assert result.missing == [] and not result.complete
+    assert any(PENDING_INDEX in t and "lacks" in t for t in result.incompatible)
+    assert digest(path) == before
+
+
+@pytest.mark.parametrize("definition", [
+    "(card_id, reviewer_role)",  # not partial: would forbid cleared and void history
+    "(card_id, reviewer_role) WHERE status = 'cleared'",  # wrong condition
+    "(card_id) WHERE status = 'pending'",  # wrong columns
+    "(reviewer_role, card_id) WHERE status = 'pending'",  # wrong column order
+])
+def test_a_pending_review_index_with_another_definition_is_incompatible(legacy, definition):
+    env, path, run = legacy
+    run(f"DROP INDEX {PENDING_INDEX}", f"CREATE UNIQUE INDEX {PENDING_INDEX} ON card_review_obligations {definition}")
+    result = diagnose_company("lity", env)
+    assert any(PENDING_INDEX in t and "but not as" in t for t in result.incompatible)
+    assert not result.complete
+    with pytest.raises(CompanySchemaError, match=PENDING_INDEX):
+        init_company_card_reviews("lity", apply=True, environ=env)
+
+
+def test_a_non_unique_pending_review_index_is_incompatible(legacy):
+    env, _, run = legacy
+    run(f"DROP INDEX {PENDING_INDEX}",
+        f"CREATE INDEX {PENDING_INDEX} ON card_review_obligations (card_id, reviewer_role) WHERE status = 'pending'")
+    assert any("but not as" in t for t in diagnose_company("lity", env).incompatible)
+
+
+def test_the_same_index_name_on_another_table_does_not_satisfy_the_check(legacy):
+    env, _, run = legacy
+    run(f"DROP INDEX {PENDING_INDEX}", f"CREATE UNIQUE INDEX {PENDING_INDEX} ON card_versions (card_id)")
+    assert any(PENDING_INDEX in t and "lacks" in t for t in diagnose_company("lity", env).incompatible)
+
+
+def test_whitespace_and_keyword_case_in_the_stored_index_sql_do_not_matter(legacy):
+    env, _, run = legacy
+    run(f"DROP INDEX {PENDING_INDEX}",
+        f"CREATE UNIQUE INDEX {PENDING_INDEX} ON card_review_obligations (card_id, reviewer_role)\n"
+        "  where   STATUS  =  'pending'")
+    assert diagnose_company("lity", env).complete
+
+
 def test_required_gaps_are_reported_as_problems_not_init_scripts(legacy):
     env, _, run = legacy
     run("PRAGMA user_version = 3", "ALTER TABLE cards DROP COLUMN confidence_level", "DROP TABLE card_edit_history")

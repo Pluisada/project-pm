@@ -41,10 +41,28 @@ class Additive:
     columns: frozenset[str]
     unique_guards: tuple[tuple[str, ...], ...]  # column lists that must be covered by a unique index/constraint
     script: str
+    partial_guards: tuple["PartialGuard", ...] = ()  # named partial unique indexes that must match exactly
+
+
+@dataclass(frozen=True)
+class PartialGuard:
+    name: str
+    columns: tuple[str, ...]
+    where: str
+
+
+def _partial_guards(model) -> tuple[PartialGuard, ...]:
+    """The partial unique indexes declared on the model: the single source of the expected definition."""
+    return tuple(
+        PartialGuard(i.name, tuple(c.name for c in i.columns), str(i.dialect_options["sqlite"]["where"]))
+        for i in model.__table__.indexes
+        if i.unique and i.dialect_options["sqlite"]["where"] is not None
+    )
 
 
 def _additive(model, guards, script) -> Additive:
-    return Additive(model.__tablename__, frozenset(c.name for c in model.__table__.columns), guards, script)
+    return Additive(model.__tablename__, frozenset(c.name for c in model.__table__.columns), guards, script,
+                    _partial_guards(model))
 
 
 ADDITIVE: tuple[Additive, ...] = (
@@ -52,7 +70,7 @@ ADDITIVE: tuple[Additive, ...] = (
     _additive(ExcelImport, (("board_id", "repeat_guard"),), "init_company_excel_imports.py"),
     _additive(CardLossEvent, (), "init_company_card_loss.py"),
     _additive(CardVersion, (), "init_company_card_reviews.py"),
-    _additive(ReviewObligation, (("card_id", "reviewer_role"),), "init_company_card_reviews.py"),
+    _additive(ReviewObligation, (), "init_company_card_reviews.py"),
 )
 
 
@@ -83,6 +101,28 @@ def _unique_column_sets(connection, table: str) -> list[tuple[str, ...]]:
     return sets
 
 
+def _normalized(sql: str) -> str:
+    return " ".join(sql.lower().split())
+
+
+def _partial_guard_gap(connection: sqlite3.Connection, table: str, guard: PartialGuard) -> str | None:
+    """None when the index `guard.name` exists on `table` as a UNIQUE index on the expected columns with the expected
+    WHERE clause; otherwise the reason. Reads sqlite_master and PRAGMA index_list/index_info only."""
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name=? AND tbl_name=?", (guard.name, table)
+    ).fetchone()
+    columns = ", ".join(guard.columns)
+    if row is None:
+        return f"table {table} lacks the unique index {guard.name} on ({columns}) where {guard.where}"
+    unique = any(r[1] == guard.name and r[2] for r in connection.execute(f'PRAGMA index_list("{table}")'))
+    actual = tuple(r[2] for r in connection.execute(f'PRAGMA index_info("{guard.name}")'))
+    sql = _normalized(row[0] or "")
+    where = sql.partition(" where ")[2]
+    if unique and actual == guard.columns and where == _normalized(guard.where):
+        return None
+    return f"table {table} has index {guard.name} but not as a unique index on ({columns}) where {guard.where}"
+
+
 def table_gaps(connection: sqlite3.Connection, item: Additive) -> list[str]:
     """What is wrong with the EXISTING table of `item`: missing columns and missing unique guards (read-only)."""
     gaps = []
@@ -94,6 +134,10 @@ def table_gaps(connection: sqlite3.Connection, item: Additive) -> list[str]:
     for guard in item.unique_guards:
         if guard not in unique:
             gaps.append(f"table {item.table} lacks the unique guard on ({', '.join(guard)})")
+    for partial in item.partial_guards:
+        gap = _partial_guard_gap(connection, item.table, partial)
+        if gap:
+            gaps.append(gap)
     return gaps
 
 
