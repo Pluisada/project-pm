@@ -516,6 +516,22 @@ def test_F1_edit_that_loses_the_race_to_a_delete_is_404_without_records(rig):
 
 
 def test_F1_delete_that_loses_the_race_to_an_edit_snapshots_the_edited_card(rig):
+    """The edit is made by an administrator: it leaves no pending review, so the deletion stays undoable and the undo
+    snapshot taken under the lock must carry the edited title (a member's edit is the next test)."""
+    token = admin(rig)
+    warm_up(rig, token)
+    delete = lambda: rig.client.delete(card_url(1), headers=auth(token))
+    edit = lambda: rig.client.put(card_url(1), json={"title": "edited first"}, headers=auth(token))
+    rd, re_ = interleave(rig, delete, edit, BEGIN_WRITE)
+    assert (re_.status_code, rd.status_code) == (200, 204), (re_.text, rd.text)
+    assert rig.sql("SELECT action FROM audit_events WHERE card_id = 1") == [("delete",)]
+    assert rig.sql("SELECT COUNT(*) FROM card_review_obligations") == [(0,)]
+    assert undo(rig, token).status_code == 200
+    assert rig.sql("SELECT COUNT(*) FROM cards WHERE title = ?", ("edited first",)) == [(1,)]
+
+
+def test_F1_F3_delete_that_loses_the_race_to_a_member_edit_voids_the_review_and_is_not_undoable(rig):
+    """A member's edit that wins the race leaves pending reviews; the deletion voids them and (F3) cannot be undone."""
     token = admin(rig)
     uid, owner = member(rig, "first@example.com")
     rig.assign(1, uid)
@@ -525,5 +541,7 @@ def test_F1_delete_that_loses_the_race_to_an_edit_snapshots_the_edited_card(rig)
     rd, re_ = interleave(rig, delete, edit, BEGIN_WRITE)
     assert (re_.status_code, rd.status_code) == (200, 204), (re_.text, rd.text)
     assert rig.sql("SELECT action FROM audit_events WHERE card_id = 1") == [("delete",)]
-    assert undo(rig, token).status_code == 200
-    assert rig.sql("SELECT COUNT(*) FROM cards WHERE title = ?", ("edited first",)) == [(1,)]
+    assert rig.sql("SELECT reviewer_role, status FROM card_review_obligations ORDER BY id") == [
+        ("admin", "void"), ("super_admin", "void")]
+    assert undo(rig, token).status_code == 404
+    assert rig.sql("SELECT COUNT(*) FROM cards WHERE title = ?", ("edited first",)) == [(0,)]

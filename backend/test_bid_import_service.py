@@ -208,9 +208,10 @@ class TestRejections:
     ])
     def test_decisions_that_do_not_fit_reject_everything(self, env, decisions):
         before = commercial(env.path)
-        preview = preview_bid_import(env.db, workbook(*ROWS), env.board.id, decisions)
+        read = workbook(*ROWS)  # built once: the .xlsx carries a creation time (to the second), so two builds can differ
+        preview = preview_bid_import(env.db, read, env.board.id, decisions)
         with pytest.raises(ImportRejected, match="don't fit"):
-            apply_bid_import(env.db, workbook(*ROWS), preview, decisions, env.board.id, env.admin)
+            apply_bid_import(env.db, read, preview, decisions, env.board.id, env.admin)
         assert commercial(env.path) == before
 
     @pytest.mark.parametrize("decision", [RowDecision(2, target_stage="Negotiation"), RowDecision(99, skip=True)])
@@ -220,9 +221,10 @@ class TestRejections:
 
     def test_decisions_must_match_the_confirmed_preview(self, env):
         before = commercial(env.path)
-        preview = preview_bid_import(env.db, workbook(*ROWS), env.board.id)
+        read = workbook(*ROWS)  # built once (see test_decisions_that_do_not_fit_reject_everything)
+        preview = preview_bid_import(env.db, read, env.board.id)
         with pytest.raises(ImportConflict):  # preview without the decisions, applied with them
-            apply_bid_import(env.db, workbook(*ROWS), preview, DECISIONS, env.board.id, env.admin)
+            apply_bid_import(env.db, read, preview, DECISIONS, env.board.id, env.admin)
         assert commercial(env.path) == before
 
     def test_internal_duplicates_are_not_created(self, env):
