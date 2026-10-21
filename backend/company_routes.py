@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+import card_loss
 import card_reviews
 from card_rules import (
     CardPermissionDenied,
@@ -56,7 +57,7 @@ from company_database import begin_write
 from company_runtime import CompanyRuntime, company_runtime
 from database import seed_stages
 from models import Board, Card, Column, CompanyUser, UndoEntry
-from lead_options import ConfidenceFilter
+from lead_options import STAGE_LOST, ConfidenceFilter
 from routes import (
     board_ai_chat_payload,
     _check_stage_kind,
@@ -103,6 +104,8 @@ from schemas import (
     ColumnUpdate,
     CompanyCardCreate,
     CardMove,
+    CompanyCardMove,
+    LossEventItem,
     CardResponse,
     CardUpdate,
     BoardReport,
@@ -317,12 +320,22 @@ def build_company_router(
         column = db.query(Column).filter(Column.id == card.column_id, Column.board_id == board_id).first()
         if column is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Column not found")
+        loss_reason = None
+        if column.stage_kind == STAGE_LOST:
+            # A card created straight into LOST is an entry into LOST like any move: it needs the person's reason.
+            try:
+                card_loss.require_loss(db)
+                loss_reason = card_loss.clean_reason(card.loss_reason)
+            except card_loss.LossError as exc:
+                raise HTTPException(status_code=exc.status, detail={"code": exc.code, "message": exc.message}) from None
         db_card = Card(
             column_id=card.column_id, title=card.title, details=card.details, position=card.position,
             **owner_fields,
         )
         db.add(db_card)
         db.flush()
+        if loss_reason is not None:
+            card_loss.note_loss(db, db_card, context, loss_reason, None, column, "api")  # written with the commit below
         audit_new_card_owner(db, board_id, db_card, context)
         # Undoing a creation deletes the card, which only the Super Admin may do: nobody else is offered that undo.
         record_undo(db, context, board_id, f'Remove new card "{db_card.title}"',
@@ -365,7 +378,7 @@ def build_company_router(
     def move_company_card(
         board_id: int,
         card_id: int,
-        move: CardMove,
+        move: CompanyCardMove,
         context: CompanyContext = Depends(get_writer_context),
         db: Session = Depends(get_writer_db),
     ):
@@ -379,10 +392,20 @@ def build_company_router(
         denial = move_denial(context, card, target.position, admin=context.can_manage_cards)
         if denial:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=denial)
+        loss_reason = None
+        if card_loss.enters_lost(card, target):
+            # Validated before anything is written: no undo entry, no event, no obligation for a refused move.
+            try:
+                card_loss.require_loss(db)
+                loss_reason = card_loss.clean_reason(move.loss_reason)
+            except card_loss.LossError as exc:
+                raise HTTPException(status_code=exc.status, detail={"code": exc.code, "message": exc.message}) from None
         if (card.column_id, card.position) != (move.column_id, move.position):
             record_undo(db, context, board_id, f'Move "{card.title}" back to {card.column.title}',
                         [undo_move(card, move.column_id)])
         source_id = card.column_id
+        if loss_reason is not None:
+            card_loss.note_loss(db, card, context, loss_reason, card.column, target, "api")
         if target.position < card.column.position:
             # Only an Admin-level caller gets here (move_denial): the Super Admin must review every backward move.
             card_reviews.note_backward_move(db, card, context, card.column, target)
@@ -705,6 +728,16 @@ def build_company_router(
         find_board(db, board_id)
         ensure_reviews(db)
         return ReviewList(reviewer_role=context.review_role, items=card_reviews.pending_for_role(db, board_id, context.review_role))
+
+    @router.get("/boards/{board_id}/cards/{card_id}/loss-events", response_model=List[LossEventItem])
+    def card_loss_events(board_id: int, card_id: int, db: Session = Depends(get_company_db)):
+        """Every entry of the card into the lost stage with its reason, oldest first (any member may read)."""
+        find_card(db, board_id, card_id)
+        try:
+            card_loss.require_loss(db)
+        except card_loss.LossError as exc:
+            raise HTTPException(status_code=exc.status, detail={"code": exc.code, "message": exc.message}) from None
+        return card_loss.events_for_card(db, card_id)
 
     @router.post("/boards/{board_id}/cards/{card_id}/reviews/{reviewer_role}/clear", response_model=ReviewClearResult)
     def clear_company_review(

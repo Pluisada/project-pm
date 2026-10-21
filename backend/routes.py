@@ -714,7 +714,7 @@ async def board_ai_chat_payload(
             actions_result = await apply_board_actions(
                 db, board_id, ai_result["actions"], current_user,
                 assignable_ids=assignable_ids, record_undo_entry=record_undo_entry, admin=admin,
-                can_delete=can_delete,
+                can_delete=can_delete, loss_reason=request.loss_reason,
             )
             if not actions_result.get("success"):
                 db.rollback()

@@ -41,7 +41,7 @@ def test_creates_the_complete_versioned_schema(tmp_path, slug):
     names, version = tables(path)
     assert version == COMPANY_SCHEMA_VERSION == 4
     # products and the Cards-import ledger: optional tables, outside the required contract
-    assert names == set(REQUIRED_COMPANY_SCHEMA) | {"products", "card_excel_imports", "card_versions", "card_review_obligations"} and "users" in names
+    assert names == set(REQUIRED_COMPANY_SCHEMA) | {"products", "card_excel_imports", "card_versions", "card_review_obligations", "card_loss_events"} and "users" in names
     assert validate_company_schema(slug, env) is None
     assert sorted(p.name for p in tmp_path.iterdir()) == [f"{slug}.db"]  # no sidecars left behind
 

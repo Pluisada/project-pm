@@ -249,6 +249,26 @@ export async function getCompanyMe(companySlug: string, signal?: AbortSignal): P
   return me;
 }
 
+/** One entry of a card into the lost stage, with the reason given then. Immutable history, oldest first. */
+export interface LossEvent {
+  id: number;
+  card_id: number;
+  reason: string;
+  recorded_by: string | null;
+  source: string;
+  from_column_id: number | null;
+  to_column_id: number;
+  occurred_at: string;
+}
+
+/** Every loss of one card with its reason (any member of the company may read). */
+export async function getCompanyLossEvents(companySlug: string, boardId: number, cardId: number, signal?: AbortSignal): Promise<LossEvent[]> {
+  const events = await apiCall<LossEvent[]>(
+    `${companyPath(companySlug)}/boards/${Number(boardId)}/cards/${Number(cardId)}/loss-events`, { signal });
+  if (!Array.isArray(events)) throw { status_code: 0, detail: "Unexpected response from the server." } as ApiError;
+  return events;
+}
+
 /** A pending review of the caller's own role (Admin or Super Admin), as persisted by the backend. */
 export interface ReviewItem {
   id: number;
@@ -314,7 +334,7 @@ export async function getCompanyLeadOptions(companySlug: string, signal?: AbortS
 export async function createCompanyCard(
   companySlug: string,
   boardId: number,
-  payload: { column_id: number; title: string; details?: string; deal_value?: number; deal_value_next_year?: number; salesperson_id?: number },
+  payload: { column_id: number; title: string; details?: string; deal_value?: number; deal_value_next_year?: number; salesperson_id?: number; loss_reason?: string },
   signal?: AbortSignal
 ): Promise<CardResponse> {
   return apiCall<CardResponse>(`${companyPath(companySlug)}/boards/${Number(boardId)}/cards`, {
@@ -407,11 +427,13 @@ export async function moveCompanyCard(
   cardId: number,
   columnId: number,
   position: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** Required by the backend when the destination is the lost stage (trimmed, non-blank); omitted otherwise. */
+  lossReason?: string
 ): Promise<CardResponse> {
   return apiCall<CardResponse>(`${companyPath(companySlug)}/boards/${Number(boardId)}/cards/${Number(cardId)}/position`, {
     method: "PUT",
-    body: JSON.stringify({ column_id: columnId, position }),
+    body: JSON.stringify({ column_id: columnId, position, ...(lossReason !== undefined ? { loss_reason: lossReason } : {}) }),
     signal,
   });
 }

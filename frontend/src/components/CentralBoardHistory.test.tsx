@@ -5,7 +5,7 @@ import { CentralBoardView } from "@/components/CentralBoardView";
 
 const json = (status: number, body: unknown = {}) => new Response(JSON.stringify(body), { status });
 const caps = { readOnly: false, canEditOwnCards: true, canEditAnyCard: false, canMoveBack: false, canDeleteCards: false,
-  canAssignSalesperson: false, canManageBoards: false, canImport: false };
+  canAssignSalesperson: false, canManageBoards: false, canImport: false, canExport: false, canManageProducts: false, canReview: false };
 const card = (id: number, column_id: number, position: number) => ({ id, column_id, position, title: `Lead ${id}`, salesperson_id: 7 });
 const boardOf = (id = 3, slug = "acme") => ({
   id, user_id: 1, title: `Board ${id} ${slug}`, created_at: "", updated_at: "",
@@ -18,7 +18,8 @@ const entry = (id: number, extra: Record<string, unknown> = {}) => ({
 });
 
 type Call = { method: string; url: string };
-function setup(history: (url: string) => Response | Promise<Response>, over: { readOnly?: boolean } = {}) {
+function setup(history: (url: string) => Response | Promise<Response>, over: { readOnly?: boolean } = {},
+  loss: (url: string) => Response | Promise<Response> = () => json(200, [])) {
   const calls: Call[] = [];
   vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
     const u = String(input);
@@ -27,6 +28,7 @@ function setup(history: (url: string) => Response | Promise<Response>, over: { r
     if (u.endsWith("/me")) return json(200, { user_id: 7, company_slug: slug, role: "sales_member", capabilities: { ...caps, ...over } });
     if (u.endsWith("/undo")) return json(200, { available: false, description: null });
     if (u.endsWith("/history")) return history(u);
+    if (u.endsWith("/loss-events")) return loss(u);
     const boardId = Number(/boards\/(\d+)/.exec(u)?.[1]);
     return json(200, boardOf(boardId, slug));
   }));
@@ -154,5 +156,42 @@ describe("CentralBoardView card history", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(screen.queryByText("stale")).toBeNull();
     expect(screen.queryByTestId("central-history")).toBeNull();
+  });
+
+  describe("loss history", () => {
+    const lossEvent = (id: number, reason: string, by = "ana") => ({ id, card_id: 1, reason, recorded_by: by, source: "api",
+      from_column_id: 30, to_column_id: 32, occurred_at: "2026-10-03T09:30:00Z" });
+
+    it("shows every loss of the card with its reason, actor and time, in the order the server sends them", async () => {
+      setup(() => json(200, []), {}, () => json(200, [lossEvent(1, "Lost on price"), lossEvent(2, "Project cancelled", "bia")]));
+      await open(1);
+      const rows = await screen.findAllByTestId("loss-entry");
+      expect(rows).toHaveLength(2);
+      expect(within(rows[0]).getByText("Lost on price")).toBeInTheDocument();
+      expect(within(rows[0]).getByText("ana")).toBeInTheDocument();
+      expect(within(rows[1]).getByText("Project cancelled")).toBeInTheDocument();
+      expect(within(rows[1]).getByText("bia")).toBeInTheDocument();
+      expect(within(rows[0]).queryByText("Date not recorded")).not.toBeInTheDocument();
+    });
+
+    it("says so when the card was never lost", async () => {
+      setup(() => json(200, []));
+      await open(1);
+      expect(await screen.findByText("This card has not been marked as lost.")).toBeInTheDocument();
+    });
+
+    it("shows a loading state, then an error with a retry that works", async () => {
+      let release: (r: Response) => void = () => {};
+      let failing = true;
+      setup(() => json(200, []), {}, () => (failing ? new Promise<Response>((resolve) => { release = resolve; }) : json(200, [lossEvent(1, "Late reason")])));
+      await open(1);
+      expect(await screen.findByText("Loading loss history...")).toBeInTheDocument();
+      release(json(503, { detail: { code: "loss_not_initialized", message: "x" } }));
+      expect(await screen.findByText("Loss reasons are not set up for this company yet.")).toBeInTheDocument();
+      failing = false;
+      const dialog = screen.getByRole("dialog");
+      await userEvent.click(within(dialog).getAllByRole("button", { name: "Try again" })[0]);
+      expect(await screen.findByText("Late reason")).toBeInTheDocument();
+    });
   });
 });

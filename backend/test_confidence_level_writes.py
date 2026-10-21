@@ -32,7 +32,8 @@ def put(rig, token, body, card_id=1, slug="lity"):
 @pytest.mark.parametrize("value", ["LOW", "MEDIUM", "HIGH"])
 def test_company_edit_persists_each_level_and_a_new_card_starts_empty(rig, value):
     _, token = company_admin(rig)
-    created = rig.call("post", "/cards", token, json={"column_id": 1, "title": "Fresh"})
+    seller, _ = member(rig, "seller@example.com")  # an Admin names the salesperson of a new card (Phase 1)
+    created = rig.call("post", "/cards", token, json={"column_id": 1, "title": "Fresh", "salesperson_id": seller})
     assert created.status_code == 201 and created.json()["confidence_level"] is None
     assert put(rig, token, {"confidence_level": value}).json()["confidence_level"] == value
     assert level(rig) == value
@@ -156,10 +157,12 @@ def test_undo_never_crosses_companies_or_users(rig):
 # --- AI (company) -------------------------------------------------------------------------------------------------
 
 def test_ai_sets_clears_and_undoes_the_level_in_one_request(rig, monkeypatch):
-    _, token = company_admin(rig)
+    # The Super Admin: it names the salesperson of the created card (Phase 1) and is the only role whose undo may
+    # remove a card (Phase 1), so the whole request is undoable.
+    token = admin(rig)
     fake_ai(monkeypatch, [
         {"type": "update", "card_id": 1, "confidence_level": "MEDIUM"},
-        {"type": "create", "column_id": 1, "title": "AI card", "confidence_level": "HIGH"},
+        {"type": "create", "column_id": 1, "title": "AI card", "confidence_level": "HIGH", "salesperson_id": rig.e.admin},
     ])
     applied = ai(rig, token).json()["actions_applied"]
     assert len(applied["successful"]) == 2 and not applied["failed"]

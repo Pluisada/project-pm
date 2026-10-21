@@ -14,11 +14,12 @@ from card_rules import (
     is_admin,
     new_card_fields,
 )
-from lead_options import DEAL_CURRENCY, LEAD_SOURCES
+from lead_options import DEAL_CURRENCY, LEAD_SOURCES, STAGE_LOST
 from product_catalog import ProductError, catalog_names, check_product_line
 from models import ConversationMessage, Card, BoardColumn as Column, CompanyUser
 from schemas import BoardDetail, CardUpdate
 from stage_history import SOURCE_AI, set_stage_context
+import card_loss
 import card_reviews
 from undo import UNRESTORABLE, record_undo, undo_create, undo_delete, undo_move, undo_update
 from database import SessionLocal
@@ -68,7 +69,12 @@ Rules:
 - If no changes needed, return empty actions array
 - Include helpful explanations in the response
 - Be proactive but not overwhelming
-- Validate column IDs exist before suggesting moves"""
+- Validate column IDs exist before suggesting moves
+- If the board state has "loss_reason_required": true, moving a card into a "lost" column, or creating one there,
+  needs a loss reason that the USER stated explicitly. The application attaches it to the request; you never write
+  one in an action. NEVER invent a loss reason or infer one from card titles, details, notes or other fields. If the
+  user asks for such a move without giving a reason, do not guess one: ask them for it in your response (the
+  application refuses the change until they provide it)"""
 
 
 async def get_board_context(db: Session, board_id: int) -> dict:
@@ -79,7 +85,7 @@ async def get_board_context(db: Session, board_id: int) -> dict:
     if not board:
         return None
 
-    return {
+    state = {
         "board_id": board.id,
         "title": board.title,
         "product_lines": catalog_names(db),
@@ -118,6 +124,9 @@ async def get_board_context(db: Session, board_id: int) -> dict:
             for col in board.columns
         ],
     }
+    if card_loss.is_company_session(db):
+        state["loss_reason_required"] = True  # company boards only; the legacy state is unchanged
+    return state
 
 
 async def get_conversation_history(
@@ -232,7 +241,7 @@ def _board_card(db: Session, board_id: int, card_id) -> Card | None:
 async def apply_board_actions(
     db: Session, board_id: int, actions: list[dict], current_user,
     assignable_ids: set | None = None, record_undo_entry: bool = True, admin: bool | None = None,
-    can_delete: bool | None = None,
+    can_delete: bool | None = None, loss_reason: str | None = None,
 ) -> dict:
     """Apply AI-suggested actions to the board.
 
@@ -293,6 +302,17 @@ async def apply_board_actions(
                         owner_fields = fields
                     else:
                         owner_fields = new_card_fields(current_user, fields)
+                    create_reason = None
+                    if card_loss.is_company_session(db) and column.stage_kind == STAGE_LOST:
+                        # Same rule as a move into LOST: the reason is the person's, never the model's.
+                        try:
+                            card_loss.require_loss(db)
+                            create_reason = card_loss.clean_reason(loss_reason)
+                        except card_loss.LossError as exc:
+                            results["failed"].append({"action": action, "reason": (
+                                f"{exc.message}. Ask the user for the reason and send it in the loss_reason field of the request"
+                                if isinstance(exc, card_loss.LossReasonRequired) else exc.message)})
+                            continue
                     card = Card(
                         column_id=column_id,
                         position=action.get("position", 0),
@@ -300,6 +320,8 @@ async def apply_board_actions(
                     )
                     db.add(card)
                     db.flush()
+                    if create_reason is not None:
+                        card_loss.note_loss(db, card, current_user, create_reason, None, column, "ai")
                     audit_new_card_owner(db, board_id, card, current_user)
                     # Undoing a creation deletes the card: only offered where the caller may delete (None: legacy rule).
                     undo_steps.append(undo_create(card) if can_delete is not False else UNRESTORABLE)
@@ -344,6 +366,19 @@ async def apply_board_actions(
                         results["failed"].append({"action": action, "reason": denial})
                         continue
 
+                    entering_lost = card_loss.is_company_session(db) and card_loss.enters_lost(card, column)
+                    if entering_lost:
+                        # Company boards: a move into LOST needs the reason the PERSON gave in this request. The
+                        # action's own text (written by the model) is never used, so a reason cannot be invented.
+                        try:
+                            card_loss.require_loss(db)
+                            reason = card_loss.clean_reason(loss_reason)
+                        except card_loss.LossError as exc:
+                            results["failed"].append({"action": action, "reason": (
+                                f"{exc.message}. Ask the user for the reason and send it in the loss_reason field of the request"
+                                if isinstance(exc, card_loss.LossReasonRequired) else exc.message)})
+                            continue
+                        card_loss.note_loss(db, card, current_user, reason, card.column, column, "ai")
                     if column.position < card.column.position:
                         # Only an Admin-level caller passes move_denial for a backward move: the Super Admin reviews it.
                         card_reviews.note_backward_move(db, card, current_user, card.column, column)

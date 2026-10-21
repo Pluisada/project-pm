@@ -26,9 +26,11 @@ from datetime import date
 from pydantic import ValidationError
 from sqlalchemy.orm import object_session
 
+import card_loss
 import card_reviews
 from card_rules import CardPermissionDenied, apply_card_updates, audit_deletion, can_edit_card
 from stage_history import SOURCE_UNDO, set_stage_context
+from lead_options import STAGE_LOST
 from models import BoardColumn as Column, Card, UndoEntry, User
 from schemas import CardUpdate
 
@@ -98,6 +100,11 @@ def undo_delete(card: Card) -> dict:
     history cannot be recreated faithfully (those cascade away with it), so its deletion is not undoable:
     record_undo then records nothing and drops the caller's previous entry."""
     if card.bid_details is not None or card.source_ref is not None or card.import_changes:
+        return UNRESTORABLE
+    session = object_session(card)
+    if session is not None and card_loss.is_company_session(session) and card.column.stage_kind == STAGE_LOST:
+        # The recreated card would get a new id, so the loss history (and its reason) would stay with the old one: a
+        # lost card is never put back by undo without a reason of its own.
         return UNRESTORABLE
     return {"op": "create", "column_id": card.column_id, "position": card.position, "fields": card_fields(card)}
 
@@ -198,6 +205,10 @@ def apply_undo(db, user: User, board_id: int, *, admin: bool | None = None, can_
             if not can_edit_card(user, card, admin=admin):
                 raise UndoError("Can't undo: you can only move opportunities assigned to you")
             target = _board_column(db, board_id, step["column_id"])
+            if card_loss.is_company_session(db) and target.stage_kind == STAGE_LOST and card.column_id != target.id \
+                    and not card_loss.has_event(db, card.id, target.id):
+                # Undo only restores a LOST state whose loss event (and reason) is already in the history.
+                raise UndoError("Can't undo: this card has no recorded loss reason for the lost stage")
             if admin is True and target.position < card.column.position:
                 # An Admin-level undo that sends a card to an earlier column is a backward move like any other.
                 card_reviews.note_backward_move(db, card, user, card.column, target)
@@ -223,6 +234,8 @@ def apply_undo(db, user: User, board_id: int, *, admin: bool | None = None, can_
                 audit_deletion(db, board_id, card, user)
                 db.delete(card)
         elif op == "create":
+            if card_loss.is_company_session(db) and _board_column(db, board_id, step["column_id"]).stage_kind == STAGE_LOST:
+                raise UndoError("Can't undo: a card of the lost stage cannot be restored without a loss reason")
             fields = CardUpdate(**step["fields"]).model_dump(exclude_unset=True)
             db.add(Card(column_id=step["column_id"], position=step["position"], **fields))
         db.flush()

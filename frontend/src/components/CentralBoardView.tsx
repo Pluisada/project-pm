@@ -181,6 +181,8 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
   // The open history belongs to one company/board/attempt, like the form.
   const [historyOf, setHistoryOf] = useState<{ key: string; cardId: number } | null>(null);
   const [activeCardId, setActiveCardId] = useState<number | null>(null);
+  // The reason being collected for a move into the lost stage (one selection, like the form and the history).
+  const [lossPrompt, setLossPrompt] = useState<{ key: string; cardId: number; title: string; target: { columnId: number; index: number }; reason: string; error: string | null } | null>(null);
   // Card ids with a pending review of the caller's role, as last reported by CentralReviews (persisted backend state).
   const [reviewCardIds, setReviewCardIds] = useState<{ key: string; ids: number[] } | null>(null);
   // Both belong to one selection and are only shown while it is still the current one.
@@ -298,28 +300,33 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
       return { key: forKey, data: { ...cur.data, board: { ...cur.data.board, columns: update(cur.data.board.columns) } } };
     });
 
-  const moveCard = async (cardId: number, to: { columnId: number; index: number }) => {
-    if (!result || result.key !== key || !("data" in result) || movingKey.current || undoKey.current || deleteKey.current) return;
+  /** Returns true when the server confirmed the move. A move into the lost stage (`lossReason` given) is never shown
+   *  before the server confirms it, so a refused one needs no revert. */
+  const moveCard = async (cardId: number, to: { columnId: number; index: number }, lossReason?: string): Promise<boolean> => {
+    if (!result || result.key !== key || !("data" in result) || movingKey.current || undoKey.current || deleteKey.current) return false;
     const from = currentIndex(result.data.board.columns, cardId);
-    if (!from || (from.columnId === to.columnId && from.index === to.index)) return;
+    if (!from || (from.columnId === to.columnId && from.index === to.index)) return false;
     const startKey = key;
     movingKey.current = startKey;
     setMovingFor(startKey);
     setMoveErrorFor(null);
-    replaceColumns((cols) => applyMove(cols, cardId, to), startKey);
+    if (lossReason === undefined) replaceColumns((cols) => applyMove(cols, cardId, to), startKey);
     try {
-      const saved = await moveCompanyCard(companySlug, boardId, cardId, to.columnId, to.index);
-      if (keyRef.current !== startKey) return;
+      const saved = await moveCompanyCard(companySlug, boardId, cardId, to.columnId, to.index, undefined, lossReason);
+      if (keyRef.current !== startKey) return false;
       if (saved?.id !== cardId || saved.column_id !== to.columnId) throw { status_code: 0, detail: "Unexpected response from the server." } as ApiError;
+      if (lossReason !== undefined) replaceColumns((cols) => applyMove(cols, cardId, to), startKey);
       replaceColumns((cols) => cols.map((c) => ({ ...c, cards: c.cards?.map((card) => (card.id === cardId ? { ...card, ...saved, position: card.position } : card)) })), startKey);
+      return true;
     } catch (err) {
-      if (keyRef.current !== startKey) return;
+      if (keyRef.current !== startKey) return false;
       const failure = err as Partial<ApiError>;
-      replaceColumns((cols) => applyMove(cols, cardId, from), startKey);
+      if (lossReason === undefined) replaceColumns((cols) => applyMove(cols, cardId, from), startKey);
       setMoveErrorFor({ key: startKey, text: failure.status_code === 0
         ? "Network error - the move may not have been saved. The board was reloaded."
         : getErrorMessage(err, "Could not move the card.") });
       if (failure.status_code === 0) void reloadBoard(); // never retry the move: just see what the server has
+      return false;
     } finally {
       if (movingKey.current === startKey) {
         movingKey.current = null;
@@ -473,7 +480,29 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
       setMoveErrorFor({ key, text: "Members can only move cards forward, not back to an earlier column." });
       return;
     }
+    const targetColumn = columns.find((c) => c.id === target.columnId);
+    if (targetColumn?.stage_kind === "lost" && card.column_id !== target.columnId) {
+      // Entering the lost stage needs a reason: ask for it first. Nothing is sent or shown as moved until it is given.
+      setMoveErrorFor(null);
+      setLossPrompt({ key, cardId, title: card.title, target, reason: "", error: null });
+      return;
+    }
     void moveCard(cardId, target);
+  };
+
+  const submitLoss = async () => {
+    if (!lossPrompt || lossPrompt.key !== key) return;
+    const reason = lossPrompt.reason.trim();
+    if (!reason) {
+      setLossPrompt({ ...lossPrompt, error: "Enter the reason this opportunity was lost." });
+      return;
+    }
+    if (reason.length > 1000) {
+      setLossPrompt({ ...lossPrompt, error: "The reason can have at most 1000 characters." });
+      return;
+    }
+    const ok = await moveCard(lossPrompt.cardId, lossPrompt.target, reason);
+    if (ok) setLossPrompt(null); // on a refusal the form stays, with what was typed, and the error above explains why
   };
 
   return (
@@ -521,6 +550,28 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
           onPendingChange={(ids) => setReviewCardIds({ key, ids })}
           onOpenHistory={(cardId) => setHistoryOf({ key, cardId })} />
       )}
+      {lossPrompt && lossPrompt.key === key && (
+        <form data-testid="loss-prompt" role="dialog" aria-label="Loss reason" noValidate
+          onSubmit={(e) => { e.preventDefault(); void submitLoss(); }}
+          className="mt-2 flex flex-col gap-2 rounded-lg border border-red-300 bg-red-50 px-3 py-3">
+          <label htmlFor="loss-reason" className="text-sm font-semibold text-red-900">
+            Why was &quot;{lossPrompt.title}&quot; lost?
+          </label>
+          <textarea id="loss-reason" value={lossPrompt.reason} rows={2} maxLength={1000} disabled={moving}
+            onChange={(e) => setLossPrompt({ ...lossPrompt, reason: e.target.value, error: null })}
+            className="w-full rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] px-3 py-2 text-sm text-[var(--navy-dark)]" />
+          {lossPrompt.error && <p role="alert" data-testid="loss-error" className="text-sm font-medium text-red-800">{lossPrompt.error}</p>}
+          <div className="flex gap-2">
+            <button type="submit" disabled={moving} className="rounded-lg bg-red-700 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60">
+              {moving ? "Moving..." : "Move to lost"}
+            </button>
+            <button type="button" disabled={moving} onClick={() => setLossPrompt(null)}
+              className="rounded-lg border border-[var(--stroke)] px-3 py-1.5 text-xs font-semibold text-[var(--navy-dark)] disabled:opacity-60">
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
       {moveError && <p role="alert" data-testid="move-error" className="mt-2 text-sm font-medium text-red-800">{moveError}</p>}
       <DndContext sensors={sensors} collisionDetection={pointerFirst} onDragStart={handleDragStart}
         onDragEnd={handleDragEnd} onDragCancel={() => setActiveCardId(null)}>
@@ -547,7 +598,7 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
                 ))}
               </DroppableList>
               {canCreate && (
-                <button type="button" onClick={() => setForm({ key, target: { mode: "create", columnId: column.id, columnTitle: column.title } })}
+                <button type="button" onClick={() => setForm({ key, target: { mode: "create", columnId: column.id, columnTitle: column.title, stageKind: column.stage_kind } })}
                   className="mt-3 w-full rounded-full border border-dashed border-[var(--stroke)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--primary-blue)] transition hover:border-[var(--primary-blue)]">
                   Add a card
                 </button>

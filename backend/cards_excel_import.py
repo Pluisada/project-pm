@@ -250,6 +250,12 @@ def build_plan(
         elif card is not None:
             target = card.column
 
+        if target is not None and target.stage_kind == "lost" and (card is None or target.id != card.column_id):
+            # An entry into LOST (a new card in it, or a card moved into it) needs a reason, which a workbook has no
+            # column for: do it on the board.
+            plan.errors.append(_row_issue(number, "stage", "loss_reason_required",
+                                          "A card entering the lost stage needs a reason; create or move it on the board instead"))
+
         resolved: dict = {}
         if rec.product_line is not None and "product_line" in present:
             name = catalog.get(rec.product_line.casefold())

@@ -130,3 +130,12 @@ async def test_member_update_action_creates_history_and_admin_does_not(db):
         db, board.id, [{"type": "update", "card_id": card.id, "title": "Admin renamed"}], _admin(db)
     )
     assert db.query(CardEditHistory).filter(CardEditHistory.card_id == card.id).count() == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_board_context_has_no_loss_reason_flag(db):
+    """The loss-reason instruction is for company boards only: the legacy board state is unchanged."""
+    from ai_kanban import get_board_context
+
+    state = await get_board_context(db, db.query(Board).first().id)
+    assert "loss_reason_required" not in state

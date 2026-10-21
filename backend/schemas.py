@@ -152,6 +152,8 @@ class CompanyCardCreate(CardCreate):
     """Company-scoped creation. `salesperson_id` is honored only for a Super Admin or company Admin (who must supply
     an eligible one); for a Sales Member it is ignored and the card is assigned to the creator."""
     salesperson_id: Optional[int] = None
+    # Required (non-blank after trimming, at most 1000 characters) when `column_id` is the lost stage; ignored otherwise.
+    loss_reason: Optional[str] = None
 
 
 NEXT_STEP_MAX_LENGTH = 100
@@ -207,6 +209,23 @@ class CardMove(BaseModel):
     """Schema for moving a card to another column."""
     column_id: int
     position: int = Field(default=0, ge=0)
+
+
+class CompanyCardMove(CardMove):
+    """Company-scoped move. `loss_reason` is required (non-blank after trimming) when the destination is the lost stage
+    and ignored otherwise; the backend validates it, whatever the client checked."""
+    loss_reason: Optional[str] = None
+
+
+class LossEventItem(BaseModel):
+    id: int
+    card_id: int
+    reason: str
+    recorded_by: Optional[str] = None
+    source: str
+    from_column_id: Optional[int] = None
+    to_column_id: int
+    occurred_at: datetime
 
 
 class BidDetailsResponse(BaseModel):
@@ -826,3 +845,6 @@ class AIChatRequest(BaseModel):
     """Chat message. Length is checked in the route (against AI_MAX_MESSAGE_CHARS)
     so an over-long message gets a short error that doesn't echo it back."""
     message: str = ""
+    # Company AI only: the reason for any move into the lost stage in this request. It must come from the person; the
+    # model's own text is never used as a loss reason.
+    loss_reason: Optional[str] = None

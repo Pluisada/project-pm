@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { getCompanyCardHistory, getErrorMessage, isAbortError, type ApiError, type CardEditHistoryEntry } from "@/lib/api";
+import { getCompanyCardHistory, getCompanyLossEvents, getErrorMessage, isAbortError, type ApiError, type CardEditHistoryEntry, type LossEvent } from "@/lib/api";
 
 const FIELD_LABELS: Record<string, string> = {
   title: "Title",
@@ -53,6 +53,57 @@ function failureText(err: Partial<ApiError>): string {
     default: return getErrorMessage(err, "Could not load the history.");
   }
 }
+
+type LossLoaded = { events: LossEvent[] } | { error: Partial<ApiError> };
+
+/** Every time the card entered the lost stage, oldest first, each with its reason, who recorded it and when. */
+const LossHistory = ({ companySlug, boardId, cardId }: { companySlug: string; boardId: number; cardId: number }) => {
+  const [loaded, setLoaded] = useState<LossLoaded | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getCompanyLossEvents(companySlug, boardId, cardId, controller.signal).then(
+      (events) => { if (!controller.signal.aborted) setLoaded({ events }); },
+      (error: Partial<ApiError>) => { if (!controller.signal.aborted && !isAbortError(error)) setLoaded({ error }); }
+    );
+    return () => controller.abort();
+  }, [companySlug, boardId, cardId, attempt]);
+
+  return (
+    <section aria-label="Loss history" data-testid="loss-history" className="mt-6 border-t border-[var(--stroke)] pt-4">
+      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]">Loss history</p>
+      {!loaded && <p role="status" className="mt-2 text-sm text-[var(--gray-text)]">Loading loss history...</p>}
+      {loaded && "error" in loaded && (
+        <div className="mt-2">
+          <p role="alert" className="text-sm font-medium text-red-800">
+            {loaded.error.status_code === 503 ? "Loss reasons are not set up for this company yet." : getErrorMessage(loaded.error, "Could not load the loss history.")}
+          </p>
+          <button type="button" onClick={() => { setLoaded(null); setAttempt((n) => n + 1); }}
+            className="mt-2 text-sm font-semibold text-[var(--primary-blue)] hover:underline">
+            Try again
+          </button>
+        </div>
+      )}
+      {loaded && "events" in loaded && loaded.events.length === 0 && (
+        <p className="mt-2 text-sm text-[var(--gray-text)]">This card has not been marked as lost.</p>
+      )}
+      {loaded && "events" in loaded && loaded.events.length > 0 && (
+        <ul className="mt-2 space-y-3">
+          {loaded.events.map((event) => (
+            <li key={event.id} data-testid="loss-entry" className="rounded-2xl border border-[var(--stroke)] p-4">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm font-semibold text-[var(--navy-dark)]">{event.recorded_by || "unknown"}</span>
+                <span className="text-xs text-[var(--gray-text)]">{formatTimestamp(event.occurred_at) ?? "Date not recorded"}</span>
+              </div>
+              <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[var(--navy-dark)]">{event.reason}</p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+};
 
 /**
  * Edit history of one card, read from the company endpoint. The caller mounts it with a key made of the
@@ -149,6 +200,7 @@ export const CentralCardHistory = ({ companySlug, boardId, cardId, cardTitle, on
               </ul>
             </>
           )}
+          <LossHistory companySlug={companySlug} boardId={boardId} cardId={cardId} />
         </div>
       </div>
     </div>

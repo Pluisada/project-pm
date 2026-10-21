@@ -15,7 +15,7 @@ import {
 } from "@/lib/api";
 
 export type CardFormTarget =
-  | { mode: "create"; columnId: number; columnTitle: string }
+  | { mode: "create"; columnId: number; columnTitle: string; stageKind?: string }
   | { mode: "edit"; card: CardResponse };
 
 type Props = {
@@ -42,13 +42,14 @@ type Values = {
   productLine: string;
   confidenceLevel: string;
   salespersonId: string;
+  lossReason: string;
 };
 
 const num = (v: number | null | undefined) => (v == null ? "" : String(v));
 
 function initialValues(target: CardFormTarget): Values {
   const empty: Values = { title: "", details: "", company: "", contact: "", dealValue: "", dealValueNextYear: "",
-    expectedCloseDate: "", leadSource: "", productLine: "", confidenceLevel: "", salespersonId: "" };
+    expectedCloseDate: "", leadSource: "", productLine: "", confidenceLevel: "", salespersonId: "", lossReason: "" };
   if (target.mode === "create") return empty;
   const c = target.card;
   return {
@@ -64,6 +65,7 @@ function initialValues(target: CardFormTarget): Values {
     productLine: c.product_line ?? "",
     confidenceLevel: c.confidence_level ?? "",
     salespersonId: "",
+    lossReason: "",
   };
 }
 
@@ -164,6 +166,9 @@ export const CentralCardForm = ({ companySlug, boardId, target, canAssign = fals
     setFailure(null);
     if (!values.title.trim()) return setFieldError("Title is required.");
     const needsSalesperson = target.mode === "create" && canAssign;
+    const needsLossReason = target.mode === "create" && target.stageKind === "lost";
+    if (needsLossReason && !values.lossReason.trim()) return setFieldError("Enter the reason this opportunity was lost.");
+    if (needsLossReason && values.lossReason.trim().length > 1000) return setFieldError("The loss reason can have at most 1000 characters.");
     if (needsSalesperson && !values.salespersonId) return setFieldError("Choose the salesperson for this card.");
     if (invalidNumber(values.dealValue) || invalidNumber(values.dealValueNextYear)) {
       return setFieldError("Deal values must be numbers of zero or more.");
@@ -181,6 +186,7 @@ export const CentralCardForm = ({ companySlug, boardId, target, canAssign = fals
         ...(values.dealValue !== "" ? { deal_value: Number(values.dealValue) } : {}),
         ...(values.dealValueNextYear !== "" ? { deal_value_next_year: Number(values.dealValueNextYear) } : {}),
         ...(needsSalesperson ? { salesperson_id: Number(values.salespersonId) } : {}),
+        ...(needsLossReason ? { loss_reason: values.lossReason.trim() } : {}),
       });
     } else {
       const updates = buildCardUpdates(target.card, values);
@@ -267,6 +273,11 @@ export const CentralCardForm = ({ companySlug, boardId, target, canAssign = fals
               <option value="">Choose a salesperson</option>
               {(options?.salespeople ?? []).map((p) => <option key={p.id} value={p.id}>{p.username}</option>)}
             </select>
+          </label>
+        )}
+        {!edit && target.stageKind === "lost" && (
+          <label className={labelClass}>Loss reason (required)
+            <textarea value={values.lossReason} onChange={set("lossReason")} maxLength={1000} rows={2} disabled={saving} className={inputClass} />
           </label>
         )}
         <div className="grid grid-cols-2 gap-3">
