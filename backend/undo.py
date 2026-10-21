@@ -73,8 +73,9 @@ def undo_create(card: Card) -> dict:
     return {"op": "delete", "card_id": card.id, "expect": {"column_id": card.column_id, **card_fields(card)}}
 
 
-def _restore_position(card: Card, column_id: int, index: int) -> None:
-    """Put `card` back at `index` in `column_id`, renumbering both columns 0..n-1 (no ties, no gaps)."""
+def place_card(card: Card, column_id: int, index: int) -> None:
+    """Put `card` at `index` in `column_id`, renumbering both columns 0..n-1 (no ties, no gaps).
+    `card` must already be flushed (it needs its id)."""
     db = object_session(card)
     source_id = card.column_id
     card.column_id = column_id
@@ -216,7 +217,7 @@ def apply_undo(db, user: User, board_id: int, *, admin: bool | None = None, can_
             if admin is True and target.position < card.column.position:
                 # An Admin-level undo that sends a card to an earlier column is a backward move like any other.
                 card_reviews.note_backward_move(db, card, user, card.column, target)
-            _restore_position(card, step["column_id"], step["position"])
+            place_card(card, step["column_id"], step["position"])
         elif op == "update":
             card = _board_card(db, board_id, step["card_id"])
             # Goes through the normal update path, so a member's undo of an
@@ -241,7 +242,10 @@ def apply_undo(db, user: User, board_id: int, *, admin: bool | None = None, can_
             if card_loss.is_company_session(db) and _board_column(db, board_id, step["column_id"]).stage_kind == STAGE_LOST:
                 raise UndoError("Can't undo: a card of the lost stage cannot be restored without a loss reason")
             fields = CardUpdate(**step["fields"]).model_dump(exclude_unset=True)
-            db.add(Card(column_id=step["column_id"], position=step["position"], **fields))
+            restored = Card(column_id=step["column_id"], position=step["position"], **fields)
+            db.add(restored)
+            db.flush()
+            place_card(restored, step["column_id"], step["position"])
         db.flush()
 
     return entry.description
