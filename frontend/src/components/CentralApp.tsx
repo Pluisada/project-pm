@@ -36,6 +36,10 @@ import { CentralMembers } from "@/components/CentralMembers";
 import { ExcelDownloadButtons } from "@/components/ExcelDownloadButtons";
 import { LoadingScreen } from "@/components/LoadingScreen";
 import { setActiveCompany } from "@/lib/activeCompany";
+import { useCompanyBranding } from "@/lib/branding";
+import { useThemePreference } from "@/lib/theme";
+import { CentralHeader } from "@/components/CentralHeader";
+import { CompanySelectPage } from "@/components/CompanySelectPage";
 
 const COMPANY_KEY = "pm_central_company";
 
@@ -58,7 +62,7 @@ function remember(slug: string | null) {
 }
 
 const inputClass =
-  "mt-2 w-full rounded-lg border border-[var(--stroke)] bg-white px-4 py-3 text-sm outline-none focus:border-[var(--primary-blue)] disabled:opacity-50";
+  "mt-2 w-full rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] text-[var(--navy-dark)] px-4 py-3 text-sm outline-none focus:border-[var(--primary-blue)] disabled:opacity-50";
 const labelClass = "block text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]";
 
 const CentralLogin = ({ onSuccess, onForgot, notice }: { onSuccess: () => void; onForgot: () => void; notice: string | null }) => {
@@ -84,7 +88,7 @@ const CentralLogin = ({ onSuccess, onForgot, notice }: { onSuccess: () => void; 
 
   return (
     <main className="flex min-h-screen items-center justify-center px-6">
-      <form onSubmit={submit} className="w-full max-w-md rounded-[24px] border border-[var(--stroke)] bg-white/80 p-8 shadow-[var(--shadow)]">
+      <form onSubmit={submit} className="w-full max-w-md rounded-[24px] border border-[var(--stroke)] bg-[var(--surface-strong)]/80 p-8 shadow-[var(--shadow)]">
         <h1 className="font-display text-3xl font-semibold text-[var(--navy-dark)]">Sign In</h1>
         {notice && !error && <p role="status" className="mt-4 text-sm text-green-800">{notice}</p>}
         {error && <p role="alert" className="mt-4 text-sm font-medium text-red-800">{error}</p>}
@@ -140,6 +144,9 @@ export const CentralApp = () => {
   // The company in use is registered in memory before React renders anything for it (children mount, and start
   // their requests, before a parent effect would run), and every request is bound to it from then on.
   const companyRef = useRef<string | null>(null);
+  // Presentation only: the active company's identity and the light/dark choice. Neither decides access.
+  useCompanyBranding(companySlug);
+  const [theme, setTheme] = useThemePreference();
   const applyCompany = useCallback((next: string | null) => {
     companyRef.current = next;
     setActiveCompany(next);
@@ -319,6 +326,16 @@ export const CentralApp = () => {
     applyCompany(slug);
   };
 
+  // Leave the company explicitly: nothing of it stays registered, loaded or remembered, and the picker is shown.
+  const leaveCompany = () => {
+    remember(null);
+    setProblem(null);
+    setBoardsFailed(null);
+    setPickedBoardId(null);
+    setLoaded(null);
+    applyCompany(null);
+  };
+
   // Only for the company currently selected; the effect re-reads companySlug, so it never loads another one.
   const retryBoards = () => {
     setProblem(null);
@@ -389,18 +406,21 @@ export const CentralApp = () => {
   }
 
   const company = me.companies.find((c) => c.slug === companySlug) ?? null;
+  if (!company) {
+    return (
+      <CompanySelectPage companies={me.companies} onSelect={chooseCompany} onLogout={signOut}
+        notice={accountNotice} problem={problem} />
+    );
+  }
   const boards = loaded && loaded.slug === companySlug ? loaded.boards : [];
   const boardId = pickedBoardId !== null && boards.some((b) => b.id === pickedBoardId) ? pickedBoardId : (boards[0]?.id ?? null);
 
   return (
+    <>
+    <CentralHeader company={company} email={me.email} canSwitch={me.companies.length > 1} onSwitch={leaveCompany}
+      theme={theme} onThemeChange={setTheme} onSignOut={signOut} />
     <div className="mx-auto max-w-7xl px-6 py-10">
-      <header className="flex items-center justify-between">
-        <p className="text-sm text-[var(--gray-text)]">{me.email}</p>
-        <button type="button" onClick={signOut} className="text-sm font-semibold text-[var(--primary-blue)] hover:underline">
-          Sign out
-        </button>
-      </header>
-      {accountNotice && <p role="status" className="mt-6 text-sm font-medium text-amber-900">{accountNotice}</p>}
+      {accountNotice && <p role="status" className="text-sm font-medium text-amber-900">{accountNotice}</p>}
       {problem && <p role="alert" className="mt-6 text-sm font-medium text-red-800">{problem}</p>}
       {boardsFailed !== null && boardsFailed === companySlug && (
         <button type="button" onClick={retryBoards}
@@ -408,20 +428,6 @@ export const CentralApp = () => {
           Try again
         </button>
       )}
-      <section className="mt-8">
-        <label htmlFor="company-select" className={labelClass}>Company</label>
-        {me.companies.length === 0 ? (
-          <p className="mt-2 text-sm text-[var(--gray-text)]">You do not belong to any company yet.</p>
-        ) : (
-          <select id="company-select" value={companySlug ?? ""} onChange={(e) => e.target.value && chooseCompany(e.target.value)}
-            className={inputClass}>
-            <option value="">Choose a company</option>
-            {me.companies.map((c) => (
-              <option key={c.slug} value={c.slug}>{c.name}</option>
-            ))}
-          </select>
-        )}
-      </section>
       {company && boards.length > 1 && (
         <section className="mt-6">
           <label htmlFor="board-select" className={labelClass}>Board</label>
@@ -464,5 +470,6 @@ export const CentralApp = () => {
         </section>
       )}
     </div>
+    </>
   );
 };

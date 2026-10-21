@@ -241,7 +241,7 @@ export const CentralCardsImport = ({ companySlug, boardId, onImported }: Central
   const working = phase === "previewing" || phase === "confirming";
 
   return (
-    <section aria-labelledby="cards-import-title" className="rounded-[24px] border border-[var(--stroke)] bg-white/80 p-6 shadow-[var(--shadow)]">
+    <section aria-labelledby="cards-import-title" className="rounded-[24px] border border-[var(--stroke)] bg-[var(--surface-strong)]/80 p-6 shadow-[var(--shadow)]">
       <h2 id="cards-import-title" className="font-display text-xl font-semibold text-[var(--navy-dark)]">Import Cards from Excel</h2>
       <p className="mt-2 text-sm text-[var(--gray-text)]">
         Upload a Cards workbook (the export or the template). A row with an empty card_id creates a card; a row with the
@@ -264,7 +264,7 @@ export const CentralCardsImport = ({ companySlug, boardId, onImported }: Central
           type="button"
           onClick={() => runPreview()}
           disabled={!file || working || phase === "uncertain" || phase === "done"}
-          className="rounded-lg border border-[var(--stroke)] bg-white px-4 py-2 text-sm font-semibold text-[var(--navy-dark)] transition hover:bg-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] px-4 py-2 text-sm font-semibold text-[var(--navy-dark)] transition hover:bg-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-50"
         >
           {phase === "previewing" ? "Checking..." : "Preview import"}
         </button>
@@ -288,7 +288,7 @@ export const CentralCardsImport = ({ companySlug, boardId, onImported }: Central
               Check result
             </button>
             <button type="button" onClick={reset}
-              className="rounded-lg border border-[var(--stroke)] bg-white px-4 py-2 text-sm font-semibold text-[var(--navy-dark)]">
+              className="rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] px-4 py-2 text-sm font-semibold text-[var(--navy-dark)]">
               Start over
             </button>
           </div>
@@ -300,7 +300,7 @@ export const CentralCardsImport = ({ companySlug, boardId, onImported }: Central
           <h3 ref={resultHeading} tabIndex={-1} className="text-sm font-semibold text-[var(--navy-dark)]">Import result</h3>
           <p className="mt-1 text-sm">{countsText(result)}.</p>
           <button type="button" onClick={reset}
-            className="mt-3 rounded-lg border border-[var(--stroke)] bg-white px-4 py-2 text-sm font-semibold text-[var(--navy-dark)]">
+            className="mt-3 rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] px-4 py-2 text-sm font-semibold text-[var(--navy-dark)]">
             Import another file
           </button>
         </div>
@@ -403,7 +403,7 @@ export const CentralCardsImport = ({ companySlug, boardId, onImported }: Central
                 : `Confirm import (${preview.summary.creates} new, ${preview.summary.updates} updated)`}
             </button>
             <button type="button" onClick={reset} disabled={phase === "confirming"}
-              className="rounded-lg border border-[var(--stroke)] bg-white px-4 py-2 text-sm font-semibold text-[var(--navy-dark)] disabled:opacity-50">
+              className="rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] px-4 py-2 text-sm font-semibold text-[var(--navy-dark)] disabled:opacity-50">
               Cancel
             </button>
           </div>

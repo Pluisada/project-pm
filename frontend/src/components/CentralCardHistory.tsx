@@ -86,7 +86,7 @@ export const CentralCardHistory = ({ companySlug, boardId, cardId, cardTitle, on
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
       <div role="dialog" aria-modal="true" aria-label={`Edit history for ${cardTitle}`} data-testid="central-history"
-        className="max-h-[80vh] w-full max-w-lg overflow-hidden rounded-[24px] border border-[var(--stroke)] bg-white shadow-[var(--shadow)]"
+        className="max-h-[80vh] w-full max-w-lg overflow-hidden rounded-[24px] border border-[var(--stroke)] bg-[var(--surface-strong)] shadow-[var(--shadow)]"
         onClick={(event) => event.stopPropagation()}>
         <div className="flex items-start justify-between gap-4 border-b border-[var(--stroke)] px-6 py-4">
           <div>

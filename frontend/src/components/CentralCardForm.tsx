@@ -90,7 +90,7 @@ export function buildCardUpdates(card: CardResponse, v: Values): CardUpdatePaylo
 }
 
 const inputClass =
-  "mt-1 w-full rounded-lg border border-[var(--stroke)] bg-white px-3 py-2 text-sm text-[var(--navy-dark)] outline-none focus:border-[var(--primary-blue)] disabled:opacity-50";
+  "mt-1 w-full rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] px-3 py-2 text-sm text-[var(--navy-dark)] outline-none focus:border-[var(--primary-blue)] disabled:opacity-50";
 const labelClass = "block text-xs font-semibold text-[var(--gray-text)]";
 
 type Failure = { text: string; unknownOutcome: boolean };
@@ -217,7 +217,7 @@ export const CentralCardForm = ({ companySlug, boardId, target, onSaved, onReloa
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <form onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="central-card-form-title" noValidate
-        className="flex max-h-[90vh] w-full max-w-xl flex-col gap-3 overflow-y-auto rounded-[24px] border border-[var(--stroke)] bg-white p-6 shadow-[var(--shadow)]">
+        className="flex max-h-[90vh] w-full max-w-xl flex-col gap-3 overflow-y-auto rounded-[24px] border border-[var(--stroke)] bg-[var(--surface-strong)] p-6 shadow-[var(--shadow)]">
         <h3 id="central-card-form-title" className="font-display text-lg font-semibold text-[var(--navy-dark)]">
           {edit ? "Edit opportunity" : `New card in ${target.columnTitle}`}
         </h3>

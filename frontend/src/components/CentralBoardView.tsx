@@ -79,7 +79,7 @@ const CentralCard = ({ card, onEdit, onDelete, onHistory, movable, overlay }: { 
   return (
     <li ref={overlay ? undefined : setNodeRef} data-testid={`central-card-${card.id}`} data-title={card.title}
       style={overlay ? undefined : { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 }}
-      className="relative rounded-xl border border-[rgba(3,33,71,0.1)] bg-white px-3 py-2.5 shadow-[0_1px_2px_rgba(3,33,71,0.06)]">
+      className="relative rounded-xl border border-[var(--stroke)] bg-[var(--surface-strong)] px-3 py-2.5 shadow-[0_1px_2px_rgba(3,33,71,0.06)]">
       {movable && !overlay && (
         <button type="button" ref={setActivatorNodeRef} {...attributes} {...listeners}
           aria-label={`Move ${card.title}`} data-testid={`central-handle-${card.id}`}

@@ -1,15 +1,37 @@
 @import "tailwindcss";
 
 :root {
-  --accent-yellow: #ecad0a;
-  --primary-blue: #209dd7;
-  --secondary-purple: #753991;
-  --navy-dark: #032147;
-  --gray-text: #566170;
-  --surface: #f7f8fb;
-  --surface-strong: #ffffff;
-  --stroke: rgba(3, 33, 71, 0.08);
-  --shadow: 0 18px 40px rgba(3, 33, 71, 0.12);
+  /* Semantic tokens. The neutral set below is the original palette; a company
+     overrides them through :root[data-company="..."] (see lib/branding.ts). */
+  --brand: #209dd7;
+  --brand-secondary: #753991;
+  --accent: #ecad0a;
+  --on-accent: #032147;
+  --ink: #032147;
+  --muted: #566170;
+  --canvas: #f7f8fb;
+  --panel: #ffffff;
+  --line: rgba(3, 33, 71, 0.08);
+  --shadow-color: rgba(3, 33, 71, 0.12);
+  --nav-bg: #ffffff;
+  --nav-ink: var(--ink);
+  --nav-muted: var(--muted);
+  --nav-line: var(--line);
+  --nav-brand: var(--brand);
+  --nav-hover: var(--canvas);
+  --nav-top: transparent;
+  --logo-bg: transparent;
+
+  /* Legacy names used across the components, aliased to the semantic tokens. */
+  --accent-yellow: var(--accent);
+  --primary-blue: var(--brand);
+  --secondary-purple: var(--brand-secondary);
+  --navy-dark: var(--ink);
+  --gray-text: var(--muted);
+  --surface: var(--canvas);
+  --surface-strong: var(--panel);
+  --stroke: var(--line);
+  --shadow: 0 18px 40px var(--shadow-color);
   /* Kanban stage tones: pale column background + stronger header accent. */
   --stage-blue-bg: #e8f1fb;
   --stage-blue-accent: #5b9bd5;
@@ -38,6 +60,163 @@
   --conf-high-dot: #16a34a;
 }
 
+/* Company identities. Brand colors observed on the companies' public sites are
+   marked "observed"; every other value is a derived step for contrast on an
+   application surface (see docs/BRANDING.md). Light first, dark when
+   data-theme="dark" is set (lib/theme.ts: the person's choice, or the OS). Presentation only. */
+:root[data-company] {
+  color-scheme: light;
+}
+
+:root[data-company="salcomp"] {
+  --brand: #be3124; /* observed: site accent; used as a precise signal, not a fill */
+  --brand-secondary: #1b2430; /* derived from the site's black: slate */
+  --accent: #e0584b;
+  --on-accent: #151c26;
+  --ink: #151c26;
+  --muted: #526072;
+  --canvas: #eef1f5;
+  --panel: #ffffff;
+  --line: rgba(21, 28, 38, 0.12);
+  --shadow-color: rgba(21, 28, 38, 0.14);
+  --nav-bg: #ffffff;
+  --nav-brand: #be3124;
+  --nav-hover: #eef1f5;
+  --nav-top: #be3124;
+}
+
+:root[data-company="lity"] {
+  --brand: #c62a2f; /* derived from observed #d83135 for text contrast */
+  --brand-secondary: #373435; /* observed: site charcoal */
+  --accent: #d83135; /* observed: site red */
+  --on-accent: #ffffff;
+  --ink: #373435;
+  --muted: #5f5c5d;
+  --canvas: #f0f0f0; /* observed: site light grey */
+  --panel: #ffffff;
+  --line: rgba(55, 52, 53, 0.14);
+  --shadow-color: rgba(55, 52, 53, 0.16);
+  /* Signature: a solid red header band in the observed red. */
+  --nav-bg: #d83135;
+  --nav-ink: #ffffff;
+  --nav-muted: #ffffff;
+  --nav-line: #b72a2e;
+  --nav-brand: #ffffff;
+  --nav-hover: #b72a2e;
+  --nav-top: #9f1f23;
+  --logo-bg: #ffffff;
+}
+
+:root[data-company="valor-log"] {
+  --brand: #b8450b; /* derived: darker step of the logo orange, for text on light surfaces */
+  --brand-secondary: #17120f;
+  --accent: #fb6c1f; /* observed: logo orange */
+  --on-accent: #17120f;
+  --ink: #17120f;
+  --muted: #5c554e;
+  --canvas: #f5f3f0;
+  --panel: #ffffff;
+  --line: rgba(23, 18, 15, 0.14);
+  --shadow-color: rgba(23, 18, 15, 0.16);
+  --nav-bg: #0f0f0f;
+  --nav-ink: #f5f3f0;
+  --nav-muted: #b9b2aa;
+  --nav-line: #2a2623;
+  --nav-brand: #fb6c1f;
+  --nav-hover: #1e1b19;
+  --nav-top: #fb6c1f;
+}
+
+:root[data-company][data-theme="dark"] {
+  color-scheme: dark;
+  --stage-blue-bg: #14263a;
+  --stage-cyan-bg: #10292f;
+  --stage-turquoise-bg: #102b27;
+  --stage-lime-bg: #232b10;
+  --stage-green-bg: #11291a;
+  --stage-red-bg: #3a1618;
+  --conf-low-bg: #3a1618;
+  --conf-low-ink: #fca5a5;
+  --conf-low-line: #7f3338;
+  --conf-low-dot: #f87171;
+  --conf-medium-bg: #2e2410;
+  --conf-medium-ink: #fcd34d;
+  --conf-medium-line: #6b5518;
+  --conf-medium-dot: #facc15;
+  --conf-high-bg: #112a1a;
+  --conf-high-ink: #86efac;
+  --conf-high-line: #2f6b45;
+  --conf-high-dot: #4ade80;
+  /* Status colors the components take from the Tailwind palette (alerts, badges). */
+  --color-red-50: #3a1618;
+  --color-red-100: #4a1c1f;
+  --color-red-200: #5c2427;
+  --color-red-300: #7f3338;
+  --color-red-600: #fca5a5;
+  --color-red-700: #fca5a5;
+  --color-red-800: #fecaca;
+  --color-green-50: #112a1a;
+  --color-green-100: #173824;
+  --color-green-300: #2f6b45;
+  --color-green-700: #86efac;
+  --color-green-800: #bbf7d0;
+  --color-green-900: #dcfce7;
+  --color-amber-50: #2e2410;
+  --color-amber-300: #7a5a1c;
+  --color-amber-900: #fde68a;
+  --color-yellow-800: #fde68a;
+  --color-gray-100: #26272a;
+  --color-gray-700: #d1d5db;
+  --color-slate-700: #cbd5e1;
+}
+
+:root[data-company="salcomp"][data-theme="dark"] {
+  --brand: #f2766a;
+  --brand-secondary: #3a5573;
+  --canvas: #0d131a;
+  --panel: #151e28;
+  --ink: #e9eef4;
+  --muted: #93a1b3;
+  --line: rgba(160, 185, 215, 0.16);
+  --shadow-color: rgba(0, 0, 0, 0.5);
+  --nav-bg: #151e28;
+  --nav-brand: #f2766a;
+  --nav-hover: #0d131a;
+  --logo-bg: #ffffff;
+}
+
+:root[data-company="lity"][data-theme="dark"] {
+  --brand: #f2686b;
+  --brand-secondary: #c62a2f;
+  --canvas: #171414;
+  --panel: #221e1f;
+  --ink: #f1efef;
+  --muted: #aaa6a7;
+  --line: rgba(255, 255, 255, 0.13);
+  --shadow-color: rgba(0, 0, 0, 0.5);
+  --nav-bg: #8e1c21;
+  --nav-line: #6f1519;
+  --nav-hover: #6f1519;
+  --nav-top: #c62a2f;
+}
+
+:root[data-company="valor-log"][data-theme="dark"] {
+  --brand: #fb6c1f;
+  --brand-secondary: #b8450b;
+  --canvas: #0c0c0c;
+  --panel: #171615;
+  --ink: #f4f1ee;
+  --muted: #a9a29b;
+  --line: rgba(255, 255, 255, 0.13);
+  --shadow-color: rgba(0, 0, 0, 0.55);
+  --nav-bg: #000000;
+  --nav-hover: #1b1a19;
+}
+
+:root[data-company] ::selection {
+  background: color-mix(in srgb, var(--brand) 28%, transparent);
+}
+
 @theme inline {
   --color-background: var(--surface);
   --color-foreground: var(--navy-dark);
@@ -57,6 +236,19 @@ body {
 
 .font-display {
   font-family: var(--font-display), "Segoe UI", sans-serif;
+}
+
+/* Each company's headings use the typeface observed on its public site. */
+:root[data-company="salcomp"] .font-display {
+  font-family: var(--font-raleway), var(--font-display), "Segoe UI", sans-serif;
+}
+
+:root[data-company="lity"] .font-display {
+  font-family: var(--font-lato), var(--font-display), "Segoe UI", sans-serif;
+}
+
+:root[data-company="valor-log"] .font-display {
+  font-family: var(--font-poppins), var(--font-display), "Segoe UI", sans-serif;
 }
 
 @keyframes ai-launcher-float {

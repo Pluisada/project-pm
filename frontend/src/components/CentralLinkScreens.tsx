@@ -24,7 +24,7 @@ export function readCentralLink(search: string): CentralLink | null {
 
 const PASSWORD_HINT = "8 to 128 characters with an upper-case letter, a lower-case letter, a number and a symbol.";
 const inputClass =
-  "mt-2 w-full rounded-lg border border-[var(--stroke)] bg-white px-4 py-3 text-sm outline-none focus:border-[var(--primary-blue)] disabled:opacity-50";
+  "mt-2 w-full rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] text-[var(--navy-dark)] px-4 py-3 text-sm outline-none focus:border-[var(--primary-blue)] disabled:opacity-50";
 const labelClass = "block text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]";
 const submitClass =
   "mt-8 w-full rounded-lg bg-[var(--secondary-purple)] px-6 py-3 font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50";
@@ -42,7 +42,7 @@ function linkFailure(err: unknown, invalid: string): string {
 
 const Card = ({ title, children, onSubmit }: { title: string; children: React.ReactNode; onSubmit: (e: React.FormEvent) => void }) => (
   <main className="flex min-h-screen items-center justify-center px-6">
-    <form onSubmit={onSubmit} className="w-full max-w-md rounded-[24px] border border-[var(--stroke)] bg-white/80 p-8 shadow-[var(--shadow)]">
+    <form onSubmit={onSubmit} className="w-full max-w-md rounded-[24px] border border-[var(--stroke)] bg-[var(--surface-strong)]/80 p-8 shadow-[var(--shadow)]">
       <h1 className="font-display text-3xl font-semibold text-[var(--navy-dark)]">{title}</h1>
       {children}
     </form>

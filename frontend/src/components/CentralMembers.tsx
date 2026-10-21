@@ -19,7 +19,7 @@ const ROLE_LABELS: Record<string, string> = { sales_member: "Sales Member", visi
 const INVITE_ROLES: InviteRole[] = ["sales_member", "visitor"];
 
 const fieldClass =
-  "mt-1 w-full rounded-lg border border-[var(--stroke)] bg-white px-3 py-2 text-sm outline-none focus:border-[var(--primary-blue)] disabled:opacity-50";
+  "mt-1 w-full rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] text-[var(--navy-dark)] px-3 py-2 text-sm outline-none focus:border-[var(--primary-blue)] disabled:opacity-50";
 const labelClass = "block text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]";
 const primaryButton =
   "rounded-lg bg-[var(--secondary-purple)] px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50";
@@ -101,7 +101,7 @@ export const CentralMembers = ({ companySlug, companyName }: { companySlug: stri
   };
 
   return (
-    <section aria-label={`Members of ${companyName}`} className="rounded-[24px] border border-[var(--stroke)] bg-white/80 p-6 shadow-[var(--shadow)]">
+    <section aria-label={`Members of ${companyName}`} className="rounded-[24px] border border-[var(--stroke)] bg-[var(--surface-strong)]/80 p-6 shadow-[var(--shadow)]">
       <h2 className="font-display text-xl font-semibold text-[var(--navy-dark)]">Users of {companyName}</h2>
       {notice && (
         <p role={notice.kind === "ok" ? "status" : "alert"} data-testid="members-notice"
@@ -147,7 +147,7 @@ export const CentralMembers = ({ companySlug, companyName }: { companySlug: stri
                 <select aria-label={`Role of ${m.email}`} value={m.role} disabled={busy}
                   onChange={(e) => run("change the role", () => changeCompanyMemberRole(companySlug, m.user_id, e.target.value as InviteRole),
                     `Role of ${m.email} changed.`)}
-                  className="rounded-lg border border-[var(--stroke)] bg-white px-2 py-1 text-xs">
+                  className="rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] text-[var(--navy-dark)] px-2 py-1 text-xs">
                   {INVITE_ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
                 </select>
               ) : (

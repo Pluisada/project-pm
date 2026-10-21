@@ -31,6 +31,13 @@ function route(handlers: Record<string, () => Response>) {
   return fetchMock;
 }
 
+const pickCompany = async (name: string) =>
+  userEvent.click(await screen.findByRole("button", { name: new RegExp(name) }));
+const switchCompany = async (name: string) => {
+  await userEvent.click(await screen.findByRole("button", { name: "Switch company" }));
+  await pickCompany(name);
+};
+
 const me = (companies: { slug: string; name: string; role: string }[]) =>
   json(200, { email: "a@b.com", is_global_admin: false, companies });
 
@@ -54,7 +61,7 @@ describe("CentralApp", () => {
       "/api/central/logout": () => json(204),
     });
     render(<CentralApp />);
-    await userEvent.selectOptions(await screen.findByLabelText("Company"), "lity");
+    await pickCompany("Lity");
     await screen.findByRole("button", { name: "Export Current Database" });
     expect(getActiveCompany()).toBe("lity");
     const companyCalls = fetchMock.mock.calls.filter(([u]) => String(u).includes("/api/companies/"));
@@ -78,11 +85,13 @@ describe("CentralApp", () => {
       "/api/companies/lity/boards": () => json(200, [board]),
     });
     render(<CentralApp />);
-    const select = await screen.findByLabelText("Company");
-    await userEvent.selectOptions(select, "salcomp");
+    await pickCompany("Salcomp");
     await screen.findByRole("button", { name: "Export Current Database" });
+    // Let Salcomp's own reads (board, capabilities, undo status) all be sent before the switch, so what follows is
+    // only what the switch itself causes.
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/companies/salcomp/boards/3/undo"))).toBe(true));
     fetchMock.mockClear();
-    await userEvent.selectOptions(select, "lity");
+    await switchCompany("Lity");
     await waitFor(() => expect(getActiveCompany()).toBe("lity"));
     await screen.findByRole("button", { name: "Export Current Database" });
     const urls = fetchMock.mock.calls.map(([u]) => String(u)).filter((u) => u.includes("/api/companies/"));
@@ -114,6 +123,146 @@ describe("CentralApp", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  describe("company selection, branding and navigation", () => {
+    const companies = [
+      { slug: "salcomp", name: "Salcomp", role: "super_admin" },
+      { slug: "lity", name: "Lity", role: "super_admin" },
+    ];
+    const signedIn = (list = companies) => {
+      localStorage.setItem("pm_auth_token", "tok");
+      localStorage.setItem("pm_auth_user", "a@b.com");
+      return route({
+        "/api/central/me": () => me(list),
+        "/api/companies/salcomp/boards": () => json(200, [board]),
+        "/api/companies/lity/boards": () => json(200, [board]),
+        "/api/central/logout": () => json(204),
+      });
+    };
+    const brand = () => document.documentElement.getAttribute("data-company");
+    afterEach(() => {
+      document.documentElement.removeAttribute("data-company");
+      document.documentElement.removeAttribute("data-theme");
+    });
+
+    it("shows the picker first when several companies are available and none is remembered", async () => {
+      signedIn();
+      render(<CentralApp />);
+      expect(await screen.findByRole("heading", { name: "Choose a company" })).toBeInTheDocument();
+      expect(getActiveCompany()).toBeNull();
+      expect(brand()).toBeNull(); // neutral until a company is chosen
+      expect(screen.queryByTestId("central-header")).not.toBeInTheDocument();
+    });
+
+    it("enters a remembered company only when the server lists it for this account", async () => {
+      localStorage.setItem("pm_central_company", "lity");
+      signedIn();
+      render(<CentralApp />);
+      await screen.findByTestId("central-header");
+      expect(getActiveCompany()).toBe("lity");
+      expect(brand()).toBe("lity");
+    });
+
+    it("enters a lone company without asking, and offers no switch", async () => {
+      signedIn([companies[0]]);
+      render(<CentralApp />);
+      await screen.findByTestId("central-header");
+      expect(getActiveCompany()).toBe("salcomp");
+      expect(screen.queryByRole("button", { name: "Switch company" })).not.toBeInTheDocument();
+    });
+
+    it("applies the company's identity, follows a switch and leaves nothing behind after sign-out", async () => {
+      signedIn();
+      render(<CentralApp />);
+      await pickCompany("Lity");
+      await screen.findByTestId("central-header");
+      expect(brand()).toBe("lity");
+      expect(screen.getByRole("img", { name: "Lity" })).toBeInTheDocument();
+      await switchCompany("Salcomp");
+      await waitFor(() => expect(brand()).toBe("salcomp"));
+      expect(screen.getByRole("img", { name: "Salcomp" })).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+      expect(brand()).toBeNull();
+      expect(getActiveCompany()).toBeNull();
+      expect(localStorage.getItem("pm_central_company")).toBeNull();
+    });
+
+    it("Switch company forgets the company completely until another is chosen", async () => {
+      signedIn();
+      render(<CentralApp />);
+      await pickCompany("Lity");
+      await screen.findByRole("button", { name: "Export Current Database" });
+      await userEvent.click(screen.getByRole("button", { name: "Switch company" }));
+      expect(await screen.findByRole("heading", { name: "Choose a company" })).toBeInTheDocument();
+      expect(getActiveCompany()).toBeNull();
+      expect(brand()).toBeNull();
+      expect(localStorage.getItem("pm_central_company")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Export Current Database" })).not.toBeInTheDocument();
+    });
+
+    it("clears the company, its identity and its pages when the session expires", async () => {
+      signedIn();
+      render(<CentralApp />);
+      await pickCompany("Lity");
+      await screen.findByTestId("central-header");
+      act(() => { window.dispatchEvent(new Event("pm:session-expired")); });
+      expect(await screen.findByText("Your session expired. Sign in again.")).toBeInTheDocument();
+      expect(getActiveCompany()).toBeNull();
+      expect(brand()).toBeNull();
+      expect(screen.queryByTestId("central-header")).not.toBeInTheDocument();
+    });
+
+    it("another tab remembering a different company changes neither the company nor its identity here", async () => {
+      signedIn();
+      render(<CentralApp />);
+      await pickCompany("Lity");
+      await screen.findByTestId("central-header");
+      localStorage.setItem("pm_central_company", "salcomp");
+      act(() => {
+        window.dispatchEvent(new StorageEvent("storage", { key: "pm_central_company", oldValue: "lity", newValue: "salcomp" }));
+      });
+      expect(getActiveCompany()).toBe("lity");
+      expect(brand()).toBe("lity");
+      expect(screen.getByRole("img", { name: "Lity" })).toBeInTheDocument();
+    });
+
+    it("keeps the theme choice for the browser and applies it", async () => {
+      signedIn();
+      render(<CentralApp />);
+      await pickCompany("Lity");
+      await userEvent.click(await screen.findByRole("button", { name: "Dark" }));
+      expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+      expect(localStorage.getItem("pm_theme")).toBe("dark");
+      expect(screen.getByRole("button", { name: "Dark" })).toHaveAttribute("aria-pressed", "true");
+    });
+
+    it("offers no navigation to pages that do not exist in central mode yet", async () => {
+      signedIn();
+      render(<CentralApp />);
+      await pickCompany("Lity");
+      await screen.findByRole("button", { name: "Export Current Database" });
+      expect(screen.queryAllByRole("link")).toEqual([]);
+      for (const name of [/Reports/, /Dashboard/, /Products/, /Import Bids/]) {
+        expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+        expect(screen.queryByRole("link", { name })).not.toBeInTheDocument();
+      }
+      expect(screen.queryByTestId("kanban-board")).not.toBeInTheDocument();
+    });
+
+    it("keeps the signed-in token bound while the company is chosen and switched", async () => {
+      const fetchMock = signedIn();
+      render(<CentralApp />);
+      await pickCompany("Lity");
+      await screen.findByRole("button", { name: "Export Current Database" });
+      localStorage.setItem("pm_auth_token", "tok2"); // another tab signed in; no event processed yet
+      await switchCompany("Salcomp");
+      await screen.findByRole("button", { name: "Export Current Database" });
+      const withOther = (fetchMock.mock.calls as unknown as [string, RequestInit][]).filter(
+        ([, init]) => (init?.headers as Record<string, string> | undefined)?.Authorization === "Bearer tok2"
+      );
+      expect(withOther).toEqual([]);
+    });
+  });
+
   describe("an authentication change made in another tab", () => {
     // Synthetic storage events in jsdom prove this tab's logic, not real multi-tab browser behavior.
     const two = [
@@ -131,8 +280,11 @@ describe("CentralApp", () => {
         "/api/companies/lity/boards": () => json(200, [board]),
       });
       render(<CentralApp />);
-      await userEvent.selectOptions(await screen.findByLabelText("Company"), "lity");
+      await pickCompany("Lity");
       await screen.findByRole("button", { name: "Export Current Database" });
+      // Everything the company view reads on opening (board, capabilities, undo status) has been sent: what a test
+      // sees after this is caused by the test.
+      await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/companies/lity/boards/3/undo"))).toBe(true));
       fetchMock.mockClear();
       return fetchMock;
     };
@@ -161,10 +313,9 @@ describe("CentralApp", () => {
       account = { email: "c@d.com", companies: two };
       tokenChanged("tok2");
       expect(await screen.findByText(/account signed in on this browser changed to c@d.com/)).toBeInTheDocument();
-      expect(screen.getByText("c@d.com", { selector: "p" })).toBeInTheDocument();
       expect(screen.queryByText("a@b.com")).not.toBeInTheDocument();
       expect(getActiveCompany()).toBeNull();
-      expect(screen.getByLabelText("Company")).toHaveValue("");
+      expect(screen.getByRole("heading", { name: "Choose a company" })).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Export Current Database" })).not.toBeInTheDocument();
       // Nothing was requested for any company with the new token while the old account's company was shown.
       expect(calls(fetchMock, "/api/companies/")).toEqual([]);
@@ -308,8 +459,8 @@ describe("CentralApp", () => {
       "/api/companies/salcomp/boards": () => json(200, [board]),
     });
     render(<CentralApp />);
-    await screen.findByLabelText("Company");
-    await waitFor(() => expect(screen.getByLabelText("Company")).toHaveValue("salcomp"));
+    await screen.findByTestId("central-header");
+    await waitFor(() => expect(getActiveCompany()).toBe("salcomp"));
     expect(screen.queryByRole("button", { name: /Export|Template/ })).not.toBeInTheDocument();
   });
 
@@ -325,7 +476,7 @@ describe("CentralApp", () => {
         ]),
     });
     render(<CentralApp />);
-    expect(await screen.findByLabelText("Company")).toHaveValue("");
+    expect(await screen.findByRole("heading", { name: "Choose a company" })).toBeInTheDocument();
     expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/api/companies/"))).toBe(false);
   });
 
@@ -355,7 +506,7 @@ describe("CentralApp", () => {
     expect(count("/boards")).toBe(1);
     expect(count("/api/central/me")).toBe(2);
     expect(localStorage.getItem("pm_auth_token")).toBe("tok");
-    expect(screen.getByLabelText("Company")).toHaveValue("");
+    expect(screen.getByRole("heading", { name: "Choose a company" })).toBeInTheDocument();
   });
 
   it("offers a retry, not the login form, when /me fails with a network error", async () => {
@@ -375,7 +526,8 @@ describe("CentralApp", () => {
     expect(localStorage.getItem("pm_auth_token")).toBe("tok");
     up = true;
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
-    expect(await screen.findByLabelText("Company")).toHaveValue("salcomp");
+    await screen.findByTestId("central-header");
+    expect(getActiveCompany()).toBe("salcomp");
   });
 
   it("switches company: new downloads target the new company and the old message is dropped", async () => {
@@ -392,18 +544,18 @@ describe("CentralApp", () => {
       "/api/companies/acme/boards": () => json(200, [{ ...board, id: 9 }]),
     });
     render(<CentralApp />);
-    await userEvent.selectOptions(await screen.findByLabelText("Company"), "salcomp");
+    await pickCompany("Salcomp");
     await userEvent.click(await screen.findByRole("button", { name: "Export Current Database" }));
     expect(await screen.findByRole("alert")).toBeInTheDocument();
     // the button is usable again after the failure
     expect(screen.getByRole("button", { name: "Export Current Database" })).toBeEnabled();
 
-    await userEvent.selectOptions(screen.getByLabelText("Company"), "acme");
+    await switchCompany("Acme");
     await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/api/companies/acme/boards"))).toBe(true));
     expect(screen.queryByRole("button", { name: /Export|Template/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
-    await userEvent.selectOptions(screen.getByLabelText("Company"), "salcomp");
+    await switchCompany("Salcomp");
     expect(await screen.findByRole("button", { name: "Export Current Database" })).toBeEnabled();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
@@ -498,15 +650,15 @@ describe("CentralApp", () => {
       });
       vi.stubGlobal("fetch", fetchMock);
       render(<CentralApp />);
-      await userEvent.selectOptions(await screen.findByLabelText("Company"), "salcomp");
+      await pickCompany("Salcomp");
       await waitFor(() => expect(count(fetchMock, "/companies/salcomp/boards")).toBe(1));
-      await userEvent.selectOptions(screen.getByLabelText("Company"), "acme");
+      await switchCompany("Acme");
       expect(await screen.findByRole("button", { name: "Export Current Database" })).toBeInTheDocument();
       // the abandoned request fails late: nothing about it may surface
       await act(async () => releaseSalcomp(json(500, { detail: "late failure" })));
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
-      expect(screen.getByLabelText("Company")).toHaveValue("acme");
+      expect(getActiveCompany()).toBe("acme");
     });
 
     it("retries the currently selected company, not the one that failed", async () => {
@@ -526,9 +678,9 @@ describe("CentralApp", () => {
       });
       vi.stubGlobal("fetch", fetchMock);
       render(<CentralApp />);
-      await userEvent.selectOptions(await screen.findByLabelText("Company"), "salcomp");
+      await pickCompany("Salcomp");
       expect(await screen.findByRole("alert")).toHaveTextContent("salcomp down");
-      await userEvent.selectOptions(screen.getByLabelText("Company"), "acme");
+      await switchCompany("Acme");
       expect(await screen.findByRole("alert")).toHaveTextContent("acme down");
       acmeUp = true;
       await userEvent.click(screen.getByRole("button", { name: "Try again" }));

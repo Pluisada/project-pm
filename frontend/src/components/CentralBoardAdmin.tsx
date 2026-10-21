@@ -23,7 +23,7 @@ const STAGE_LABELS: Record<StageKind, string> = { open: "Open", won: "Won", lost
 const STAGE_KINDS: StageKind[] = ["open", "won", "lost"];
 
 const fieldClass =
-  "mt-1 w-full rounded-lg border border-[var(--stroke)] bg-white px-3 py-2 text-sm outline-none focus:border-[var(--primary-blue)] disabled:opacity-50";
+  "mt-1 w-full rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] text-[var(--navy-dark)] px-3 py-2 text-sm outline-none focus:border-[var(--primary-blue)] disabled:opacity-50";
 const labelClass = "block text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]";
 const primaryButton =
   "rounded-lg bg-[var(--secondary-purple)] px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50";
@@ -290,7 +290,7 @@ export const CentralBoardAdmin = ({
         {open ? "Hide board administration" : "Manage boards and columns"}
       </button>
       {open && (
-        <div className="mt-4 rounded-[14px] border border-[var(--stroke)] bg-white/70 p-5" aria-busy={busy}>
+        <div className="mt-4 rounded-[14px] border border-[var(--stroke)] bg-[var(--surface-strong)]/70 p-5" aria-busy={busy}>
           {notice && (
             <p role={notice.kind === "ok" ? "status" : "alert"} data-testid="admin-notice"
               className={`mb-4 text-sm font-medium ${notice.kind === "ok" ? "text-green-800" : "text-red-800"}`}>
@@ -348,7 +348,7 @@ export const CentralBoardAdmin = ({
                     const isEditing = editing?.id === column.id;
                     return (
                       <li key={column.id} data-testid={`admin-column-${column.id}`}
-                        className="rounded-lg border border-[var(--stroke)] bg-white px-3 py-2">
+                        className="rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] text-[var(--navy-dark)] px-3 py-2">
                         {isEditing ? (
                           <form onSubmit={(e) => { e.preventDefault(); void saveEdit(column); }}
                             onKeyDown={(e) => { if (e.key === "Escape") setEditing(null); }}

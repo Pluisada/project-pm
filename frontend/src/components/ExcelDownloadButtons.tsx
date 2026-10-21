@@ -73,7 +73,7 @@ export const ExcelDownloadButtons = ({ companySlug, boardId, role }: ExcelDownlo
           type="button"
           onClick={() => run(kind)}
           disabled={busy !== null}
-          className="rounded-lg border border-[var(--stroke)] bg-white px-4 py-2 text-sm font-semibold text-[var(--navy-dark)] transition hover:bg-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] px-4 py-2 text-sm font-semibold text-[var(--navy-dark)] transition hover:bg-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy === kind ? "Downloading..." : LABELS[kind]}
         </button>
