@@ -101,6 +101,11 @@ class BoardResponse(BaseModel):
         from_attributes = True
 
 
+class DefaultBoardResponse(BoardResponse):
+    """The company's default board; `created` is true only when this request created it (HTTP 201)."""
+    created: bool
+
+
 # Column Schemas
 class ColumnCreate(BaseModel):
     """Schema for creating a column."""

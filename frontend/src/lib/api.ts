@@ -283,6 +283,20 @@ export async function createCompanyBoard(
   return apiCall<BoardResponse>(`${companyPath(companySlug)}/boards`, { method: "POST", body: JSON.stringify(payload), signal });
 }
 
+/** The company's default board: `created` is true when this request created it (201), false when it already existed (200). */
+export interface DefaultBoardResponse extends BoardResponse {
+  created: boolean;
+}
+
+/** Create the company's default board and its stages if it has no board yet (POST .../boards/default; the backend decides who may). */
+export async function createDefaultCompanyBoard(companySlug: string, signal?: AbortSignal): Promise<DefaultBoardResponse> {
+  const board = await apiCall<DefaultBoardResponse>(`${companyPath(companySlug)}/boards/default`, { method: "POST", signal });
+  if (typeof board?.id !== "number" || typeof board.created !== "boolean") {
+    throw { status_code: 0, detail: "Unexpected response from the server." } as ApiError;
+  }
+  return board;
+}
+
 /** Create a column. `position` is a 0-based index; past the end means last (the backend renumbers the board). */
 export async function createCompanyColumn(
   companySlug: string,

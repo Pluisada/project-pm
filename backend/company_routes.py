@@ -51,6 +51,7 @@ from bid_import_revert import is_lock_error
 from central_runtime import central_runtime
 from company_database import begin_write
 from company_runtime import CompanyRuntime, company_runtime
+from database import seed_stages
 from models import Board, Card, Column, CompanyUser, UndoEntry
 from lead_options import ConfidenceFilter
 from routes import (
@@ -90,6 +91,7 @@ from schemas import (
     BoardCreate,
     BoardDetail,
     BoardResponse,
+    DefaultBoardResponse,
     ColumnCreate,
     ColumnResponse,
     ColumnUpdate,
@@ -118,6 +120,9 @@ from schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_BOARD_TITLE = "Sales Pipeline"
+DEFAULT_BOARD_DESCRIPTION = "Company sales pipeline"
 
 
 def build_company_router(
@@ -402,6 +407,35 @@ def build_company_router(
         db.commit()
         db.refresh(db_board)
         return db_board
+
+    @router.post("/boards/default", response_model=DefaultBoardResponse)
+    def ensure_default_company_board(
+        response: Response,
+        context: CompanyContext = Depends(get_board_admin_context),
+        db: Session = Depends(get_board_admin_db),
+    ):
+        """The company's first board, created with the six standard stages (no cards) only when it has none.
+
+        201 + created=true when this request created it, 200 + created=false when a board already existed (returned
+        unchanged). The check, the board and its stages are one transaction under the write lock, so concurrent calls
+        create at most one board and an error leaves nothing behind. Boards cannot be deleted through the API.
+        """
+        begin_write(db)  # another request's board must be visible to the check below, and block this insert
+        try:
+            board = db.query(Board).order_by(Board.id).first()
+            created = board is None
+            if created:
+                board = Board(user_id=context.user_id, title=DEFAULT_BOARD_TITLE, description=DEFAULT_BOARD_DESCRIPTION)
+                db.add(board)
+                db.flush()
+                seed_stages(db, board)
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+        db.refresh(board)
+        response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        return DefaultBoardResponse(**BoardResponse.model_validate(board).model_dump(), created=created)
 
     @router.post("/boards/{board_id}/columns", response_model=ColumnResponse, status_code=201)
     def create_company_column(

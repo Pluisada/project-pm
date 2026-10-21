@@ -24,6 +24,7 @@ import {
 } from "@/lib/api";
 import { CentralBoardAdmin } from "@/components/CentralBoardAdmin";
 import { CentralBoardView } from "@/components/CentralBoardView";
+import { CentralDefaultBoard } from "@/components/CentralDefaultBoard";
 import { CentralCardsImport } from "@/components/CentralCardsImport";
 import {
   CentralForgotScreen,
@@ -140,6 +141,8 @@ export const CentralApp = () => {
   // Bumped after a column change so the board view is read again from the server (in place, without a remount).
   const [structureTick, setStructureTick] = useState(0);
   const [problem, setProblem] = useState<string | null>(null);
+  // A short note about the default board, kept with the company it concerns.
+  const [boardNote, setBoardNote] = useState<{ slug: string; text: string } | null>(null);
   // The company whose board list failed for a reason a retry can fix (network, 5xx); `attempt` re-runs the load.
   const [boardsFailed, setBoardsFailed] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -322,7 +325,7 @@ export const CentralApp = () => {
     const seq = ++boardsSeq.current;
     try {
       const list = await listCompanyBoards(slug);
-      if (seq === boardsSeq.current) setLoaded({ slug, boards: list });
+      if (seq === boardsSeq.current && companyRef.current === slug) setLoaded({ slug, boards: list });
       return true;
     } catch {
       return false;
@@ -330,6 +333,7 @@ export const CentralApp = () => {
   }, []);
 
   const chooseCompany = (slug: string) => {
+    setBoardNote(null);
     denied.current.delete(slug);
     remember(slug);
     setProblem(null);
@@ -340,6 +344,7 @@ export const CentralApp = () => {
 
   // Leave the company explicitly: nothing of it stays registered, loaded or remembered, and the picker is shown.
   const leaveCompany = () => {
+    setBoardNote(null);
     remember(null);
     setProblem(null);
     setBoardsFailed(null);
@@ -439,6 +444,7 @@ export const CentralApp = () => {
       <WriteOutcomeNotices companies={me.companies} />
       {accountNotice && <p role="status" className="mt-4 text-sm font-medium text-amber-900">{accountNotice}</p>}
       {problem && <p role="alert" className="mt-6 text-sm font-medium text-red-800">{problem}</p>}
+      {boardNote && boardNote.slug === companySlug && <p role="status" className="mt-4 text-sm font-medium text-amber-900">{boardNote.text}</p>}
       {boardsFailed !== null && boardsFailed === companySlug && (
         <button type="button" onClick={retryBoards}
           className="mt-3 rounded-lg bg-[var(--secondary-purple)] px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90">
@@ -465,9 +471,22 @@ export const CentralApp = () => {
           <h2 className="font-display text-xl font-semibold text-[var(--navy-dark)]">No board yet</h2>
           <p className="mt-2 text-sm text-[var(--gray-text)]">
             {company.role === ROLE_SUPER_ADMIN || company.role === ROLE_COMPANY_ADMIN
-              ? `${company.name} has no board. Create the first one, and its stages, under "Manage boards and columns" below. Nothing is created automatically.`
+              ? `${company.name} has no board. Create the default board and its stages with the button below, or build one under "Manage boards and columns". Nothing is created automatically.`
               : `${company.name} has no board yet. An administrator has to create one before cards can be added.`}
           </p>
+          <CentralDefaultBoard key={company.slug} companySlug={company.slug} onRefreshBoards={() => refreshBoards(company.slug)}
+            onCreated={(board) => {
+              // Board ids are per company database: a result for a company that is no longer the active one is dropped.
+              if (companyRef.current !== company.slug) return;
+              const { created, ...record } = board;
+              setLoaded((cur) =>
+                cur && cur.slug === company.slug
+                  ? { slug: cur.slug, boards: cur.boards.some((b) => b.id === record.id) ? cur.boards : [...cur.boards, record] }
+                  : cur
+              );
+              setPickedBoardId(record.id);
+              setBoardNote(created ? null : { slug: company.slug, text: "The company already had a board; it was opened instead of creating a new one." });
+            }} />
         </section>
       )}
       {company && loaded && loaded.slug === company.slug && (
