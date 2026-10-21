@@ -354,6 +354,7 @@ def build_company_router(
         db: Session = Depends(get_writer_db),
     ):
         ensure_reviews(db)
+        begin_write(db)  # owner, permissions, history and the undo snapshot are all read under the write lock
         card = find_card(db, board_id, card_id)
         updates = card_update.model_dump(exclude_unset=True)
         new_owner = updates.get("salesperson_id")
@@ -438,6 +439,7 @@ def build_company_router(
         db: Session = Depends(get_card_admin_db),
     ):
         """Delete a card. Super Admin only (checked before the company database is opened)."""
+        begin_write(db)  # existence, snapshot and audit are read under the lock: a second delete finds no card (404)
         card = find_card(db, board_id, card_id)
         record_undo(db, context, board_id, f'Restore deleted card "{card.title}"', [undo_delete(card)])
         audit_deletion(db, board_id, card, context)

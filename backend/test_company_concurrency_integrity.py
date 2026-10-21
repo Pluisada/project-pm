@@ -457,3 +457,73 @@ def test_E1_create_card_in_a_column_being_deleted_never_500(rig):
     cards = rig.sql("SELECT column_id FROM cards WHERE title = 'Racing'")
     for (column_id,) in cards:
         assert rig.sql("SELECT COUNT(*) FROM columns WHERE id = ?", (column_id,)) == [(1,)], "card points at a missing column"
+
+
+# --- Group F1: card edit and delete take the write lock before reading the card ---------------------------------------
+
+BEGIN_WRITE = r"BEGIN IMMEDIATE"  # the first request pauses just before taking the lock; the second one runs fully
+
+
+def card_url(card):
+    return f"/api/companies/lity/boards/1/cards/{card}"
+
+
+def test_F1_edit_after_reassignment_is_refused_and_leaves_no_trace(rig):
+    """A member's edit that has not yet taken the write lock must judge ownership after a concurrent reassignment."""
+    token = admin(rig)
+    uid1, owner = member(rig, "first@example.com")
+    uid2, _ = member(rig, "second@example.com")
+    rig.sql("INSERT INTO users (id, username, created_at, updated_at) VALUES (?, 'second', ?, ?)", (uid2, NOW, NOW))
+    rig.assign(1, uid1)
+    warm_up(rig, token)
+    edit = lambda: rig.client.put(card_url(1), json={"title": "stale edit"}, headers=auth(owner))
+    reassign = lambda: rig.client.put(card_url(1), json={"salesperson_id": uid2}, headers=auth(token))
+    re_, rr = interleave(rig, edit, reassign, BEGIN_WRITE)
+    assert (rr.status_code, re_.status_code) == (200, 403), (rr.text, re_.text)
+    assert rig.sql("SELECT salesperson_id FROM cards WHERE id = 1") == [(uid2,)]
+    assert rig.sql("SELECT title FROM cards WHERE id = 1") != [("stale edit",)]
+    assert rig.sql("SELECT COUNT(*) FROM card_edit_history") == [(0,)]
+    assert rig.sql("SELECT COUNT(*) FROM undo_entries WHERE user_id = ?", (uid1,)) == [(0,)]
+    assert rig.sql("SELECT action FROM audit_events WHERE card_id = 1") == [("assign",)]
+
+
+def test_F1_concurrent_deletes_succeed_once(rig):
+    """Two deletes of the same card: one 204, the other 404, one audit row and one restorable undo entry."""
+    token = admin(rig)
+    warm_up(rig, token)
+    delete = lambda: rig.client.delete(card_url(1), headers=auth(token))
+    ra, rb = interleave(rig, delete, delete, BEGIN_WRITE)
+    assert sorted((ra.status_code, rb.status_code)) == [204, 404], (ra.text, rb.text)
+    assert rig.sql("SELECT COUNT(*) FROM cards WHERE id = 1") == [(0,)]
+    assert rig.sql("SELECT action FROM audit_events WHERE card_id = 1") == [("delete",)]
+    assert rig.sql("SELECT COUNT(*) FROM undo_entries") == [(1,)]
+    assert undo(rig, token).status_code == 200
+    assert rig.sql("SELECT COUNT(*) FROM cards") == [(2,)]  # restored under a new id
+
+
+def test_F1_edit_that_loses_the_race_to_a_delete_is_404_without_records(rig):
+    token = admin(rig)
+    uid, owner = member(rig, "first@example.com")
+    rig.assign(1, uid)
+    warm_up(rig, token)
+    edit = lambda: rig.client.put(card_url(1), json={"title": "too late"}, headers=auth(owner))
+    delete = lambda: rig.client.delete(card_url(1), headers=auth(token))
+    re_, rd = interleave(rig, edit, delete, BEGIN_WRITE)
+    assert (rd.status_code, re_.status_code) == (204, 404), (rd.text, re_.text)
+    assert rig.sql("SELECT COUNT(*) FROM card_edit_history") == [(0,)]
+    assert rig.sql("SELECT COUNT(*) FROM undo_entries WHERE user_id = ?", (uid,)) == [(0,)]
+    assert rig.sql("SELECT action FROM audit_events WHERE card_id = 1") == [("delete",)]
+
+
+def test_F1_delete_that_loses_the_race_to_an_edit_snapshots_the_edited_card(rig):
+    token = admin(rig)
+    uid, owner = member(rig, "first@example.com")
+    rig.assign(1, uid)
+    warm_up(rig, token)
+    delete = lambda: rig.client.delete(card_url(1), headers=auth(token))
+    edit = lambda: rig.client.put(card_url(1), json={"title": "edited first"}, headers=auth(owner))
+    rd, re_ = interleave(rig, delete, edit, BEGIN_WRITE)
+    assert (re_.status_code, rd.status_code) == (200, 204), (re_.text, rd.text)
+    assert rig.sql("SELECT action FROM audit_events WHERE card_id = 1") == [("delete",)]
+    assert undo(rig, token).status_code == 200
+    assert rig.sql("SELECT COUNT(*) FROM cards WHERE title = ?", ("edited first",)) == [(1,)]
