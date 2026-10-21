@@ -139,3 +139,111 @@ async def test_legacy_board_context_has_no_loss_reason_flag(db):
 
     state = await get_board_context(db, db.query(Board).first().id)
     assert "loss_reason_required" not in state
+
+
+# --- F9: internal exception details never reach the client; they are logged ---
+
+SENTINEL = "SELECT secret FROM cards WHERE token = 'hunter2'"
+
+
+def _db_error():
+    from sqlalchemy.exc import OperationalError
+    return OperationalError(SENTINEL, {"token": "hunter2"}, Exception("database is locked"))
+
+
+def _assert_log_is_safe(caplog, *expected):
+    """The handlers log category and exception class only: no message, SQL, parameters or traceback."""
+    records = [r for r in caplog.records if r.name == "ai_kanban"]
+    assert records
+    for record in records:
+        assert record.exc_info is None and not record.exc_text
+    for leaked in ("secret", "hunter2", "SELECT", "Traceback", "database is locked"):
+        assert leaked not in caplog.text
+    for fragment in expected:
+        assert fragment in caplog.text
+
+
+def _admin_card(db):
+    board = db.query(Board).first()
+    columns = _columns(db, board.id)
+    card = Card(column_id=columns[0].id, title="Task", details="", position=0)
+    db.add(card)
+    db.commit()
+    return board, columns, card
+
+
+@pytest.mark.asyncio
+async def test_unexpected_action_error_is_sanitized_and_logged(db, monkeypatch, caplog):
+    board, columns, card = _admin_card(db)
+    monkeypatch.setattr("ai_kanban.place_card", lambda *a, **k: (_ for _ in ()).throw(_db_error()))
+    action = {"type": "move", "card_id": card.id, "column_id": columns[1].id}
+
+    with caplog.at_level("ERROR", logger="ai_kanban"):
+        result = await apply_board_actions(db, board.id, [action], _admin(db))
+
+    assert result["failed"][0]["reason"] == "This action could not be applied"
+    assert "secret" not in str(result) and "hunter2" not in str(result)
+    _assert_log_is_safe(caplog, "category=action_error", "exception=OperationalError", "action_type=move")
+
+
+@pytest.mark.asyncio
+async def test_batch_failure_is_sanitized_and_logged(db, monkeypatch, caplog):
+    board, columns, card = _admin_card(db)
+    monkeypatch.setattr("ai_kanban.record_undo", lambda *a, **k: (_ for _ in ()).throw(_db_error()))
+    action = {"type": "update", "card_id": card.id, "title": "Renamed"}
+
+    with caplog.at_level("ERROR", logger="ai_kanban"):
+        result = await apply_board_actions(db, board.id, [action], _admin(db))
+
+    assert result == {"success": False, "error": "Failed to apply actions"}
+    _assert_log_is_safe(caplog, "category=batch_error", "exception=OperationalError")
+
+
+@pytest.mark.asyncio
+async def test_batch_failure_http_detail_is_sanitized(db, monkeypatch):
+    from fastapi import HTTPException
+    import routes
+    from schemas import AIChatRequest
+
+    board, columns, card = _admin_card(db)
+
+    async def fake_ai(*args, **kwargs):
+        return {"success": True, "response": "ok", "confidence": 1, "tokens_used": 1,
+                "actions": [{"type": "update", "card_id": card.id, "title": "Renamed"}]}
+
+    monkeypatch.setattr(routes, "call_ai_with_board", fake_ai)
+    monkeypatch.setattr("ai_kanban.record_undo", lambda *a, **k: (_ for _ in ()).throw(_db_error()))
+
+    with pytest.raises(HTTPException) as caught:
+        await routes.board_ai_chat_payload(db, board.id, AIChatRequest(message="rename it"), _admin(db))
+
+    assert caught.value.status_code == 400
+    assert caught.value.detail == "Failed to apply actions"
+
+
+@pytest.mark.asyncio
+async def test_authored_action_messages_stay_visible(db):
+    board, columns, card = _admin_card(db)
+    result = await apply_board_actions(
+        db, board.id,
+        [{"type": "update", "card_id": card.id, "salesperson_id": 9999},
+         {"type": "update", "card_id": card.id, "title": "x" * 500},
+         {"type": "delete", "card_id": card.id}],
+        _member(db),
+    )
+    reasons = [f["reason"] for f in result["failed"]]
+    assert "Salesperson not found" in reasons[0] or "assigned to you" in reasons[0]
+    assert reasons[2] == "Only admins can delete cards"
+    assert all("could not be applied" not in r for r in reasons)
+
+
+@pytest.mark.asyncio
+async def test_unknown_action_type_is_not_logged_verbatim(db, monkeypatch, caplog):
+    board, columns, card = _admin_card(db)
+    monkeypatch.setattr("ai_kanban.place_card", lambda *a, **k: (_ for _ in ()).throw(_db_error()))
+    monkeypatch.setattr("ai_kanban.LOGGED_ACTION_TYPES", ("create", "update", "delete"))  # force "move" to be unlisted
+
+    with caplog.at_level("ERROR", logger="ai_kanban"):
+        await apply_board_actions(db, board.id, [{"type": "move", "card_id": card.id, "column_id": columns[1].id}], _admin(db))
+
+    assert "action_type=other" in caplog.text and "action_type=move" not in caplog.text

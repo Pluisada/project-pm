@@ -1,6 +1,8 @@
 """AI integration with OpenRouter."""
+import logging
 import os
 import json
+import re
 from typing import Optional
 
 import httpx
@@ -10,6 +12,16 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 MODEL_ID = "openai/gpt-oss-120b"
 REQUEST_TIMEOUT = 30.0
+
+logger = logging.getLogger(__name__)
+
+_REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
+def _upstream_request_id(response: httpx.Response) -> str:
+    """The provider's request id for support correlation, only if it is a plain token (else "-")."""
+    value = response.headers.get("x-request-id", "")
+    return value if _REQUEST_ID.fullmatch(value) else "-"
 
 
 class AIError(Exception):
@@ -71,16 +83,13 @@ async def call_ai(
             )
 
             if response.status_code != 200:
-                error_detail = response.text
-                try:
-                    error_data = response.json()
-                    error_detail = error_data.get("error", {}).get("message", error_detail)
-                except Exception:
-                    pass
-
-                raise AIError(
-                    f"OpenRouter API error {response.status_code}: {error_detail}"
+                # Neither the upstream body (it can echo prompt text) nor the request is logged or returned:
+                # only the status, a category and the provider's request id.
+                logger.error(
+                    "AI upstream failure: category=upstream_http_error status=%s request_id=%s",
+                    response.status_code, _upstream_request_id(response),
                 )
+                raise AIError(f"OpenRouter API error {response.status_code}")
 
             data = response.json()
 
@@ -97,10 +106,13 @@ async def call_ai(
                 "raw_response": data,
             }
 
-    except httpx.TimeoutException:
+    except httpx.TimeoutException as e:
+        logger.error("AI upstream failure: category=timeout exception=%s", type(e).__name__)
         raise AIError("OpenRouter API request timeout")
     except httpx.RequestError as e:
-        raise AIError(f"OpenRouter API request failed: {str(e)}")
+        # The exception text can carry the URL and connection details: only its class is logged.
+        logger.error("AI upstream failure: category=transport_error exception=%s", type(e).__name__)
+        raise AIError("OpenRouter API request failed")
     except json.JSONDecodeError:
         raise AIError("Failed to parse OpenRouter API response")
 

@@ -1,5 +1,6 @@
 """AI-powered Kanban board updates with structured outputs."""
 import json
+import logging
 from typing import Optional
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -24,6 +25,17 @@ import card_reviews
 from undo import UNRESTORABLE, place_card, record_undo, undo_create, undo_delete, undo_move, undo_update
 from database import SessionLocal
 from ai import call_ai, AIError
+
+logger = logging.getLogger(__name__)
+
+ACTION_FAILED_REASON = "This action could not be applied"
+ACTIONS_FAILED_ERROR = "Failed to apply actions"
+LOGGED_ACTION_TYPES = ("create", "update", "move", "delete")  # the type is model output: only known values are logged
+
+# Exceptions whose messages are written for the user; anything else may quote SQL, parameters or paths.
+SAFE_ACTION_ERRORS = (
+    ValueError, CardPermissionDenied, ProductError, card_loss.LossError, card_reviews.ReviewError,
+)
 
 
 # System prompt for AI
@@ -420,10 +432,13 @@ async def apply_board_actions(
                         {"action": action, "reason": "Unsupported action type"}
                     )
 
+            except SAFE_ACTION_ERRORS as e:
+                results["failed"].append({"action": action, "reason": str(e)})
             except Exception as e:
-                results["failed"].append(
-                    {"action": action, "reason": str(e)}
-                )
+                # Class and category only: the message and traceback can quote SQL, bound parameters and card data.
+                logger.error("AI action failed: category=action_error exception=%s action_type=%s",
+                             type(e).__name__, action_type if action_type in LOGGED_ACTION_TYPES else "other")
+                results["failed"].append({"action": action, "reason": ACTION_FAILED_REASON})
 
         count = len(results["successful"])
         if record_undo_entry:
@@ -438,5 +453,6 @@ async def apply_board_actions(
         return {"success": True, **results}
 
     except Exception as e:
+        logger.error("AI action batch failed: category=batch_error exception=%s", type(e).__name__)
         db.rollback()
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": ACTIONS_FAILED_ERROR}
