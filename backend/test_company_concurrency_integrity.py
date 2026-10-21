@@ -449,7 +449,8 @@ def test_E1_create_card_in_a_column_being_deleted_never_500(rig):
     warm_up(rig, token)
     assert rig.sql("SELECT COUNT(*) FROM cards WHERE column_id = 2") == [(0,)]
     create = lambda: rig.client.post("/api/companies/lity/boards/1/cards",
-                                     json={"column_id": 2, "title": "Racing", "position": 0}, headers=auth(token))
+                                     json={"column_id": 2, "title": "Racing", "position": 0, "salesperson_id": rig.e.admin},
+                                     headers=auth(token))
     delete = lambda: rig.client.delete(columns_url("/2"), headers=auth(token))
     rc, rd = interleave(rig, create, delete, r"FROM columns\s+WHERE columns\.id = \?\s+AND columns\.board_id", when="after")
     assert (rc.status_code, rd.status_code) in ((201, 409), (404, 204)), (rc.status_code, rd.status_code)

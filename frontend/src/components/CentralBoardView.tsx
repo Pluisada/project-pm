@@ -551,7 +551,7 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
       )}
       {openForm && (
         <CentralCardForm key={`${key}:${openForm.mode === "edit" ? openForm.card.id : `new-${openForm.columnId}`}`}
-          companySlug={companySlug} boardId={boardId} target={openForm}
+          companySlug={companySlug} boardId={boardId} target={openForm} canAssign={me.capabilities.canAssignSalesperson}
           onSaved={saveCard} onReload={reloadBoard} onClose={() => setForm(null)} />
       )}
     </div>

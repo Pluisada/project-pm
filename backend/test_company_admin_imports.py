@@ -1,4 +1,5 @@
-"""Phase 2E part 5: a company Admin previews, confirms, lists and reverts Bid imports of its own company.
+"""Bid imports (preview, confirm, list, read, revert) are Super Admin only; a company Admin is refused everywhere
+(Phase 1 permission contract). An import can create cards and a revert can delete them.
 
 Column deletion stays Super Admin only. Synthetic workbooks and tmp_path databases only.
 """
@@ -23,18 +24,28 @@ def imported_cards(rig, slug="lity"):
     return rig.sql("SELECT COUNT(*) FROM cards WHERE column_id >= 10", slug=slug)[0][0]
 
 
-def test_predicate_covers_super_admin_and_company_admin_only():
+def test_predicate_covers_super_admin_only():
     assert [svc.can_manage_imports(r) for r in ("super_admin", "admin", "sales_member", "visitor", "Admin", "")] == [
-        True, True, False, False, False, False]
+        True, False, False, False, False, False]
 
 
-def test_company_admin_previews_confirms_lists_and_reads_an_import(rig):
-    aid, token = company_admin(rig)
+def test_company_admin_is_refused_every_import_route_before_the_db_opens(rig):
+    _, token = company_admin(rig)
+    before = rig.digest("lity")
+    rig.opened.clear()
+    for method, path, kw in READS + WRITES:
+        assert imp(rig, method, path, token, **kw).status_code == 403, path
+    assert rig.opened == [] and rig.digest("lity") == before
+    assert imported_cards(rig) == 0
+
+
+def test_super_admin_previews_confirms_lists_and_reads_an_import(rig):
+    token = admin(rig)
     body = preview(rig, token).json()
     assert body["confirmable"] and body["preview_token"]
     result = confirm(rig, token, body["preview_token"])
     assert result.status_code == 201 and len(result.json()["created_card_ids"]) == 2
-    assert rig.sql("SELECT user_id FROM import_batches") == [(aid,)]  # the Admin's canonical id is the actor
+    assert rig.sql("SELECT user_id FROM import_batches") == [(rig.e.admin,)]
     listing = imp(rig, "get", "/boards/2/imports", token).json()
     assert listing["total"] == 1
     assert imp(rig, "get", f"/imports/{listing['items'][0]['id']}", token).status_code == 200
@@ -43,7 +54,7 @@ def test_company_admin_previews_confirms_lists_and_reads_an_import(rig):
 
 
 def test_duplicate_confirmation_and_stale_preview_keep_their_protections(rig):
-    _, token = company_admin(rig)
+    token = admin(rig)
     body = preview(rig, token).json()
     assert confirm(rig, token, body["preview_token"]).status_code == 201
     assert confirm(rig, token, body["preview_token"]).status_code == 409  # already applied
@@ -57,7 +68,7 @@ def test_duplicate_confirmation_and_stale_preview_keep_their_protections(rig):
 
 def test_failed_import_rolls_back(rig, monkeypatch):
     import bid_import_service
-    _, token = company_admin(rig)
+    token = admin(rig)
     body = preview(rig, token).json()
     real = bid_import_service._write_rows
     def write_then_fail(*a, **k):
@@ -69,17 +80,21 @@ def test_failed_import_rolls_back(rig, monkeypatch):
     assert rig.sql("SELECT COUNT(*) FROM import_batches WHERE status = 'completed'") == [(0,)]
 
 
-def test_company_admin_reverts_its_import_and_a_later_edit_blocks_the_revert(rig):
-    _, token = company_admin(rig)
+def test_company_admin_cannot_revert_and_the_super_admin_revert_still_guards_later_edits(rig):
+    _, admin_token = company_admin(rig)
+    token = admin(rig)
     run_import(rig, token)
     batch = imp(rig, "get", "/boards/2/imports", token).json()["items"][0]["id"]
     plan = imp(rig, "get", f"/imports/{batch}/revert-preview", token)
     assert plan.status_code == 200
-    done = imp(rig, "post", f"/imports/{batch}/revert", token, json={"plan_fingerprint": plan.json()["plan_fingerprint"]})
+    fingerprint = plan.json()["plan_fingerprint"]
+    # the Admin can neither see the plan nor revert (a revert deletes the imported cards)
+    assert imp(rig, "get", f"/imports/{batch}/revert-preview", admin_token).status_code == 403
+    assert imp(rig, "post", f"/imports/{batch}/revert", admin_token, json={"plan_fingerprint": fingerprint}).status_code == 403
+    assert imported_cards(rig) == 2
+    done = imp(rig, "post", f"/imports/{batch}/revert", token, json={"plan_fingerprint": fingerprint})
     assert done.status_code == 200 and imported_cards(rig) == 0
-    assert imp(rig, "post", f"/imports/{batch}/revert", token,
-               json={"plan_fingerprint": plan.json()["plan_fingerprint"]}).status_code == 409  # idempotent: no second revert
-    # a second import, then a later edit of an imported card: the revert refuses and changes nothing
+    assert imp(rig, "post", f"/imports/{batch}/revert", token, json={"plan_fingerprint": fingerprint}).status_code == 409
     run_import(rig, token)
     batch2 = imp(rig, "get", "/boards/2/imports", token).json()["items"][0]["id"]
     fingerprint = imp(rig, "get", f"/imports/{batch2}/revert-preview", token).json()["plan_fingerprint"]
@@ -106,7 +121,7 @@ def test_admin_cannot_import_or_revert_in_another_company_even_as_a_member_there
         invite = svc.create_invitation(rig.e.session, rig.e.admin, "a@example.com", slug, role).token
         ca.join_invitation(rig.e.session, invite, "a@example.com", GOOD)
     token = rig.e.token("a@example.com")
-    body = preview(rig, token).json()
+    body = preview(rig, admin(rig)).json()
     before = {s: rig.digest(s) for s in ("valor-log", "salcomp")}
     rig.opened.clear()
     for other in ("valor-log", "salcomp"):
@@ -124,15 +139,17 @@ def test_a_revert_cannot_name_another_companys_batch(rig):
     batch = imp(rig, "get", "/boards/2/imports", sup, "valor-log").json()["items"][0]["id"]
     fp = imp(rig, "get", f"/imports/{batch}/revert-preview", sup, "valor-log").json()["plan_fingerprint"]
     _, token = company_admin(rig)
-    assert imp(rig, "get", f"/imports/{batch}/revert-preview", token).status_code == 404  # absent in lity
-    assert imp(rig, "post", f"/imports/{batch}/revert", token, json={"plan_fingerprint": fp}).status_code == 404
+    assert imp(rig, "get", f"/imports/{batch}/revert-preview", token).status_code == 403  # a company Admin never reverts
+    assert imp(rig, "post", f"/imports/{batch}/revert", token, json={"plan_fingerprint": fp}).status_code == 403
+    assert imp(rig, "get", f"/imports/{batch}/revert-preview", sup).status_code == 404  # absent in lity, even for the Super Admin
     assert imp(rig, "post", f"/imports/{batch}/revert", token, "valor-log", json={"plan_fingerprint": fp}).status_code == 403
     assert imported_cards(rig, "valor-log") == 2
 
 
-def test_demotion_deactivation_and_inactive_company_stop_imports_on_the_same_token(rig):
+def test_company_admin_stays_refused_through_role_changes_and_an_inactive_company(rig):
     uid, token = company_admin(rig)
-    body = preview(rig, token).json()
+    body = preview(rig, admin(rig)).json()
+    assert confirm(rig, token, body["preview_token"]).status_code == 403
     svc.change_membership_role(rig.e.session, rig.e.admin, "lity", uid, "sales_member")
     assert confirm(rig, token, body["preview_token"]).status_code == 403
     svc.change_membership_role(rig.e.session, rig.e.admin, "lity", uid, "admin")
@@ -166,10 +183,12 @@ def test_forged_and_stale_role_claims_grant_nothing(rig):
     assert rig.opened == [] and rig.digest("lity") == before
 
 
-def test_column_deletion_and_earlier_parts_remain(rig):
+def test_admin_keeps_only_its_commercial_card_rights(rig):
     _, token = company_admin(rig)
     assert send(rig, "delete", "/boards/1/columns/1", token).status_code == 403
-    assert send(rig, "post", "/products", token, json={"name": "Adapters"}).status_code == 201
-    assert send(rig, "post", "/boards", token, json={"title": "B3"}).status_code == 201
+    assert send(rig, "post", "/products", token, json={"name": "Adapters"}).status_code == 403
+    assert send(rig, "post", "/boards", token, json={"title": "B3"}).status_code == 403
     assert rig.call("put", "/cards/1", token, json={"title": "x"}).status_code == 200
-    assert rig.call("delete", "/cards/2", token).status_code == 204
+    assert rig.call("delete", "/cards/2", token).status_code == 403
+
+

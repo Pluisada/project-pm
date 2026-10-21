@@ -17,7 +17,6 @@ import {
   getErrorMessage,
   listCompanyBoards,
   type ApiError,
-  ROLE_COMPANY_ADMIN,
   ROLE_SUPER_ADMIN,
   type BoardResponse,
   type CentralMe,
@@ -470,7 +469,7 @@ export const CentralApp = () => {
         <section data-testid="central-empty-workspace" className="mt-8 rounded-[24px] border border-[var(--stroke)] bg-[var(--surface-strong)]/80 p-6 shadow-[var(--shadow)]">
           <h2 className="font-display text-xl font-semibold text-[var(--navy-dark)]">No board yet</h2>
           <p className="mt-2 text-sm text-[var(--gray-text)]">
-            {company.role === ROLE_SUPER_ADMIN || company.role === ROLE_COMPANY_ADMIN
+            {company.role === ROLE_SUPER_ADMIN
               ? `${company.name} has no board. Create the default board and its stages with the button below, or build one under "Manage boards and columns". Nothing is created automatically.`
               : `${company.name} has no board yet. An administrator has to create one before cards can be added.`}
           </p>

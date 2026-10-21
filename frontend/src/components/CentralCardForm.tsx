@@ -22,6 +22,8 @@ type Props = {
   companySlug: string;
   boardId: number;
   target: CardFormTarget;
+  /** The backend's canAssignSalesperson capability: a new card then needs a chosen salesperson (a Sales Member's is automatically their own). */
+  canAssign?: boolean;
   onSaved: (card: CardResponse) => void;
   /** Re-reads the board without closing the form (used after a failure whose outcome is unknown); true when it worked. */
   onReload: () => Promise<boolean>;
@@ -39,13 +41,14 @@ type Values = {
   leadSource: string;
   productLine: string;
   confidenceLevel: string;
+  salespersonId: string;
 };
 
 const num = (v: number | null | undefined) => (v == null ? "" : String(v));
 
 function initialValues(target: CardFormTarget): Values {
   const empty: Values = { title: "", details: "", company: "", contact: "", dealValue: "", dealValueNextYear: "",
-    expectedCloseDate: "", leadSource: "", productLine: "", confidenceLevel: "" };
+    expectedCloseDate: "", leadSource: "", productLine: "", confidenceLevel: "", salespersonId: "" };
   if (target.mode === "create") return empty;
   const c = target.card;
   return {
@@ -60,6 +63,7 @@ function initialValues(target: CardFormTarget): Values {
     leadSource: c.lead_source ?? "",
     productLine: c.product_line ?? "",
     confidenceLevel: c.confidence_level ?? "",
+    salespersonId: "",
   };
 }
 
@@ -118,7 +122,7 @@ function describeFailure(err: Partial<ApiError>, action: string): Failure {
  * typed after any failure, and drops the result of a request that was started for another company or board
  * (the parent remounts it on a change, which aborts the request and marks it stale).
  */
-export const CentralCardForm = ({ companySlug, boardId, target, onSaved, onReload, onClose }: Props) => {
+export const CentralCardForm = ({ companySlug, boardId, target, canAssign = false, onSaved, onReload, onClose }: Props) => {
   const [values, setValues] = useState<Values>(() => initialValues(target));
   const [options, setOptions] = useState<LeadOptions | null>(null);
   const [failure, setFailure] = useState<Failure | null>(null);
@@ -159,6 +163,8 @@ export const CentralCardForm = ({ companySlug, boardId, target, onSaved, onReloa
     if (uncertain && !acceptDuplicate) return; // a deliberate confirmation is required first
     setFailure(null);
     if (!values.title.trim()) return setFieldError("Title is required.");
+    const needsSalesperson = target.mode === "create" && canAssign;
+    if (needsSalesperson && !values.salespersonId) return setFieldError("Choose the salesperson for this card.");
     if (invalidNumber(values.dealValue) || invalidNumber(values.dealValueNextYear)) {
       return setFieldError("Deal values must be numbers of zero or more.");
     }
@@ -174,6 +180,7 @@ export const CentralCardForm = ({ companySlug, boardId, target, onSaved, onReloa
         ...(values.details.trim() ? { details: values.details.trim() } : {}),
         ...(values.dealValue !== "" ? { deal_value: Number(values.dealValue) } : {}),
         ...(values.dealValueNextYear !== "" ? { deal_value_next_year: Number(values.dealValueNextYear) } : {}),
+        ...(needsSalesperson ? { salesperson_id: Number(values.salespersonId) } : {}),
       });
     } else {
       const updates = buildCardUpdates(target.card, values);
@@ -254,6 +261,14 @@ export const CentralCardForm = ({ companySlug, boardId, target, onSaved, onReloa
         <label className={labelClass}>Details
           <textarea value={values.details} onChange={set("details")} maxLength={5000} rows={3} disabled={saving} className={inputClass} />
         </label>
+        {!edit && canAssign && (
+          <label className={labelClass}>Salesperson
+            <select value={values.salespersonId} onChange={set("salespersonId")} disabled={saving} className={inputClass}>
+              <option value="">Choose a salesperson</option>
+              {(options?.salespeople ?? []).map((p) => <option key={p.id} value={p.id}>{p.username}</option>)}
+            </select>
+          </label>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <label className={labelClass}>Deal value, current year (USD)
             <input type="number" min={0} step="any" value={values.dealValue} onChange={set("dealValue")} disabled={saving} className={inputClass} />

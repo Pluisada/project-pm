@@ -176,7 +176,7 @@ def test_company_admin_of_another_company_cannot_edit_or_delete_columns(rig):
     before = data(rig)
     assert send(rig, "put", f"{COLS}/1", token, json={"title": "X"}).status_code == 403
     assert send(rig, "delete", f"{COLS}/2", token).status_code == 403
-    assert send(rig, "put", f"{COLS}/1", token, slug="valor-log", json={"title": "Own"}).status_code == 200
+    assert send(rig, "put", f"{COLS}/1", token, slug="valor-log", json={"title": "Own"}).status_code == 403  # Super Admin only
     assert data(rig) == before
 
 
@@ -231,7 +231,7 @@ def test_companion_single_card_delete_is_audited(rig):
 
 def test_rejected_delete_adds_no_stage_events(rig):
     token = admin(rig)
-    r = rig.call("post", "/cards", token, json={"column_id": 2, "title": "tracked"})
+    r = rig.call("post", "/cards", token, json={"column_id": 2, "title": "tracked", "salesperson_id": rig.e.admin})
     assert r.status_code == 201
     cid = r.json()["id"]
     events = rig.sql("SELECT * FROM card_stage_events ORDER BY id")
@@ -547,13 +547,12 @@ def test_members_and_visitors_cannot_create_or_reorder(rig, role):
     assert data(rig) == before
 
 
-def test_company_admin_can_create_and_reorder_with_renumbering(rig):
+def test_company_admin_cannot_create_or_reorder_columns(rig):
     _, token = company_admin(rig)
-    assert send(rig, "put", f"{COLS}/1", token, json={"position": 1}).status_code == 200
-    assert ids(rig, token) == [2, 1]
-    r = send(rig, "post", COLS, token, json={"title": "N", "position": 0})
-    assert r.status_code == 201 and ids(rig, token) == [r.json()["id"], 2, 1]
-    assert_dense(rig, token)
+    before = data(rig)
+    assert send(rig, "put", f"{COLS}/1", token, json={"position": 1}).status_code == 403
+    assert send(rig, "post", COLS, token, json={"title": "N", "position": 0}).status_code == 403
+    assert data(rig) == before
 
 
 def test_reordering_through_another_boards_url_is_404_and_changes_nothing(rig):
@@ -660,11 +659,11 @@ def test_deleting_the_won_column_frees_the_won_slot(rig):
     assert send(rig, "post", COLS, token, json={"title": "W again", "position": 2, "stage_kind": "won"}).status_code == 201
 
 
-def test_company_admin_gets_the_same_stage_kind_rejections(rig):
+def test_company_admin_cannot_change_stage_kinds(rig):
     _, token = company_admin(rig)
     before = data(rig)
-    assert send(rig, "put", f"{COLS}/1", token, json={"stage_kind": "lost"}).status_code == 409
-    assert send(rig, "put", f"{COLS}/2", token, json={"stage_kind": "bogus"}).status_code == 422
+    assert send(rig, "put", f"{COLS}/1", token, json={"stage_kind": "lost"}).status_code == 403
+    assert send(rig, "put", f"{COLS}/2", token, json={"stage_kind": "bogus"}).status_code == 403  # authorization first
     assert data(rig) == before
 
 

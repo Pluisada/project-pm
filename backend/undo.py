@@ -157,17 +157,22 @@ def _check_unchanged_since(db, board_id: int, steps: list) -> None:
             )
 
 
-def apply_undo(db, user: User, board_id: int, *, admin: bool | None = None) -> str:
+def apply_undo(db, user: User, board_id: int, *, admin: bool | None = None, can_delete: bool | None = None) -> str:
     """Reverse `user`'s last change on the board; returns its description.
 
     All steps are checked before any is applied, so a change that can no
     longer be undone (e.g. someone deleted the card since) leaves the board
     untouched. Either way the entry is used up. Caller commits. `admin` is the company routes' explicit
-    card-administration decision (None: is_admin(user)); the entry is still the caller's own.
+    card-administration decision (None: is_admin(user)); the entry is still the caller's own. `can_delete` is the company
+    routes' explicit decision on deleting cards: a step that removes a card (undo of a creation) needs it, whoever
+    created the card. None keeps the legacy rule (own or administered cards).
     """
     entry = get_undo(db, user, board_id)
     if entry is None:
         raise UndoError("Nothing to undo")
+    if can_delete is False and any(step.get("op") == "delete" for step in json.loads(entry.steps)):
+        # Refused before anything is touched (the company route then uses the entry up, like any refused undo).
+        raise UndoError("Can't undo: only a Super Admin may remove a card")
     # Claim the entry first: the DELETE takes SQLite's write lock, so of two simultaneous undos only one finds the
     # row and applies it; the other waits, then finds nothing (instead of re-applying the steps).
     claimed = db.query(UndoEntry).filter(UndoEntry.id == entry.id).delete(synchronize_session=False)

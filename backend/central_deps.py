@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from central_auth import AuthenticationFailed, user_for_token
 from identity_service import (
-    SUPER_ADMIN_ROLE, IdentityServiceError, assignable_user_ids, can_grant_admin, can_manage_boards, can_manage_cards, can_manage_imports, can_manage_members, can_manage_products, can_review,
+    SUPER_ADMIN_ROLE, IdentityServiceError, assignable_user_ids, can_grant_admin, can_delete_cards, can_export_cards, can_manage_boards, can_manage_cards, can_manage_imports, can_manage_members, can_manage_products, can_review,
     company_access, is_admin_level, is_super, read_only, sync_assignable_users, sync_company_user,
 )
 
@@ -71,6 +71,14 @@ class CompanyContext:
     @property
     def can_manage_cards(self) -> bool:
         return can_manage_cards(self.role)
+
+    @property
+    def can_delete_cards(self) -> bool:
+        return can_delete_cards(self.role)
+
+    @property
+    def can_export_cards(self) -> bool:
+        return can_export_cards(self.role)
 
     @property
     def can_manage_boards(self) -> bool:
@@ -119,17 +127,20 @@ def company_capabilities(context: CompanyContext) -> dict[str, bool]:
 
     A report for the UI, never an authority: every route still checks for itself. "canEditOwnCards" is a
     ceiling (a Sales Member edits and moves forward only cards assigned to them; unassigned cards are admin-only).
-    "canManageBoards" covers board creation and column create/edit; deleting a column stays Super Admin only.
+    "canManageBoards" covers board and column administration, Super Admin only; "canDeleteCards", "canImport" and
+    "canManageProducts" are Super Admin only; a company Admin keeps assignment, any-card edits, backward moves and export.
     """
     return {
         "readOnly": context.read_only,
         "canEditOwnCards": not context.read_only,
         "canEditAnyCard": context.can_manage_cards,
         "canMoveBack": context.can_manage_cards,
-        "canDeleteCards": context.can_manage_cards,
+        "canDeleteCards": context.can_delete_cards,
         "canAssignSalesperson": context.can_manage_cards,
         "canManageBoards": context.can_manage_boards,
         "canImport": context.can_manage_imports,
+        "canExport": context.can_export_cards,
+        "canManageProducts": context.can_manage_products,
     }
 
 
@@ -211,5 +222,5 @@ __all__ = [
     "bearer_token", "company_context_dependency", "assignable_user_ids", "sync_assignable_users", "sync_company_user", "IdentityServiceError",
     "ROLE_SUPER_ADMIN", "ROLE_SALES_MEMBER", "ROLE_VISITOR",
     # re-exported so the company routes never import identity_service directly (test_identity_service guard)
-    "can_manage_cards", "can_manage_imports", "company_access", "read_only",
+    "can_manage_cards", "can_manage_imports", "can_delete_cards", "can_export_cards", "company_access", "read_only",
 ]

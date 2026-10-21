@@ -652,7 +652,7 @@ async def test_ai(current_user: User = Depends(require_admin)):
 async def board_ai_chat_payload(
     db: Session, board_id: int, request: AIChatRequest, current_user,
     assignable_ids: Optional[set] = None, record_undo_entry: bool = True, admin: Optional[bool] = None,
-    reauthorize=None,
+    reauthorize=None, can_delete: Optional[bool] = None, reauthorize_delete=None,
 ):
     """The AI chat exchange for one board, shared by the legacy and the company-scoped routes."""
     # Verify board exists and belongs to user
@@ -695,6 +695,8 @@ async def board_ai_chat_payload(
         # that raises HTTPException refuses the request with nothing written (company routes only).
         if reauthorize is not None:
             admin = reauthorize()
+        if reauthorize_delete is not None:
+            can_delete = reauthorize_delete()
 
         # Save user message
         user_msg = ConversationMessage(
@@ -712,6 +714,7 @@ async def board_ai_chat_payload(
             actions_result = await apply_board_actions(
                 db, board_id, ai_result["actions"], current_user,
                 assignable_ids=assignable_ids, record_undo_entry=record_undo_entry, admin=admin,
+                can_delete=can_delete,
             )
             if not actions_result.get("success"):
                 db.rollback()

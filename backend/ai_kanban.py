@@ -19,7 +19,7 @@ from product_catalog import ProductError, catalog_names, check_product_line
 from models import ConversationMessage, Card, BoardColumn as Column, CompanyUser
 from schemas import BoardDetail, CardUpdate
 from stage_history import SOURCE_AI, set_stage_context
-from undo import record_undo, undo_create, undo_delete, undo_move, undo_update
+from undo import UNRESTORABLE, record_undo, undo_create, undo_delete, undo_move, undo_update
 from database import SessionLocal
 from ai import call_ai, AIError
 
@@ -231,6 +231,7 @@ def _board_card(db: Session, board_id: int, card_id) -> Card | None:
 async def apply_board_actions(
     db: Session, board_id: int, actions: list[dict], current_user,
     assignable_ids: set | None = None, record_undo_entry: bool = True, admin: bool | None = None,
+    can_delete: bool | None = None,
 ) -> dict:
     """Apply AI-suggested actions to the board.
 
@@ -238,7 +239,9 @@ async def apply_board_actions(
     card_rules.py) - the AI chat sidebar is another way to move/edit/delete
     cards, not a bypass of those rules. `admin` is an explicit card-administration decision from the company
     routes (Phase 2E part 4); None keeps is_admin(current_user), as the legacy route and every other caller do.
-    Card creation never uses it: a creator who is not a global admin still owns the card.
+    `can_delete` is the separate, narrower decision to delete (company routes: Super Admin only); None falls
+    back to `admin`, as the legacy route does. When `admin` is True (company routes) a created card needs a
+    salesperson and keeps it; otherwise the creator owns the card.
     """
     from models import Board
 
@@ -280,15 +283,25 @@ async def apply_board_actions(
                     # Set directly rather than via apply_card_updates: filling
                     # in a brand-new card isn't an edit to log in its history
                     # (same as the REST create route).
+                    if admin is True:
+                        # Same rule as the company REST create: an administrator names an eligible salesperson
+                        # (checked by _validated_card_fields); nothing falls back to the creator.
+                        if fields.get("salesperson_id") is None:
+                            results["failed"].append({"action": action, "reason": "A salesperson is required"})
+                            continue
+                        owner_fields = fields
+                    else:
+                        owner_fields = new_card_fields(current_user, fields)
                     card = Card(
                         column_id=column_id,
                         position=action.get("position", 0),
-                        **new_card_fields(current_user, fields),
+                        **owner_fields,
                     )
                     db.add(card)
                     db.flush()
                     audit_new_card_owner(db, board_id, card, current_user)
-                    undo_steps.append(undo_create(card))
+                    # Undoing a creation deletes the card: only offered where the caller may delete (None: legacy rule).
+                    undo_steps.append(undo_create(card) if can_delete is not False else UNRESTORABLE)
                     results["successful"].append(
                         {"type": "create", "card_id": card.id}
                     )
@@ -344,7 +357,8 @@ async def apply_board_actions(
                         )
                         continue
 
-                    if not (is_admin(current_user) if admin is None else admin):
+                    may_delete = can_delete if can_delete is not None else (is_admin(current_user) if admin is None else admin)
+                    if not may_delete:
                         results["failed"].append(
                             {"action": action, "reason": "Only admins can delete cards"}
                         )

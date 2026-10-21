@@ -7,6 +7,8 @@ import json
 import sqlite3
 
 import pytest
+
+import identity_service as svc
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -144,17 +146,25 @@ def test_member_create_is_assigned_to_self_with_audit_and_event(rig):
         ("created", uid, "api")]
 
 
+def sales_person(rig, email="seller@example.com"):
+    """An eligible Sales Member of lity who has never written there (no local reference row yet)."""
+    return member(rig, email)[0]
+
+
 def test_create_stores_annual_values_in_usd_and_rejects_negatives(rig):
-    r = rig.call("post", "/cards", admin(rig), json={"column_id": 1, "title": "v", "deal_value": 100, "deal_value_next_year": 40})
+    seller = sales_person(rig)
+    body = {"column_id": 1, "title": "v", "deal_value": 100, "deal_value_next_year": 40, "salesperson_id": seller}
+    r = rig.call("post", "/cards", admin(rig), json=body)
     assert r.status_code == 201
     assert (r.json()["deal_value"], r.json()["deal_value_next_year"], r.json()["currency"]) == (100, 40, "USD")
-    bad = rig.call("post", "/cards", admin(rig), json={"column_id": 1, "title": "v", "deal_value_next_year": -1})
+    bad = rig.call("post", "/cards", admin(rig), json={**body, "deal_value_next_year": -1})
     assert bad.status_code == 422
 
 
 def test_create_validates_column(rig):
-    assert rig.call("post", "/cards", admin(rig), json={"column_id": 99, "title": "x"}).status_code == 404
-    assert rig.call("post", "/cards", admin(rig), json={"column_id": 1, "title": "x"}).json()["salesperson_id"] is None
+    seller = sales_person(rig)
+    assert rig.call("post", "/cards", admin(rig), json={"column_id": 99, "title": "x", "salesperson_id": seller}).status_code == 404
+    assert rig.call("post", "/cards", admin(rig), json={"column_id": 1, "title": "x", "salesperson_id": seller}).json()["salesperson_id"] == seller
 
 
 def test_member_edits_only_own_cards_and_edit_is_logged(rig):
@@ -242,8 +252,9 @@ def test_delete_is_admin_only_and_audited(rig):
 
 
 def test_write_in_one_company_never_touches_another(rig):
+    seller = sales_person(rig)
     before = {s: rig.digest(s) for s in COMPANY_SLUGS if s != "lity"}
-    assert rig.call("post", "/cards", admin(rig), json={"column_id": 1, "title": "x"}).status_code == 201
+    assert rig.call("post", "/cards", admin(rig), json={"column_id": 1, "title": "x", "salesperson_id": seller}).status_code == 201
     assert {s: rig.digest(s) for s in before} == before
     assert rig.opened == ["lity"]
 
@@ -322,8 +333,17 @@ def test_ai_member_rules_apply_and_record_one_undo_entry(rig, monkeypatch):
     assert [x["type"] for x in applied["successful"]] == ["create", "update"] and len(applied["failed"]) == 2
     assert rig.sql("SELECT COUNT(*) FROM cards WHERE id = 1") == [(1,)]  # member cannot delete
     assert rig.sql("SELECT salesperson_id FROM cards WHERE title = 'AI card'") == [(uid,)]
-    assert rig.sql("SELECT user_id FROM undo_entries") == [(uid,)]  # one entry, the caller's own
+    # the request created a card, and undoing a creation deletes it (Super Admin only): no entry is offered at all
+    assert rig.sql("SELECT user_id FROM undo_entries") == []
     assert rig.sql("SELECT user_id, role FROM conversation_messages ORDER BY id") == [(uid, "user"), (uid, "assistant")]
+
+
+def test_ai_member_edit_only_request_records_one_undo_entry(rig, monkeypatch):
+    uid, token = member(rig)
+    rig.assign(1, uid)
+    fake_ai(monkeypatch, [{"type": "update", "card_id": 1, "title": "AI edit"}])
+    assert ai(rig, token).status_code == 200
+    assert rig.sql("SELECT user_id FROM undo_entries") == [(uid,)]  # one entry, the caller's own
 
 
 def test_ai_admin_assignment_limited_to_centrally_eligible(rig, monkeypatch):
@@ -346,28 +366,85 @@ def _created_owner(rig, token, **extra):
     return r.json()["id"], r.json()["salesperson_id"]
 
 
-def test_create_super_admin_card_is_unassigned_and_audited_without_assign(rig):
-    card_id, owner = _created_owner(rig, admin(rig))
-    assert owner is None
-    assert [a for (a,) in rig.sql("SELECT action FROM audit_events WHERE card_id = ? ORDER BY id", (card_id,))] == ["create"]
+def _audit_actions(rig, card_id):
+    return [a for (a,) in rig.sql("SELECT action FROM audit_events WHERE card_id = ? ORDER BY id", (card_id,))]
 
 
-def test_create_company_admin_card_is_assigned_to_self_today(rig):
-    """Documents current behaviour: new_card_fields judges is_admin(context), which only the global administrator
-    satisfies, so a company Admin creates like a Sales Member (assigned to self) although it may reassign later."""
+def _local_ids(rig):
+    return {i for (i,) in rig.sql("SELECT id FROM users")}
+
+
+@pytest.mark.parametrize("who", ["super_admin", "company_admin"])
+def test_admin_level_creates_a_card_assigned_to_an_eligible_sales_member(rig, who):
     from test_company_admin_products import company_admin
-    uid, token = company_admin(rig)
-    card_id, owner = _created_owner(rig, token)
-    assert owner == uid
-    assert [a for (a,) in rig.sql("SELECT action FROM audit_events WHERE card_id = ? ORDER BY id", (card_id,))] == ["create", "assign"]
+    token = admin(rig) if who == "super_admin" else company_admin(rig)[1]
+    seller = sales_person(rig)
+    assert seller not in _local_ids(rig)
+    card_id, owner = _created_owner(rig, token, salesperson_id=seller)
+    assert owner == seller
+    assert seller in _local_ids(rig)  # the local reference is ensured for a centrally eligible person
+    assert _audit_actions(rig, card_id) == ["create", "assign"]
+    assert rig.sql("SELECT actor_user_id FROM audit_events WHERE card_id = ? AND action = 'assign'", (card_id,)) != []
 
 
-@pytest.mark.parametrize("who", ["member", "super_admin"])
-def test_create_ignores_a_client_supplied_salesperson_id(rig, who):
+@pytest.mark.parametrize("who", ["super_admin", "company_admin"])
+def test_admin_level_must_name_a_salesperson_and_nothing_falls_back_to_the_creator(rig, who):
+    from test_company_admin_products import company_admin
+    token = admin(rig) if who == "super_admin" else company_admin(rig)[1]
+    before = rig.sql("SELECT COUNT(*) FROM cards")
+    r = rig.call("post", "/cards", token, json={"column_id": 1, "title": "t"})
+    assert r.status_code == 422 and "salesperson" in r.text.lower()
+    assert rig.sql("SELECT COUNT(*) FROM cards") == before and rig.sql("SELECT COUNT(*) FROM audit_events") == [(0,)]
+
+
+@pytest.mark.parametrize("who", ["super_admin", "company_admin"])
+def test_admin_level_assignment_to_an_ineligible_person_is_refused_and_writes_nothing(rig, who):
+    from test_company_admin_products import company_admin
+    token = admin(rig) if who == "super_admin" else company_admin(rig)[1]
+    visitor, _ = member(rig, "v@example.com", role="visitor")
+    outsider, _ = member(rig, "o@example.com", slug="valor-log")
+    lapsed, _ = member(rig, "l@example.com")
+    svc.deactivate_membership(rig.e.session, rig.e.admin, "lity", lapsed)
+    other_admin, _ = company_admin(rig, "a2@example.com")
+    before = rig.sql("SELECT COUNT(*) FROM cards")
+    for bad in (visitor, outsider, lapsed, other_admin, 9999, 0, -1):
+        r = rig.call("post", "/cards", token, json={"column_id": 1, "title": "t", "salesperson_id": bad})
+        assert r.status_code == 422, (bad, r.text)
+    assert rig.sql("SELECT COUNT(*) FROM cards") == before
+    assert not {visitor, outsider, lapsed, other_admin, 9999} & _local_ids(rig)  # no stub row for an ineligible person
+    assert rig.sql("SELECT COUNT(*) FROM audit_events") == [(0,)]
+
+
+def test_the_super_admin_may_assign_itself_as_a_globally_eligible_person(rig):
+    card_id, owner = _created_owner(rig, admin(rig), salesperson_id=rig.e.admin)
+    assert owner == rig.e.admin
+
+
+def test_sales_member_card_is_always_theirs_and_a_supplied_salesperson_is_ignored(rig):
     other_uid, _ = member(rig, "other@example.com")
-    rig.assign(2, other_uid, "other@example.com")
-    uid, token = member(rig) if who == "member" else (None, admin(rig))
-    card_id, owner = _created_owner(rig, token, salesperson_id=other_uid)  # unknown field, not part of CardCreate
-    assert owner == (uid if who == "member" else None)
-    assert owner != other_uid
-    assert rig.sql("SELECT salesperson_id FROM cards WHERE id = ?", (card_id,)) == [(owner,)]
+    uid, token = member(rig)
+    card_id, owner = _created_owner(rig, token)
+    assert owner == uid and _audit_actions(rig, card_id) == ["create", "assign"]
+    card_id, owner = _created_owner(rig, token, salesperson_id=other_uid)
+    assert owner == uid != other_uid  # the field is ignored for a member (documented contract)
+    card_id, owner = _created_owner(rig, token, salesperson_id=9999)
+    assert owner == uid
+    assert other_uid not in _local_ids(rig)
+
+
+def test_visitor_cannot_create(rig):
+    uid, token = member(rig, "v@example.com", role="visitor")
+    before = rig.digest("lity")
+    rig.opened.clear()
+    r = rig.call("post", "/cards", token, json={"column_id": 1, "title": "t", "salesperson_id": uid})
+    assert r.status_code == 403 and rig.opened == [] and rig.digest("lity") == before
+
+
+def test_user_without_membership_and_member_of_another_company_cannot_create(rig):
+    from identity_models import IdentityUser
+    outsider, token = member(rig, "o@example.com", slug="valor-log")
+    seller = sales_person(rig)
+    before = rig.digest("lity")
+    rig.opened.clear()
+    r = rig.call("post", "/cards", token, json={"column_id": 1, "title": "t", "salesperson_id": seller})
+    assert r.status_code == 403 and rig.opened == [] and rig.digest("lity") == before

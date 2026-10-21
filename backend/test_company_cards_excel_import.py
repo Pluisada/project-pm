@@ -693,14 +693,19 @@ def test_unauthenticated_and_garbage_tokens_are_401(rig, path):
     assert rig.opened == []
 
 
-def test_company_admin_may_import_into_its_own_company_only(rig):
+def test_company_admin_cannot_import_and_the_super_admin_can_only_into_the_selected_company(rig):
     _, token = company_admin(rig)
-    body, r = apply(rig, token, book([row(title="By admin")]))
+    before = rig.digest("lity")
+    rig.opened.clear()
+    for path in (PREVIEW, CONFIRM):
+        r = rig.call("post", path, token, files=upload(book([row(title="By admin")])), data={"confirm": "true", "plan_digest": "x"})
+        assert r.status_code == 403
+    assert rig.opened == [] and rig.digest("lity") == before
+    sup = admin(rig)
+    body, r = apply(rig, sup, book([row(title="By super admin")]))
     assert r.status_code == 201
-    other = rig.call("post", PREVIEW, token, slug="valor-log", files=upload(book([row(title="x")])))
-    assert other.status_code == 403
     assert rig.sql("SELECT COUNT(*) FROM cards", slug="valor-log") == [(2,)]  # only its seeded cards
-    assert rig.sql("SELECT user_id FROM card_excel_imports") == [(rig.sql("SELECT id FROM users WHERE username = 'a@example.com'")[0][0],)]
+    assert rig.sql("SELECT user_id FROM card_excel_imports") == [(rig.e.admin,)]
 
 
 def test_a_member_of_another_company_cannot_import(rig):
@@ -720,7 +725,7 @@ def test_unknown_board_is_404_and_nothing_is_written(rig):
 def test_company_admin_edits_of_others_cards_are_audited(rig):
     uid, token = company_admin(rig)
     rig.assign(1, 7, "ana")
-    apply(rig, token, book([row(card_id=1, title="Admin edit")]))
+    assert rig.call("put", "/cards/1", token, json={"title": "Admin edit"}).status_code == 200
     assert ("edit",) in rig.sql("SELECT action FROM audit_events")
 
 

@@ -148,6 +148,12 @@ class CardCreate(BaseModel):
     deal_value_next_year: float = Field(default=0, ge=0, allow_inf_nan=False)
 
 
+class CompanyCardCreate(CardCreate):
+    """Company-scoped creation. `salesperson_id` is honored only for a Super Admin or company Admin (who must supply
+    an eligible one); for a Sales Member it is ignored and the card is assigned to the creator."""
+    salesperson_id: Optional[int] = None
+
+
 NEXT_STEP_MAX_LENGTH = 100
 
 

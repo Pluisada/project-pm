@@ -14,7 +14,7 @@ import bid_import_service
 import import_routes
 import routes
 import identity_service as svc
-from identity_models import IdentityCompany
+from identity_models import IdentityCompany, IdentityUser
 from test_company_admin_products import company_admin
 from test_company_card_writes import NOW, admin, member
 from test_company_card_writes import ai, fake_ai
@@ -191,8 +191,21 @@ def test_ai_request_with_an_inactive_company_writes_nothing(rig, monkeypatch):
     assert r.status_code == 403 and rig.sql("SELECT COUNT(*) FROM cards") == [(2,)]
 
 
+def revoke_global_admin(rig):
+    """The Super Admin loses the global flag while a request is in flight (its token and session stay valid)."""
+    rig.e.update(IdentityUser, IdentityUser.id == rig.e.admin, is_global_admin=False)
+
+
+def test_a_super_admin_ai_delete_is_refused_when_the_global_flag_is_removed_while_the_model_answers(rig, monkeypatch):
+    token = admin(rig)
+    pause = Pause()
+    slow_ai(monkeypatch, pause, [{"type": "delete", "card_id": 1}])
+    r = run_paused(pause, lambda: ai(rig, token), lambda: revoke_global_admin(rig))
+    assert r.status_code == 403 and rig.sql("SELECT COUNT(*) FROM cards") == [(2,)]
+
+
 def test_an_unrevoked_slow_ai_request_still_succeeds(rig, monkeypatch):
-    _, token = company_admin(rig)
+    token = admin(rig)
     pause = Pause()
     slow_ai(monkeypatch, pause, [{"type": "delete", "card_id": 1}])
     r = run_paused(pause, lambda: ai(rig, token), lambda: None)
@@ -210,12 +223,12 @@ def _pause_in_write_phase(monkeypatch, pause):
 
 
 def test_import_confirmation_revoked_before_the_commit_commits_nothing(rig, monkeypatch):
-    uid, token = company_admin(rig)
+    token = admin(rig)
     body = preview(rig, token).json()
     pause = Pause()
     _pause_in_write_phase(monkeypatch, pause)
     r = run_paused(pause, lambda: confirm(rig, token, body["preview_token"]),
-                   lambda: svc.deactivate_membership(rig.e.factory(), rig.e.admin, "lity", uid))
+                   lambda: revoke_global_admin(rig))
     assert r.status_code == 403
     assert rig.sql("SELECT COUNT(*) FROM cards WHERE column_id >= 10") == [(0,)]
     assert rig.sql("SELECT COUNT(*) FROM import_batches WHERE status = 'completed'") == [(0,)]
@@ -223,7 +236,7 @@ def test_import_confirmation_revoked_before_the_commit_commits_nothing(rig, monk
 
 
 def test_import_confirmation_revoked_before_the_write_starts_is_refused(rig, monkeypatch):
-    uid, token = company_admin(rig)
+    token = admin(rig)
     body = preview(rig, token).json()
     pause = Pause()
     real = import_routes._build_preview
@@ -234,14 +247,14 @@ def test_import_confirmation_revoked_before_the_write_starts_is_refused(rig, mon
         return out
     monkeypatch.setattr(import_routes, "_build_preview", paused)
     r = run_paused(pause, lambda: confirm(rig, token, body["preview_token"]),
-                   lambda: svc.change_membership_role(rig.e.factory(), rig.e.admin, "lity", uid, "sales_member"))
+                   lambda: revoke_global_admin(rig))
     assert r.status_code == 403
     assert rig.sql("SELECT COUNT(*) FROM import_batches") == [(0,)]  # not even a failed attempt: the write never began
     assert rig.sql("SELECT COUNT(*) FROM cards WHERE column_id >= 10") == [(0,)]
 
 
 def test_valid_import_is_unaffected_and_stays_single_use(rig, monkeypatch):
-    _, token = company_admin(rig)
+    token = admin(rig)
     body = preview(rig, token).json()
     pause = Pause()
     _pause_in_write_phase(monkeypatch, pause)
@@ -251,7 +264,7 @@ def test_valid_import_is_unaffected_and_stays_single_use(rig, monkeypatch):
 
 
 def test_failed_import_still_rolls_back_for_a_still_authorized_admin(rig, monkeypatch):
-    _, token = company_admin(rig)
+    token = admin(rig)
     body = preview(rig, token).json()
     real = bid_import_service._write_rows
 
@@ -264,7 +277,7 @@ def test_failed_import_still_rolls_back_for_a_still_authorized_admin(rig, monkey
 
 
 def test_revert_revoked_before_the_commit_changes_nothing_and_can_be_retried(rig, monkeypatch):
-    uid, token = company_admin(rig)
+    token = admin(rig)
     run_import(rig, token)
     batch = imp(rig, "get", "/boards/2/imports", token).json()["items"][0]["id"]
     fp = imp(rig, "get", f"/imports/{batch}/revert-preview", token).json()["plan_fingerprint"]
@@ -277,11 +290,12 @@ def test_revert_revoked_before_the_commit_changes_nothing_and_can_be_retried(rig
         return out
     monkeypatch.setattr(bid_import_revert, "_verify", paused)
     r = run_paused(pause, lambda: imp(rig, "post", f"/imports/{batch}/revert", token, json={"plan_fingerprint": fp}),
-                   lambda: svc.deactivate_membership(rig.e.factory(), rig.e.admin, "lity", uid))
+                   lambda: revoke_global_admin(rig))
     assert r.status_code == 403
     assert rig.sql("SELECT COUNT(*) FROM cards WHERE column_id >= 10") == [(2,)]
     assert rig.sql("SELECT reverted_at FROM import_batch_ledgers") == [(None,)]  # the claim was rolled back too
-    # the Super Admin can still revert it afterwards: nothing was half-done
+    # once the flag is back the Super Admin can still revert it: nothing was half-done
+    rig.e.update(IdentityUser, IdentityUser.id == rig.e.admin, is_global_admin=True)
     sup = admin(rig)
     fp2 = imp(rig, "get", f"/imports/{batch}/revert-preview", sup).json()["plan_fingerprint"]
     assert imp(rig, "post", f"/imports/{batch}/revert", sup, json={"plan_fingerprint": fp2}).status_code == 200

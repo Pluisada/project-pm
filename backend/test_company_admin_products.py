@@ -1,4 +1,4 @@
-"""Phase 2E part 1: a company Admin writes the product catalog of its own company, nothing else.
+"""The product catalog is administered by the Super Admin only; a company Admin is refused (Phase 1 permission contract).
 
 Synthetic identities and disposable tmp_path databases only.
 """
@@ -27,17 +27,23 @@ def company_admin(rig, email="a@example.com", slug="lity"):
     return uid, rig.e.token(email)  # a fresh token: the role is never in it
 
 
-def test_predicate_covers_super_admin_and_company_admin_only():
+def test_predicate_covers_super_admin_only():
     assert [svc.can_manage_products(r) for r in ("super_admin", "admin", "sales_member", "visitor", "", "Admin")] == [
-        True, True, False, False, False, False]
+        True, False, False, False, False, False]
 
 
-def test_company_admin_creates_renames_and_deletes_in_its_company(rig):
+def test_company_admin_cannot_write_the_catalog_and_the_super_admin_can(rig):
     _, token = company_admin(rig)
-    pid = send(rig, "post", "/products", token, json={"name": "Adapters"}).json()["id"]
-    assert send(rig, "put", f"/products/{pid}", token, json={"name": "Cables"}).json()["name"] == "Cables"
-    assert send(rig, "delete", f"/products/{pid}", token).status_code == 204
-    assert names(rig, token) == DEFAULTS
+    before = rig.digest("lity")
+    rig.opened.clear()
+    for method, path, kw in PRODUCT_WRITES:
+        assert send(rig, method, path, token, **kw).status_code == 403
+    assert rig.opened == [] and rig.digest("lity") == before
+    sup = admin(rig)
+    pid = send(rig, "post", "/products", sup, json={"name": "Adapters"}).json()["id"]
+    assert send(rig, "put", f"/products/{pid}", sup, json={"name": "Cables"}).json()["name"] == "Cables"
+    assert send(rig, "delete", f"/products/{pid}", sup).status_code == 204
+    assert names(rig, token) == DEFAULTS  # a company Admin still reads the catalog
 
 
 def test_company_admin_cannot_write_products_of_another_company(rig):
@@ -56,7 +62,7 @@ def test_admin_in_one_company_does_not_help_in_another_where_it_is_a_member(rig)
     invite = svc.create_invitation(rig.e.session, rig.e.admin, "a@example.com", "salcomp", "sales_member").token
     ca.join_invitation(rig.e.session, invite, "a@example.com", GOOD)
     token = rig.e.token("a@example.com")
-    assert send(rig, "post", "/products", token, json={"name": "A"}).status_code == 201
+    assert send(rig, "post", "/products", token, json={"name": "A"}).status_code == 403
     assert send(rig, "post", "/products", token, slug="salcomp", json={"name": "A"}).status_code == 403
     assert names(rig, token, "salcomp") == DEFAULTS
 
@@ -71,16 +77,16 @@ def test_sales_member_and_visitor_remain_refused_before_the_company_db_opens(rig
     assert rig.opened == [] and rig.digest("lity") == before
 
 
-def test_demotion_or_deactivation_takes_effect_on_the_same_token(rig):
+def test_a_company_admin_stays_refused_through_role_changes_and_deactivation(rig):
     uid, token = company_admin(rig)
-    assert send(rig, "post", "/products", token, json={"name": "A"}).status_code == 201
+    assert send(rig, "post", "/products", token, json={"name": "A"}).status_code == 403
     svc.change_membership_role(rig.e.session, rig.e.admin, "lity", uid, "sales_member")
     assert send(rig, "post", "/products", token, json={"name": "B"}).status_code == 403
     svc.change_membership_role(rig.e.session, rig.e.admin, "lity", uid, "admin")
-    assert send(rig, "post", "/products", token, json={"name": "B"}).status_code == 201
+    assert send(rig, "post", "/products", token, json={"name": "B"}).status_code == 403
     svc.deactivate_membership(rig.e.session, rig.e.admin, "lity", uid)
     assert send(rig, "post", "/products", token, json={"name": "C"}).status_code == 403
-    assert names(rig, rig.e.token("admin@example.com")) == DEFAULTS + ["A", "B"]
+    assert names(rig, rig.e.token("admin@example.com")) == DEFAULTS
 
 
 def test_inactive_company_refuses_its_admin(rig):

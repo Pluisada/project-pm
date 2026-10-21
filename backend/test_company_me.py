@@ -23,11 +23,15 @@ from test_central_deps import Env
 from test_company_card_writes import Rig as WriteRig, member as write_member
 
 NOW = "2026-01-01 00:00:00"
-ADMIN = {"readOnly": False, "canEditOwnCards": True, "canEditAnyCard": True, "canMoveBack": True,
-         "canDeleteCards": True, "canAssignSalesperson": True, "canManageBoards": True, "canImport": True}
+SUPER = {"readOnly": False, "canEditOwnCards": True, "canEditAnyCard": True, "canMoveBack": True,
+         "canDeleteCards": True, "canAssignSalesperson": True, "canManageBoards": True, "canImport": True,
+         "canExport": True, "canManageProducts": True}
+# A company Admin keeps the commercial card operations and the export; delete, imports, boards and products are Super Admin only.
+ADMIN = SUPER | {"canDeleteCards": False, "canManageBoards": False, "canImport": False, "canManageProducts": False}
 MEMBER = {"readOnly": False, "canEditOwnCards": True, "canEditAnyCard": False, "canMoveBack": False,
-          "canDeleteCards": False, "canAssignSalesperson": False, "canManageBoards": False, "canImport": False}
-VISITOR = {k: False for k in ADMIN} | {"readOnly": True}
+          "canDeleteCards": False, "canAssignSalesperson": False, "canManageBoards": False, "canImport": False,
+          "canExport": False, "canManageProducts": False}
+VISITOR = {k: False for k in SUPER} | {"readOnly": True}
 
 
 class Rig:
@@ -69,7 +73,7 @@ def test_capabilities_by_role(rig):
     e = rig.e
     e.member("m@example.com")
     e.member("v@example.com", role="visitor")
-    for email, caps, role in (("admin@example.com", ADMIN, "super_admin"), ("m@example.com", MEMBER, "sales_member"),
+    for email, caps, role in (("admin@example.com", SUPER, "super_admin"), ("m@example.com", MEMBER, "sales_member"),
                               ("v@example.com", VISITOR, "visitor")):
         body = rig.me("lity", email).json()
         assert body["role"] == role and body["capabilities"] == caps and body["company_slug"] == "lity"
@@ -201,6 +205,8 @@ def _probe(w, uid, token):
     caps["canDeleteCards"] = ok("delete", "/boards/1/cards/2", (204,))
     caps["canManageBoards"] = ok("post", "/boards", (201,), json={"title": "t"})
     caps["canImport"] = not ok("post", "/boards/1/imports/preview", (403,))
+    caps["canExport"] = ok("get", "/boards/1/excel/template", (200,))
+    caps["canManageProducts"] = ok("post", "/products", (201,), json={"name": "Probe"})
     return caps
 
 
@@ -214,7 +220,7 @@ def wrig(tmp_path):
     e.engine.dispose()
 
 
-@pytest.mark.parametrize("role,expected", [("super_admin", ADMIN), ("admin", ADMIN), ("sales_member", MEMBER),
+@pytest.mark.parametrize("role,expected", [("super_admin", SUPER), ("admin", ADMIN), ("sales_member", MEMBER),
                                            ("visitor", VISITOR)])
 def test_each_capability_matches_what_the_routes_grant(wrig, role, expected):
     uid, token = _actor(wrig, role)
@@ -229,6 +235,7 @@ def test_reserved_admin_is_no_super_admin_beyond_the_enabled_predicates(wrig):
     uid, token = _actor(wrig, "admin")
     ctx = resolve_company_context(wrig.e.session, token, "lity")
     assert (ctx.is_admin_level, ctx.can_manage_members, ctx.can_grant_admin) == (False, False, False)
-    assert (ctx.can_manage_cards, ctx.can_manage_boards, ctx.can_manage_imports) == (True, True, True)
+    assert (ctx.can_manage_cards, ctx.can_export_cards) == (True, True)
+    assert (ctx.can_delete_cards, ctx.can_manage_boards, ctx.can_manage_imports, ctx.can_manage_products) == (False,) * 4
     col = wrig.client.delete("/api/companies/lity/boards/1/columns/2", headers={"Authorization": f"Bearer {token}"})
     assert col.status_code == 403  # column deletion stays Super Admin only and is not a reported capability

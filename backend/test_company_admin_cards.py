@@ -1,4 +1,5 @@
-"""Phase 2E part 3: a company Admin assigns/reassigns, moves backward and deletes cards in its own company.
+"""A company Admin assigns/reassigns, edits any card and moves backward in its own company; deleting cards is Super Admin only
+(Phase 1 permission contract).
 
 Column deletion is not enabled for it (AI/undo: test_company_admin_ai_undo.py; imports: test_company_admin_imports.py). Synthetic data, tmp_path databases only.
 """
@@ -28,9 +29,10 @@ def call(rig, method, path, token, slug="lity", **kw):
     return rig.call(method, path, token, slug=slug, **kw)
 
 
-def test_predicate_covers_super_admin_and_company_admin_only():
-    assert [svc.can_manage_cards(r) for r in ("super_admin", "admin", "sales_member", "visitor", "Admin", "")] == [
-        True, True, False, False, False, False]
+def test_predicates_manage_cards_covers_super_admin_and_company_admin_but_delete_only_super_admin():
+    roles = ("super_admin", "admin", "sales_member", "visitor", "Admin", "")
+    assert [svc.can_manage_cards(r) for r in roles] == [True, True, False, False, False, False]
+    assert [svc.can_delete_cards(r) for r in roles] == [True, False, False, False, False, False]
 
 
 def test_company_admin_assigns_reassigns_edits_any_card_with_audit_and_no_member_history(rig):
@@ -78,14 +80,25 @@ def test_company_admin_moves_backward_and_any_card(rig):
     assert events.count(("moved",)) == 2
 
 
-def test_company_admin_deletes_cards_with_the_existing_audit(rig):
+def test_company_admin_cannot_delete_cards_even_by_direct_api_before_the_company_db_opens(rig):
     aid, token = company_admin(rig)
-    assert call(rig, "delete", "/cards/1", token).status_code == 204
-    assert rig.sql("SELECT COUNT(*) FROM cards WHERE id = 1") == [(0,)]
-    assert rig.sql("SELECT action, actor_user_id FROM audit_events") == [("delete", aid)]
-    assert call(rig, "delete", "/cards/1", token).status_code == 404
+    before = rig.digest("lity")
+    rig.opened.clear()
+    assert call(rig, "delete", "/cards/1", token).status_code == 403
+    assert call(rig, "delete", "/cards/999", token).status_code == 403  # same answer whether or not the card exists
+    assert rig.opened == [] and rig.digest("lity") == before
+    assert rig.sql("SELECT COUNT(*) FROM cards WHERE id = 1") == [(1,)]
+    assert rig.sql("SELECT COUNT(*) FROM audit_events") == [(0,)]
     assert send(rig, "delete", "/boards/1/columns/1", token).status_code == 403  # column deletion stays reserved
     assert rig.sql("SELECT COUNT(*) FROM columns") == [(2,)]
+
+
+def test_super_admin_deletes_a_card_and_it_is_audited(rig):
+    token = admin(rig)
+    assert call(rig, "delete", "/cards/1", token).status_code == 204
+    assert rig.sql("SELECT COUNT(*) FROM cards WHERE id = 1") == [(0,)]
+    assert rig.sql("SELECT action FROM audit_events") == [("delete",)]
+    assert call(rig, "delete", "/cards/1", token).status_code == 404
 
 
 def test_super_admin_behavior_is_unchanged(rig):
@@ -117,25 +130,26 @@ def test_company_admin_gets_nothing_in_other_companies_even_as_a_member_there(ri
         assert call(rig, "put", "/cards/1/position", token, slug=other, json={"column_id": 2}).status_code == 403
         assert call(rig, "put", "/cards/1", token, slug=other, json={"salesperson_id": uid}).status_code in (403, 422)
     assert {s: data(s) for s in before} == before and rig.digest("valor-log") == before_digest
-    assert call(rig, "delete", "/cards/2", token).status_code == 204  # still fine in its own company
+    assert call(rig, "put", "/cards/2/position", token, json={"column_id": 2}).status_code == 200  # still fine in its own company
+    assert call(rig, "delete", "/cards/2", token).status_code == 403  # but never a deletion
 
 
 def test_demotion_deactivation_and_inactive_company_take_effect_on_the_same_token(rig):
     uid, token = company_admin(rig)
-    assert call(rig, "delete", "/cards/1", token).status_code == 204
+    assert call(rig, "put", "/cards/1/position", token, json={"column_id": 2}).status_code == 200
     svc.change_membership_role(rig.e.session, rig.e.admin, "lity", uid, "sales_member")
-    assert call(rig, "delete", "/cards/2", token).status_code == 403
+    assert call(rig, "put", "/cards/1/position", token, json={"column_id": 1}).status_code == 403  # no longer back-moving
     assert call(rig, "put", "/cards/2/position", token, json={"column_id": 2}).status_code == 403  # unassigned: member rule
     svc.change_membership_role(rig.e.session, rig.e.admin, "lity", uid, "admin")
     rig.e.update(IdentityCompany, IdentityCompany.slug == "lity", is_active=False)
     before = rig.digest("lity")
     rig.opened.clear()
-    assert call(rig, "delete", "/cards/2", token).status_code == 403
+    assert call(rig, "put", "/cards/2/position", token, json={"column_id": 2}).status_code == 403
     assert rig.opened == [] and rig.digest("lity") == before
     rig.e.update(IdentityCompany, IdentityCompany.slug == "lity", is_active=True)
     svc.deactivate_membership(rig.e.session, rig.e.admin, "lity", uid)
-    assert call(rig, "delete", "/cards/2", token).status_code == 403
-    assert rig.sql("SELECT COUNT(*) FROM cards WHERE id = 2") == [(1,)]
+    assert call(rig, "put", "/cards/2/position", token, json={"column_id": 2}).status_code == 403
+    assert rig.sql("SELECT column_id FROM cards WHERE id = 2") == [(1,)]
 
 
 def test_sales_member_keeps_every_restriction(rig):
@@ -191,8 +205,10 @@ def test_card_rules_defaults_and_legacy_are_unchanged():
     assert card_rules.move_denial(ctx, card, 0) is not None and card_rules.move_denial(ctx, card, 0, admin=True) is None
 
 
-def test_parts_1_and_2_and_reserved_operations_remain(rig):
+def test_company_admin_cannot_administer_products_or_boards_or_columns(rig):
     _, token = company_admin(rig)
-    assert send(rig, "post", "/products", token, json={"name": "Adapters"}).status_code == 201
-    assert send(rig, "post", "/boards", token, json={"title": "B2"}).status_code == 201
+    assert send(rig, "post", "/products", token, json={"name": "Adapters"}).status_code == 403
+    assert send(rig, "post", "/boards", token, json={"title": "B2"}).status_code == 403
+    assert send(rig, "post", "/boards/1/columns", token, json={"title": "C", "position": 0}).status_code == 403
+    assert send(rig, "put", "/boards/1/columns/1", token, json={"title": "C"}).status_code == 403
     assert send(rig, "delete", "/boards/1/columns/1", token).status_code == 403

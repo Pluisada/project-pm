@@ -226,6 +226,8 @@ export interface CompanyCapabilities {
   canAssignSalesperson: boolean;
   canManageBoards: boolean;
   canImport: boolean;
+  canExport: boolean;
+  canManageProducts: boolean;
 }
 
 export interface CompanyMe {
@@ -260,11 +262,12 @@ export async function getCompanyLeadOptions(companySlug: string, signal?: AbortS
   return apiCall<LeadOptions>(`${companyPath(companySlug)}/lead-options`, { signal });
 }
 
-/** Create a card in one column of one company board. The central contract takes only title, details, position and Deal Value. */
+/** Create a card in one column of one company board. `salesperson_id` is required of a Super Admin or company Admin (an
+ * eligible Sales Member of the company) and ignored by the backend for a Sales Member, whose card is always their own. */
 export async function createCompanyCard(
   companySlug: string,
   boardId: number,
-  payload: { column_id: number; title: string; details?: string; deal_value?: number; deal_value_next_year?: number },
+  payload: { column_id: number; title: string; details?: string; deal_value?: number; deal_value_next_year?: number; salesperson_id?: number },
   signal?: AbortSignal
 ): Promise<CardResponse> {
   return apiCall<CardResponse>(`${companyPath(companySlug)}/boards/${Number(boardId)}/cards`, {
@@ -274,7 +277,7 @@ export async function createCompanyCard(
   });
 }
 
-/** Create a board in one company (POST .../boards; Super Admin or company Admin, the backend decides). */
+/** Create a board in one company (POST .../boards; Super Admin only, the backend decides). */
 export async function createCompanyBoard(
   companySlug: string,
   payload: { title: string; description?: string },

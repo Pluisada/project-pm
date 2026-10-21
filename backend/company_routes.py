@@ -38,6 +38,7 @@ from central_deps import (
     CompanyContext,
     IdentityServiceError,
     assignable_user_ids,
+    can_delete_cards,
     can_manage_cards,
     can_manage_imports,
     company_access,
@@ -85,7 +86,7 @@ from import_routes import (
     revert_preview_impl,
 )
 from stage_history import SOURCE_API, set_stage_context
-from undo import UndoError, apply_undo, get_undo, record_undo, undo_create, undo_delete, undo_move, undo_update
+from undo import UNRESTORABLE, UndoError, apply_undo, get_undo, record_undo, undo_create, undo_delete, undo_move, undo_update
 from schemas import (
     AIChatRequest,
     BoardCreate,
@@ -95,7 +96,7 @@ from schemas import (
     ColumnCreate,
     ColumnResponse,
     ColumnUpdate,
-    CardCreate,
+    CompanyCardCreate,
     CardMove,
     CardResponse,
     CardUpdate,
@@ -146,25 +147,25 @@ def build_company_router(
         return context
 
     def get_product_admin_context(context: CompanyContext = Depends(get_writer_context)) -> CompanyContext:
-        """Product catalog writes: Super Admin or this company's Admin. Runs before any company database opens."""
+        """Product catalog writes: Super Admin only. Runs before any company database opens."""
         if not context.can_manage_products:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
         return context
 
     def get_board_admin_context(context: CompanyContext = Depends(get_writer_context)) -> CompanyContext:
-        """Board creation and column create/edit: Super Admin or this company's Admin, before any company DB opens."""
+        """Board creation and column create/edit: Super Admin only, before any company DB opens."""
         if not context.can_manage_boards:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
         return context
 
     def get_card_admin_context(context: CompanyContext = Depends(get_writer_context)) -> CompanyContext:
-        """Card deletion: Super Admin or this company's Admin, before any company database opens."""
-        if not context.can_manage_cards:
+        """Card deletion: Super Admin only, before any company database opens."""
+        if not context.can_delete_cards:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
         return context
 
     def get_import_admin_context(context: CompanyContext = Depends(get_writer_context)) -> CompanyContext:
-        """Bid import, history and revert: Super Admin or this company's Admin, before any company DB opens."""
+        """Bid and Cards imports, history and revert: Super Admin only, before any company DB opens."""
         if not context.can_manage_imports:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
         return context
@@ -172,7 +173,7 @@ def build_company_router(
     def get_excel_context(context: CompanyContext = Depends(get_writer_context)) -> CompanyContext:
         """Excel export and template: Super Admin or this company's Admin (the company comes from the token's context
         and the path, never from the request body), before any company database opens."""
-        if not context.can_manage_imports:
+        if not context.can_export_cards:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
         return context
 
@@ -259,11 +260,25 @@ def build_company_router(
     @router.post("/boards/{board_id}/cards", response_model=CardResponse, status_code=201)
     def create_company_card(
         board_id: int,
-        card: CardCreate,
+        card: CompanyCardCreate,
+        identity: Session = Depends(identity_db),
         context: CompanyContext = Depends(get_writer_context),
         db: Session = Depends(get_writer_db),
     ):
-        """Create a card. A Sales Member's card is assigned to them; admins may assign later."""
+        """Create a card. A Sales Member's card is always assigned to them (a client-supplied salesperson_id is
+        ignored). Super Admin and company Admin must name the salesperson, who must be centrally eligible for this
+        company; an invalid or missing one is refused (422), never replaced by the creator."""
+        deal_fields = new_card_deal_fields(card)
+        if context.can_manage_cards:
+            if card.salesperson_id is None:
+                raise HTTPException(status_code=422, detail="A salesperson is required")
+            if card.salesperson_id not in assignable_user_ids(identity, context.company_slug):
+                raise HTTPException(status_code=422, detail="Salesperson not found")
+            # An eligible person who never wrote in this company has no local reference yet: central eligibility only.
+            sync_local_references(lambda: sync_company_user(identity, db, card.salesperson_id, context.company_slug))
+            owner_fields = {**deal_fields, "salesperson_id": card.salesperson_id}
+        else:
+            owner_fields = new_card_fields(context, deal_fields)
         begin_write(db)  # the target column must still exist when the card is inserted (a column delete may race)
         find_board(db, board_id)
         column = db.query(Column).filter(Column.id == card.column_id, Column.board_id == board_id).first()
@@ -271,12 +286,14 @@ def build_company_router(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Column not found")
         db_card = Card(
             column_id=card.column_id, title=card.title, details=card.details, position=card.position,
-            **new_card_fields(context, new_card_deal_fields(card)),
+            **owner_fields,
         )
         db.add(db_card)
         db.flush()
         audit_new_card_owner(db, board_id, db_card, context)
-        record_undo(db, context, board_id, f'Remove new card "{db_card.title}"', [undo_create(db_card)])
+        # Undoing a creation deletes the card, which only the Super Admin may do: nobody else is offered that undo.
+        record_undo(db, context, board_id, f'Remove new card "{db_card.title}"',
+                    [undo_create(db_card) if context.can_delete_cards else UNRESTORABLE])
         db.commit()
         db.refresh(db_card)
         return db_card
@@ -359,7 +376,7 @@ def build_company_router(
         context: CompanyContext = Depends(get_card_admin_context),
         db: Session = Depends(get_card_admin_db),
     ):
-        """Delete a card. Super Admin or the company's Admin (checked before the company database is opened)."""
+        """Delete a card. Super Admin only (checked before the company database is opened)."""
         card = find_card(db, board_id, card_id)
         record_undo(db, context, board_id, f'Restore deleted card "{card.title}"', [undo_delete(card)])
         audit_deletion(db, board_id, card, context)
@@ -387,8 +404,9 @@ def build_company_router(
         return await board_ai_chat_payload(
             db, board_id, request, context,
             assignable_ids=set(assignable_user_ids(identity, context.company_slug)), record_undo_entry=True,
-            admin=context.can_manage_cards,
+            admin=context.can_manage_cards, can_delete=context.can_delete_cards,
             reauthorize=lambda: can_manage_cards(fresh_role(identity, context)),
+            reauthorize_delete=lambda: can_delete_cards(fresh_role(identity, context)),
         )
 
     @router.get("/boards", response_model=List[BoardResponse])
@@ -624,7 +642,7 @@ def build_company_router(
         """Reverse the caller's last change on this board in one transaction (same rules as the legacy undo)."""
         begin_write(db)  # the entry, the cards it expects and the positions it restores are read under the lock
         try:
-            description = apply_undo(db, context, board_id, admin=context.can_manage_cards)
+            description = apply_undo(db, context, board_id, admin=context.can_manage_cards, can_delete=context.can_delete_cards)
             db.commit()
         except (UndoError, ValueError) as exc:
             # Nothing half-applied survives; the entry is used up either way (as in the legacy route).
@@ -856,12 +874,18 @@ def build_company_router(
         """
         ids = assignable_user_ids(identity, context.company_slug)
         labels = dict(db.query(CompanyUser.id, CompanyUser.username).filter(CompanyUser.id.in_(ids)).all()) if ids else {}
+        if context.can_manage_cards and ids:
+            # Whoever may create a card for someone else sees every eligible person, including one who has no
+            # local reference yet (the create route ensures it): labelled by the central e-mail. Nothing is written.
+            missing = [i for i in ids if i not in labels]
+            if missing:
+                labels.update({u.id: u.email for u in identity.query(IdentityUser).filter(IdentityUser.id.in_(missing)).all()})
         people = sorted(((name, user_id) for user_id, name in labels.items()), key=lambda p: (p[0], p[1]))
         return lead_options_payload(
             [{"id": user_id, "username": name} for name, user_id in people], catalog_names(db)
         )
 
-    # --- Product catalog: any member reads, Super Admin and the company's Admin write (checked before the company database opens) ---
+    # --- Product catalog: any member reads, only the Super Admin writes (checked before the company database opens) ---
 
     def product_error(exc: ProductError) -> HTTPException:
         return HTTPException(status_code=exc.status, detail=str(exc))

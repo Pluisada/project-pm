@@ -6,7 +6,7 @@ import { SESSION_EXPIRED_EVENT } from "@/lib/auth";
 
 const json = (status: number, body: unknown = {}) => new Response(JSON.stringify(body), { status });
 const caps = { readOnly: false, canEditOwnCards: true, canEditAnyCard: false, canMoveBack: false, canDeleteCards: false,
-  canAssignSalesperson: false, canManageBoards: false, canImport: false };
+  canAssignSalesperson: false, canManageBoards: false, canImport: false, canExport: false, canManageProducts: false };
 const meOf = (slug: string, over: Partial<typeof caps> = {}) =>
   ({ user_id: 7, company_slug: slug, role: "sales_member", capabilities: { ...caps, ...over } });
 const card = (id: number, columnId: number, title: string, salesperson_id: number | null, extra = {}) =>
@@ -21,14 +21,14 @@ const options = { currencies: ["USD"], lead_sources: ["Referral"], product_lines
 type Call = { url: string; method: string; body: unknown };
 
 /** A fake central backend; `write` decides the answer to POST/PUT. */
-function backend(opts: { me?: ReturnType<typeof meOf>; cards?: ReturnType<typeof card>[]; write?: (c: Call) => Promise<Response> | Response }) {
+function backend(opts: { me?: ReturnType<typeof meOf>; cards?: ReturnType<typeof card>[]; people?: { id: number; username: string }[]; write?: (c: Call) => Promise<Response> | Response }) {
   const calls: Call[] = [];
   const fn = vi.fn(async (url: string, init?: RequestInit) => {
     const call = { url: String(url), method: init?.method ?? "GET", body: init?.body ? JSON.parse(String(init.body)) : undefined };
     calls.push(call);
     if (call.method !== "GET") return opts.write ? opts.write(call) : json(200, {});
     if (call.url.endsWith("/me")) return json(200, opts.me ?? meOf("acme"));
-    if (call.url.endsWith("/lead-options")) return json(200, options);
+    if (call.url.endsWith("/lead-options")) return json(200, { ...options, salespeople: opts.people ?? [] });
     return json(200, boardOf(3, opts.cards ?? []));
   });
   vi.stubGlobal("fetch", fn);
@@ -55,6 +55,50 @@ describe("central card create/edit", () => {
     expect(post.url).toMatch(/\/api\/companies\/acme\/boards\/3\/cards$/);
     expect(post.body).toEqual({ column_id: 30, title: "New lead", deal_value: 1500 });
     for (const c of calls) expect(c.url).toMatch(/\/api\/companies\/acme\//);
+  });
+
+  it("lets an administrator choose the salesperson of a new card, requires one, and sends it", async () => {
+    const people = [{ id: 11, username: "ana@example.com" }, { id: 12, username: "bo@example.com" }];
+    const calls = backend({ me: meOf("acme", { canAssignSalesperson: true, canEditAnyCard: true }), people,
+      write: (c) => json(201, card(50, 30, (c.body as { title: string }).title, 12)) });
+    render(<CentralBoardView companySlug="acme" boardId={3} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Add a card" }));
+    await userEvent.type(screen.getByLabelText("Title"), "Assigned lead");
+    const select = await screen.findByLabelText("Salesperson");
+    await waitFor(() => expect(within(select).getAllByRole("option")).toHaveLength(3));
+    await userEvent.click(screen.getByRole("button", { name: "Add card" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Choose the salesperson");
+    expect(writes(calls)).toHaveLength(0); // nothing is sent, and the card is never silently given to the creator
+    await userEvent.selectOptions(select, "12");
+    await userEvent.click(screen.getByRole("button", { name: "Add card" }));
+    expect(await screen.findByTestId("central-card-50")).toBeInTheDocument();
+    expect(writes(calls)[0].body).toEqual({ column_id: 30, title: "Assigned lead", salesperson_id: 12 });
+  });
+
+  it("shows the server's message when the chosen salesperson is refused, and keeps the form", async () => {
+    const calls = backend({ me: meOf("acme", { canAssignSalesperson: true }), people: [{ id: 11, username: "ana@example.com" }],
+      write: () => json(422, { detail: "Salesperson not found" }) });
+    render(<CentralBoardView companySlug="acme" boardId={3} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Add a card" }));
+    await userEvent.type(screen.getByLabelText("Title"), "Lead");
+    const select = await screen.findByLabelText("Salesperson");
+    await waitFor(() => expect(within(select).getAllByRole("option")).toHaveLength(2));
+    await userEvent.selectOptions(select, "11");
+    await userEvent.click(screen.getByRole("button", { name: "Add card" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Salesperson not found");
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(writes(calls)).toHaveLength(1);
+  });
+
+  it("shows a Sales Member no salesperson control and sends none", async () => {
+    const calls = backend({ people: [{ id: 11, username: "ana@example.com" }], write: () => json(201, card(50, 30, "Mine", 7)) });
+    render(<CentralBoardView companySlug="acme" boardId={3} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Add a card" }));
+    expect(screen.queryByLabelText("Salesperson")).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Title"), "Mine");
+    await userEvent.click(screen.getByRole("button", { name: "Add card" }));
+    await screen.findByTestId("central-card-50");
+    expect(writes(calls)[0].body).not.toHaveProperty("salesperson_id");
   });
 
   it("does not abort a save in flight when the form goes away, so its outcome is not hidden", async () => {

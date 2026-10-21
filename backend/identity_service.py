@@ -60,7 +60,7 @@ from models import CompanyUser
 
 INVITATION_TTL = timedelta(days=7)
 SUPER_ADMIN_ROLE = "super_admin"  # what company_access reports for a global admin; never a membership role
-ADMIN_ROLE = "admin"  # reserved for the future company-scoped Admin; grants nothing in Phase 1
+ADMIN_ROLE = "admin"  # the company-scoped Admin: commercial card operations only (see can_manage_cards)
 VISITOR_ROLE = "visitor"
 
 
@@ -94,37 +94,38 @@ def can_grant_admin(role: str) -> bool:
 
 
 def can_manage_products(role: str) -> bool:
-    """May create, rename and delete the products of the company the role was resolved for (Phase 2E, part 1).
-
-    The Super Admin and a company Admin. The role comes from company_access for one slug, so an Admin
-    membership elsewhere never counts. Nothing else is enabled for the Admin yet.
-    """
-    return is_super(role) or role == ADMIN_ROLE
+    """May create, rename and delete the products of the company the role was resolved for. Super Admin only:
+    a company Admin does not administer the product catalog (Phase 1 permission contract)."""
+    return is_super(role)
 
 
 def can_manage_boards(role: str) -> bool:
-    """May create boards and create or edit columns of the company the role was resolved for (Phase 2E, part 2).
-
-    The Super Admin and a company Admin; deliberately its own predicate, not can_manage_products. Deleting a
-    column (which deletes its cards, unaudited) is not included: it stays Super Admin only.
-    """
-    return is_super(role) or role == ADMIN_ROLE
+    """May create boards and create, edit or delete columns of the company the role was resolved for. Super Admin
+    only: a company Admin does not administer board structures (Phase 1 permission contract)."""
+    return is_super(role)
 
 
 def can_manage_cards(role: str) -> bool:
-    """May assign/reassign, move backward and delete opportunities of the company the role was resolved for, and
-    edit any of its cards (Phase 2E, part 3). The Super Admin and a company Admin. AI, undo/revert and imports do
-    not use it yet; Sales Member and Visitor never do.
-    """
+    """May create a card assigned to anyone eligible, assign/reassign, move backward and edit any opportunity of the
+    company the role was resolved for. The Super Admin and a company Admin; Sales Member and Visitor never do.
+    Deleting is a separate, narrower predicate: can_delete_cards."""
     return is_super(role) or role == ADMIN_ROLE
 
 
-def can_manage_imports(role: str) -> bool:
-    """May preview, confirm, list and revert Bid imports of the company the role was resolved for (Phase 2E, part 5).
+def can_delete_cards(role: str) -> bool:
+    """May delete an ordinary commercial card (REST, AI, and the revert of an import). Super Admin only."""
+    return is_super(role)
 
-    The Super Admin and a company Admin. Its own predicate, separate from cards: the import services run against
-    the company database the request was authorized for, so a batch of another company cannot be named.
-    """
+
+def can_manage_imports(role: str) -> bool:
+    """May preview, confirm, list and revert imports (Bid and Cards workbook) of the company the role was resolved
+    for. Super Admin only: an import can create and a revert can delete cards."""
+    return is_super(role)
+
+
+def can_export_cards(role: str) -> bool:
+    """May download the Cards workbook export and template of the company the role was resolved for. The Super
+    Admin and a company Admin: a read of commercial data that changes nothing."""
     return is_super(role) or role == ADMIN_ROLE
 
 
@@ -557,10 +558,9 @@ def claim_invitation(session: Session, raw_token: str, *, user_id: int | None, n
 # --- membership management (Phase 2D) ------------------------------------
 #
 # Authority: the Super Admin manages any supported company (list, deactivate, change roles). A company Admin
-# (an active `admin` membership, read from the central database now) may list members and pending invitations
-# and deactivate Sales Member / Visitor memberships of its own company only; it never touches an Admin
-# (itself included), never changes a role and never invites. This grants nothing in general company operations:
-# is_admin_level stays Super-Admin only. Only the identity database is opened.
+# (an active `admin` membership, read from the central database now) may only list members and pending
+# invitations of its own company; deactivating, changing roles and inviting are Super Admin only. This grants
+# nothing in general company operations: is_admin_level stays Super-Admin only. Only the identity database is opened.
 # Writes take SQLite's write lock first, then re-read authority, so a concurrent role change or deactivation
 # serializes and the later one sees the earlier one's result.
 
@@ -647,13 +647,15 @@ def deactivate_membership(
 ) -> None:
     """Soft-deactivate one company membership (the row, the user and other companies are untouched).
 
-    Super Admin: any membership but its own. Company Admin: a Sales Member or Visitor of its own company.
+    Super Admin only, any membership but its own (a company Admin may list members but not manage them).
     A deactivated Admin's open invitations are closed. Company-local rows are never touched.
     """
     now = now or _now()
     with _Transaction(session):
         _begin_write(session)
         access = _manager(session, actor_id, slug)
+        if not can_manage_members(access.role):
+            raise NotAuthorized("only the Super Admin may deactivate memberships")
         company, membership = _target_membership(session, actor_id, access.company_slug, target_user_id)
         if not is_super(access.role) and membership.role not in COMPANY_ROLES:
             raise NotAuthorized("only the Super Admin may change an Admin")

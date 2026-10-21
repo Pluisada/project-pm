@@ -143,14 +143,14 @@ def test_super_admin_deactivates_member_and_admin_keeping_everything_else(s):
         svc.deactivate_membership(s.session, s.super_id, "lity", m)
 
 
-def test_company_admin_deactivates_members_and_visitors_only_in_its_company(s):
+def test_company_admin_cannot_deactivate_anyone(s):
     add(s, "a@example.com", role="admin")
     m, v = add(s, "m@example.com"), add(s, "v@example.com", role="visitor")
     outsider = add(s, "o@example.com", slug="salcomp")
     h = hdr(s, "a@example.com")
     for uid in (m, v):
-        assert s.client.post(f"/api/central/companies/lity/members/{uid}/deactivate", headers=h).status_code == 204
-        assert membership(s, uid).is_active is False
+        assert s.client.post(f"/api/central/companies/lity/members/{uid}/deactivate", headers=h).status_code == 403
+        assert membership(s, uid).is_active
     assert s.client.post(f"/api/central/companies/salcomp/members/{outsider}/deactivate", headers=h).status_code == 403
     assert membership(s, outsider, "salcomp").is_active
 

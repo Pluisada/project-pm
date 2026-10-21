@@ -1,6 +1,6 @@
-"""Phase 2E part 2: a company Admin creates boards and creates/edits columns in its own company only.
+"""Board and column administration is Super Admin only; a company Admin is refused (Phase 1 permission contract).
 
-Column deletion, card deletion and everything else stay Super Admin only. Synthetic data, tmp_path databases.
+Column deletion, card deletion and everything else stay Super Admin only too. Synthetic data, tmp_path databases.
 """
 import pytest
 
@@ -25,9 +25,9 @@ def titles(rig, slug="lity"):
     return rig.sql("SELECT title FROM columns ORDER BY id", slug=slug), rig.sql("SELECT title FROM boards ORDER BY id", slug=slug)
 
 
-def test_predicate_is_separate_and_covers_super_admin_and_company_admin_only():
+def test_predicate_is_separate_and_covers_super_admin_only():
     assert [svc.can_manage_boards(r) for r in ("super_admin", "admin", "sales_member", "visitor", "Admin", "")] == [
-        True, True, False, False, False, False]
+        True, False, False, False, False, False]
 
 
 def test_super_admin_still_does_all_four_operations(rig):
@@ -37,42 +37,21 @@ def test_super_admin_still_does_all_four_operations(rig):
     assert send(rig, "delete", "/boards/1/columns/2", token).status_code == 204
 
 
-def test_company_admin_creates_boards_and_creates_and_edits_columns(rig):
-    uid, token = company_admin(rig)
-    board = send(rig, "post", "/boards", token, json={"title": "New board"})
-    assert board.status_code == 201 and board.json()["title"] == "New board"
-    assert rig.sql("SELECT user_id FROM boards WHERE title = 'New board'") == [(uid,)]  # the actor's local row
-    col = send(rig, "post", "/boards/1/columns", token, json={"title": "Extra", "position": 5, "stage_kind": "open"})
-    assert col.status_code == 201 and col.json()["title"] == "Extra"
-    upd = send(rig, "put", f"/boards/1/columns/{col.json()['id']}", token, json={"title": "Renamed", "position": 6})
-    # A position past the end is normalized to the last valid index (the board holds three columns here, so 2):
-    # the response reports the effective position, a later read of the board shows the same order, and the
-    # positions of all columns stay unique and contiguous.
-    assert upd.status_code == 200 and (upd.json()["title"], upd.json()["position"]) == ("Renamed", 2)
-    detail = send(rig, "get", "/boards/1", token)
-    assert detail.status_code == 200
-    cols = sorted(detail.json()["columns"], key=lambda c: c["position"])
-    assert len(cols) == 3
-    assert [c["position"] for c in cols] == [0, 1, 2]
-    assert cols[-1]["id"] == col.json()["id"] and cols[-1]["title"] == "Renamed"
-    assert rig.sql("SELECT id, position FROM columns WHERE board_id = 1 ORDER BY position") == [
-        (c["id"], c["position"]) for c in cols]
-
-
-def test_validation_and_errors_match_the_super_admin(rig):
+def test_company_admin_is_refused_every_board_and_column_write_before_the_company_db_opens(rig):
     _, token = company_admin(rig)
+    before = rig.digest("lity")
+    rig.opened.clear()
+    for method, path, kw in BOARD_WRITES + [("delete", "/boards/1/columns/1", {}), ("post", "/boards/default", {})]:
+        assert send(rig, method, path, token, **kw).status_code == 403
+    assert rig.opened == [] and rig.digest("lity") == before
+    assert send(rig, "get", "/boards/1", token).status_code == 200  # reading stays open
+
+
+def test_super_admin_board_validation_errors_are_unchanged(rig):
     sup = admin(rig)
-    cases = [
-        ("post", "/boards", {"json": {}}),
-        ("post", "/boards/1/columns", {"json": {"title": "X", "position": 0, "stage_kind": "bogus"}}),
-        ("post", "/boards/99/columns", {"json": {"title": "X", "position": 0, "stage_kind": "open"}}),
-        ("put", "/boards/1/columns/99", {"json": {"title": "X"}}),
-        ("put", "/boards/1/columns/1", {"json": {"stage_kind": "bogus"}}),
-    ]
-    for method, path, kw in cases:
-        a, b = send(rig, method, path, token, **kw), send(rig, method, path, sup, **kw)
-        assert a.status_code == b.status_code and a.status_code in (404, 409, 422), (path, a.text, b.text)
-        assert a.json() == b.json()
+    assert send(rig, "post", "/boards", sup, json={}).status_code == 422
+    assert send(rig, "post", "/boards/1/columns", sup, json={"title": "X", "position": 0, "stage_kind": "bogus"}).status_code == 422
+    assert send(rig, "put", "/boards/1/columns/99", sup, json={"title": "X"}).status_code == 404
 
 
 def test_company_admin_cannot_delete_columns_or_cards_or_anything_else_reserved(rig):
@@ -91,7 +70,7 @@ def test_company_admin_cannot_touch_other_companies_even_as_a_member_there(rig):
         invite = svc.create_invitation(rig.e.session, rig.e.admin, "a@example.com", slug, role).token
         ca.join_invitation(rig.e.session, invite, "a@example.com", GOOD)
     token = rig.e.token("a@example.com")
-    assert send(rig, "post", "/boards", token, json={"title": "Mine"}).status_code == 201
+    assert send(rig, "post", "/boards", token, json={"title": "Mine"}).status_code == 403
     before = {s: rig.digest(s) for s in ("salcomp", "valor-log")}
     rig.opened.clear()
     for other in ("salcomp", "valor-log"):
@@ -116,13 +95,13 @@ def test_unauthenticated_is_refused(rig):
     assert rig.opened == []
 
 
-def test_inactive_membership_demotion_and_inactive_company_are_refused_on_the_same_token(rig):
+def test_company_admin_stays_refused_through_demotion_and_deactivation(rig):
     uid, token = company_admin(rig)
-    assert send(rig, "post", "/boards", token, json={"title": "One"}).status_code == 201
+    assert send(rig, "post", "/boards", token, json={"title": "One"}).status_code == 403
     svc.change_membership_role(rig.e.session, rig.e.admin, "lity", uid, "sales_member")
     assert send(rig, "post", "/boards", token, json={"title": "Two"}).status_code == 403
     svc.change_membership_role(rig.e.session, rig.e.admin, "lity", uid, "admin")
-    assert send(rig, "post", "/boards", token, json={"title": "Two"}).status_code == 201
+    assert send(rig, "post", "/boards", token, json={"title": "Two"}).status_code == 403
     rig.e.update(IdentityCompany, IdentityCompany.slug == "lity", is_active=False)
     before = rig.digest("lity")
     rig.opened.clear()
@@ -131,16 +110,20 @@ def test_inactive_membership_demotion_and_inactive_company_are_refused_on_the_sa
     rig.e.update(IdentityCompany, IdentityCompany.slug == "lity", is_active=True)
     svc.deactivate_membership(rig.e.session, rig.e.admin, "lity", uid)
     assert send(rig, "put", "/boards/1/columns/1", token, json={"title": "Z"}).status_code == 403
-    assert rig.sql("SELECT title FROM boards ORDER BY id")[-1] == ("Two",)
+    assert len(rig.sql("SELECT id FROM boards")) == 1  # no board was added by any refused request
 
 
-def test_part1_product_behavior_and_membership_rules_are_unchanged(rig):
+def test_company_admin_cannot_manage_products_or_memberships(rig):
     uid, token = company_admin(rig)
-    assert send(rig, "post", "/products", token, json={"name": "Adapters"}).status_code == 201
-    _, member_token = member(rig, "m@example.com")
+    assert send(rig, "post", "/products", token, json={"name": "Adapters"}).status_code == 403
+    m_id, member_token = member(rig, "m@example.com")
     assert send(rig, "post", "/products", member_token, json={"name": "Nope"}).status_code == 403
-    # an Admin still cannot invite, promote or manage roles
+    # an Admin cannot invite, promote, change roles or deactivate anyone
     with pytest.raises(svc.NotAuthorized):
         svc.create_invitation(rig.e.session, uid, "n@example.com", "lity", "visitor")
     with pytest.raises(svc.NotAuthorized):
         svc.change_membership_role(rig.e.session, uid, "lity", uid, "visitor")
+    with pytest.raises(svc.NotAuthorized):
+        svc.deactivate_membership(rig.e.session, uid, "lity", m_id)
+
+
