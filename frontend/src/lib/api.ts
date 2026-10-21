@@ -4,6 +4,7 @@
 
 import { API_BASE_URL, SESSION_EXPIRED_EVENT, clearAuth, extractErrorDetail, getAuthHeader } from "./auth";
 import { captureScope } from "./activeCompany";
+import { isTrackedWrite, trackWrite, type TrackedWrite } from "./writeOutcomes";
 
 export interface ApiError {
   detail: string;
@@ -55,7 +56,7 @@ function scopeCompanyRequest(
   endpoint: string,
   callerSignal?: AbortSignal | null,
   method: string = "GET"
-): { headers: Record<string, string>; signal: AbortSignal | undefined; release: () => void } {
+): { headers: Record<string, string>; signal: AbortSignal | undefined; tracked?: TrackedWrite; release: () => void } {
   const match = COMPANY_ENDPOINT.exec(endpoint);
   if (!match) return { headers: {}, signal: callerSignal ?? undefined, release: () => {} };
   const companySlug = decodeURIComponent(match[1]);
@@ -69,6 +70,9 @@ function scopeCompanyRequest(
   return {
     headers: { [COMPANY_HEADER]: companySlug },
     signal: merged.signal,
+    // A write is followed until it settles, so a company switch cannot leave its outcome unreported (a preview, which
+    // persists nothing, is not one).
+    tracked: isTrackedWrite(method, endpoint) ? trackWrite(companySlug, method, endpoint) : undefined,
     release: () => {
       scope.signal.removeEventListener("abort", abort);
       callerSignal?.removeEventListener("abort", abort);
@@ -105,6 +109,7 @@ async function apiCall<T>(
     if (!response.ok) {
       await throwApiError(response, "Authorization" in headers);
     }
+    scoped.tracked?.saved(); // the server accepted the write
 
     // Handle 204 No Content
     if (response.status === 204) {
@@ -113,9 +118,22 @@ async function apiCall<T>(
 
     return await response.json();
   } catch (error) {
-    throw asNetworkError(error);
+    const failure = asNetworkError(error);
+    reportTrackedFailure(scoped.tracked, failure);
+    throw failure;
   } finally {
     scoped.release();
+  }
+}
+
+/** A 4xx is the server refusing the request and is reported as that; a network error, a 5xx or an abort leaves the outcome unknown. */
+function reportTrackedFailure(tracked: TrackedWrite | undefined, failure: unknown): void {
+  if (!tracked) return;
+  const status = (failure as Partial<ApiError> | null)?.status_code;
+  if (typeof status === "number" && status >= 400 && status < 500) {
+    tracked.failed(getErrorMessage(failure, `HTTP ${status}`));
+  } else {
+    tracked.unknown();
   }
 }
 

@@ -17,6 +17,7 @@ import {
   getErrorMessage,
   listCompanyBoards,
   type ApiError,
+  ROLE_COMPANY_ADMIN,
   ROLE_SUPER_ADMIN,
   type BoardResponse,
   type CentralMe,
@@ -40,6 +41,8 @@ import { useCompanyBranding } from "@/lib/branding";
 import { useThemePreference } from "@/lib/theme";
 import { CentralHeader } from "@/components/CentralHeader";
 import { CompanySelectPage } from "@/components/CompanySelectPage";
+import { WriteOutcomeNotices } from "@/components/WriteOutcomeNotices";
+import { clearWriteOutcomes } from "@/lib/writeOutcomes";
 
 const COMPANY_KEY = "pm_central_company";
 
@@ -131,7 +134,9 @@ export const CentralApp = () => {
   const [companySlug, setCompanySlug] = useState<string | null>(null);
   // Boards are kept with the company they were loaded for, so a company change never shows stale ones.
   const [loaded, setLoaded] = useState<{ slug: string; boards: BoardResponse[] } | null>(null);
-  const [pickedBoardId, setPickedBoardId] = useState<number | null>(null);
+  // The board the person picked, kept with the company it was picked in: board ids are per company database, so the
+  // same number in another company is another board and a pick never carries over.
+  const [pickedBoard, setPickedBoard] = useState<{ slug: string; id: number } | null>(null);
   // Bumped after a column change so the board view is read again from the server (in place, without a remount).
   const [structureTick, setStructureTick] = useState(0);
   const [problem, setProblem] = useState<string | null>(null);
@@ -151,6 +156,11 @@ export const CentralApp = () => {
     companyRef.current = next;
     setActiveCompany(next);
     setCompanySlug(next);
+  }, []);
+  const pickedBoardId = pickedBoard !== null && pickedBoard.slug === companySlug ? pickedBoard.id : null;
+  const setPickedBoardId = useCallback((id: number | null) => {
+    const slug = companyRef.current;
+    setPickedBoard(id === null || slug === null ? null : { slug, id });
   }, []);
   useEffect(
     () => () => {
@@ -226,6 +236,7 @@ export const CentralApp = () => {
       const candidate = event.key === null ? null : readStoredToken();
       if (isBoundSessionToken(candidate)) return; // the token this tab already runs was only rewritten
       sessionEpoch.current += 1;
+      clearWriteOutcomes(); // they belong to the account this tab was showing
       const resume = { email: shown.email, slug: companyRef.current };
       applyCompany(null);
       setLoaded(null);
@@ -245,7 +256,7 @@ export const CentralApp = () => {
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, [applyCompany, loadMe]);
+  }, [applyCompany, loadMe, setPickedBoardId]);
 
   useEffect(() => {
     // Take the token out of the address bar (history, referrers, screenshots).
@@ -265,6 +276,7 @@ export const CentralApp = () => {
 
   useEffect(() => {
     const onExpired = () => {
+      clearWriteOutcomes();
       sessionEpoch.current += 1;
       setAccountNotice(null);
       setMe(null);
@@ -344,6 +356,7 @@ export const CentralApp = () => {
   };
 
   const signOut = async () => {
+    clearWriteOutcomes(); // nothing from this session may be shown to whoever signs in next
     await centralLogout();
     remember(null);
     setLoginOpen(false);
@@ -365,6 +378,7 @@ export const CentralApp = () => {
   };
 
   const linkDone = async (message: string) => {
+    clearWriteOutcomes();
     // The person may be signed in as someone else; the next sign-in must be a deliberate one.
     await centralLogout();
     remember(null);
@@ -409,7 +423,9 @@ export const CentralApp = () => {
   if (!company) {
     return (
       <CompanySelectPage companies={me.companies} onSelect={chooseCompany} onLogout={signOut}
-        notice={accountNotice} problem={problem} />
+        notice={accountNotice} problem={problem}>
+        <WriteOutcomeNotices companies={me.companies} />
+      </CompanySelectPage>
     );
   }
   const boards = loaded && loaded.slug === companySlug ? loaded.boards : [];
@@ -420,7 +436,8 @@ export const CentralApp = () => {
     <CentralHeader company={company} email={me.email} canSwitch={me.companies.length > 1} onSwitch={leaveCompany}
       theme={theme} onThemeChange={setTheme} onSignOut={signOut} />
     <div className="mx-auto max-w-7xl px-6 py-10">
-      {accountNotice && <p role="status" className="text-sm font-medium text-amber-900">{accountNotice}</p>}
+      <WriteOutcomeNotices companies={me.companies} />
+      {accountNotice && <p role="status" className="mt-4 text-sm font-medium text-amber-900">{accountNotice}</p>}
       {problem && <p role="alert" className="mt-6 text-sm font-medium text-red-800">{problem}</p>}
       {boardsFailed !== null && boardsFailed === companySlug && (
         <button type="button" onClick={retryBoards}
@@ -443,11 +460,24 @@ export const CentralApp = () => {
           <CentralBoardView key={`${company.slug}:${boardId}`} companySlug={company.slug} boardId={boardId} refreshToken={structureTick} />
         </section>
       )}
+      {company && loaded && loaded.slug === company.slug && boards.length === 0 && (
+        <section data-testid="central-empty-workspace" className="mt-8 rounded-[24px] border border-[var(--stroke)] bg-[var(--surface-strong)]/80 p-6 shadow-[var(--shadow)]">
+          <h2 className="font-display text-xl font-semibold text-[var(--navy-dark)]">No board yet</h2>
+          <p className="mt-2 text-sm text-[var(--gray-text)]">
+            {company.role === ROLE_SUPER_ADMIN || company.role === ROLE_COMPANY_ADMIN
+              ? `${company.name} has no board. Create the first one, and its stages, under "Manage boards and columns" below. Nothing is created automatically.`
+              : `${company.name} has no board yet. An administrator has to create one before cards can be added.`}
+          </p>
+        </section>
+      )}
       {company && loaded && loaded.slug === company.slug && (
         <section className="mt-8">
           <CentralBoardAdmin key={company.slug} companySlug={company.slug} boards={boards} boardId={boardId}
             onSelectBoard={setPickedBoardId} onRefreshBoards={() => refreshBoards(company.slug)} onColumnsChanged={() => setStructureTick((n) => n + 1)}
             onBoardCreated={(created) => {
+              // The board belongs to the company it was created in. If the person has switched since, its id means
+              // nothing here (ids are per company database), so it must not select anything.
+              if (companyRef.current !== company.slug) return;
               setLoaded((cur) => (cur && cur.slug === company.slug ? { slug: cur.slug, boards: [...cur.boards, created] } : cur));
               setPickedBoardId(created.id);
             }} />
