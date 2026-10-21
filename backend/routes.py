@@ -652,7 +652,7 @@ async def test_ai(current_user: User = Depends(require_admin)):
 async def board_ai_chat_payload(
     db: Session, board_id: int, request: AIChatRequest, current_user,
     assignable_ids: Optional[set] = None, record_undo_entry: bool = True, admin: Optional[bool] = None,
-    reauthorize=None, can_delete: Optional[bool] = None, reauthorize_delete=None,
+    reauthorize=None, can_delete: Optional[bool] = None, reauthorize_delete=None, refresh_assignable_ids=None,
 ):
     """The AI chat exchange for one board, shared by the legacy and the company-scoped routes."""
     # Verify board exists and belongs to user
@@ -703,6 +703,9 @@ async def board_ai_chat_payload(
             admin = reauthorize()
         if reauthorize_delete is not None:
             can_delete = reauthorize_delete()
+        # Likewise the people a card may be assigned to (company routes): read after the model call, not at request start.
+        if refresh_assignable_ids is not None:
+            assignable_ids = refresh_assignable_ids()
 
         # Save user message
         user_msg = ConversationMessage(

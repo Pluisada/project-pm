@@ -375,3 +375,52 @@ def test_ai_creation_by_non_deleters_is_not_undoable_but_the_super_admins_is(rig
     assert _undo_available(rig, sup)
     assert undo(rig, sup).status_code == 200
     assert rig.sql("SELECT COUNT(*) FROM cards WHERE title = 'Super AI card'") == [(0,)]
+
+
+# --- eligibility of the restored salesperson (F5) ---------------------------
+
+def test_undo_of_a_reassignment_needs_the_previous_salesperson_to_be_eligible(rig):
+    _, token = company_admin(rig)
+    old, _ = member(rig, "old@example.com")
+    new, _ = member(rig, "new@example.com")
+    for uid in (old, new):
+        local_row(rig, uid)
+    rig.assign(1, old)
+    assert rig.call("put", "/cards/1", token, json={"salesperson_id": new}).status_code == 200
+    assert undo(rig, token).status_code == 200 and owner(rig, 1) == old  # still eligible: restored
+    assert rig.call("put", "/cards/1", token, json={"salesperson_id": new}).status_code == 200
+    svc.deactivate_membership(rig.e.session, rig.e.admin, "lity", old)
+    assert undo(rig, token).status_code == 409
+    assert owner(rig, 1) == new  # nothing restored
+    assert undo(rig, token).status_code == 404  # the refused entry is used up, as for any refused undo
+
+
+def test_undo_of_a_deletion_is_refused_when_the_restored_salesperson_is_ineligible(rig):
+    sup = admin(rig)
+    m, _ = member(rig, "m@example.com")
+    local_row(rig, m)
+    rig.assign(1, m)
+    assert rig.call("delete", "/cards/1", sup).status_code == 204
+    svc.deactivate_membership(rig.e.session, rig.e.admin, "lity", m)
+    assert undo(rig, sup).status_code == 409
+    assert rig.sql("SELECT COUNT(*) FROM cards WHERE title = 'card 1'") == [(0,)]
+    assert undo(rig, sup).status_code == 404
+
+
+def test_ai_assignment_uses_the_eligibility_read_after_the_model_call(rig, monkeypatch):
+    import routes
+
+    _, token = company_admin(rig)
+    m, _ = member(rig, "m@example.com")
+    local_row(rig, m)
+
+    async def fake(board_state, history, message):
+        # The person stops being eligible while the model is answering.
+        svc.deactivate_membership(rig.e.session, rig.e.admin, "lity", m)
+        return {"success": True, "response": "ok", "actions": [{"type": "update", "card_id": 1, "salesperson_id": m}],
+                "confidence": 1, "tokens_used": 0}
+
+    monkeypatch.setattr(routes, "call_ai_with_board", fake)
+    applied = ai(rig, token).json()["actions_applied"]
+    assert applied["successful"] == [] and len(applied["failed"]) == 1
+    assert owner(rig, 1) is None

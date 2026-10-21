@@ -467,7 +467,7 @@ def build_company_router(
         ensure_reviews(db)
         return await board_ai_chat_payload(
             db, board_id, request, context,
-            assignable_ids=set(assignable_user_ids(identity, context.company_slug)), record_undo_entry=True,
+            refresh_assignable_ids=lambda: set(assignable_user_ids(identity, context.company_slug)), record_undo_entry=True,
             admin=context.can_manage_cards, can_delete=context.can_delete_cards,
             reauthorize=lambda: can_manage_cards(fresh_role(identity, context)),
             reauthorize_delete=lambda: can_delete_cards(fresh_role(identity, context)),
@@ -700,6 +700,7 @@ def build_company_router(
     @router.post("/boards/{board_id}/undo", response_model=UndoStatus)
     def undo_company_change(
         board_id: int,
+        identity: Session = Depends(identity_db),
         context: CompanyContext = Depends(get_writer_context),
         db: Session = Depends(get_writer_db),
     ):
@@ -707,7 +708,10 @@ def build_company_router(
         ensure_reviews(db)
         begin_write(db)  # the entry, the cards it expects and the positions it restores are read under the lock
         try:
-            description = apply_undo(db, context, board_id, admin=context.can_manage_cards, can_delete=context.can_delete_cards)
+            description = apply_undo(
+                db, context, board_id, admin=context.can_manage_cards, can_delete=context.can_delete_cards,
+                assignable_ids=set(assignable_user_ids(identity, context.company_slug)),
+            )
             db.commit()
         except (UndoError, ValueError) as exc:
             # Nothing half-applied survives; the entry is used up either way (as in the legacy route).

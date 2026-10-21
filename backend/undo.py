@@ -170,7 +170,10 @@ def _check_unchanged_since(db, board_id: int, steps: list) -> None:
             )
 
 
-def apply_undo(db, user: User, board_id: int, *, admin: bool | None = None, can_delete: bool | None = None) -> str:
+def apply_undo(
+    db, user: User, board_id: int, *, admin: bool | None = None, can_delete: bool | None = None,
+    assignable_ids: set | None = None,
+) -> str:
     """Reverse `user`'s last change on the board; returns its description.
 
     All steps are checked before any is applied, so a change that can no
@@ -178,7 +181,9 @@ def apply_undo(db, user: User, board_id: int, *, admin: bool | None = None, can_
     untouched. Either way the entry is used up. Caller commits. `admin` is the company routes' explicit
     card-administration decision (None: is_admin(user)); the entry is still the caller's own. `can_delete` is the company
     routes' explicit decision on deleting cards: a step that removes a card (undo of a creation) needs it, whoever
-    created the card. None keeps the legacy rule (own or administered cards).
+    created the card. None keeps the legacy rule (own or administered cards). `assignable_ids` (company routes) is the
+    set of people the central database currently lets the company assign cards to: a step restoring a salesperson outside
+    it is refused. None (legacy) does not check.
     """
     entry = get_undo(db, user, board_id)
     if entry is None:
@@ -202,6 +207,11 @@ def apply_undo(db, user: User, board_id: int, *, admin: bool | None = None, can_
         if "column_id" in step and _board_column(db, board_id, step["column_id"]) is None:
             raise UndoError("Can't undo: the column no longer exists")
     _check_unchanged_since(db, board_id, json.loads(entry.steps))
+    if assignable_ids is not None:
+        for step in steps:
+            restored = step.get("fields", {}).get("salesperson_id") if step["op"] in ("update", "create") else None
+            if restored is not None and restored not in assignable_ids:
+                raise UndoError("Can't undo: the previous salesperson can no longer be assigned")
 
     for step in steps:
         op = step["op"]
