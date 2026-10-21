@@ -321,6 +321,77 @@ Startup validation (`production_config.central_database_problems`, run in produc
 
 No initializer creates a board or a column, and none is added automatically. The Super Admin prepares each company in the app: pick the company, create a board (any title), then add stages. Nothing depends on a fixed board id; the Excel template and export are per board and the Cards import matches the workbook's `stage` against the board's column titles (case-insensitive). A stage kind is `open`, `won` or `lost` (at most one won and one lost per board). The recommended starting set, the same as the legacy seeded pipeline, is: `1st Contact` (open), `F2F Meeting` (open), `RFI` (open), `Proposal` (open), `Award` (won), `Lost` (lost). It is created by hand through the interface, once per company, so it cannot be duplicated by a restart; the existing stages of a board are never changed except by the Super Admin through the same screen.
 
+### Starting central mode natively on the Mac (without Docker)
+
+Written from the code (`auth_mode.py`, `database_targets.py`, `identity_database.py`, `identity_admin_cli.py`, `mailer.py`, `production_config.py`, `main.py`); not executed as part of writing this section. This is the central-mode counterpart of "Running natively against the local commercial database" above, which is legacy mode. Do not use `scripts/start-mac.sh` for central mode: it exports the development `.env` (including `DATABASE_URL`) and splits values on spaces.
+
+**How configuration reaches the process.** The backend never loads `.env` or any other file. Every variable below must already be in the environment of the process that starts `uvicorn` (and, separately, of the process that runs `identity_admin_cli.py`). Docker names (`PM_IDENTITY_DATABASE_URL`, `PM_PUBLIC_URL`, `PM_CENTRAL_DATA_*`) are compose-only; a native process reads the names in the table.
+
+**Keep the settings outside the repository.** Put them in a file of your own, outside the repository, readable only by you, and never commit it (and never commit a `.env`). `<EXTERNAL_ENV_FILE>` below is a placeholder you replace with that path:
+
+```bash
+chmod 600 "<EXTERNAL_ENV_FILE>"
+```
+
+The file holds plain `NAME=value` lines (quote a value that contains spaces or `#`). Load it into the current shell with `set -a` so every line is exported, without printing anything, and check only that the names are set, never their values:
+
+```bash
+set -a; source "<EXTERNAL_ENV_FILE>"; set +a
+for v in PM_AUTH_MODE IDENTITY_DATABASE_URL PM_COMPANY_DB_SALCOMP PM_COMPANY_DB_LITY PM_COMPANY_DB_VALOR_LOG SECRET_KEY APP_BASE_URL SMTP_HOST SMTP_FROM; do
+  if [ -n "$(printenv "$v")" ]; then echo "$v: set"; else echo "$v: MISSING"; fi
+done
+```
+
+The loop works in Bash and zsh and prints only the variable name and `set` or `MISSING`; the value is captured inside `$(...)` and never shown. It checks presence only: `set` means the variable exists and is not empty, not that its value is valid, and `MISSING` means unset or empty. `SMTP_FROM` is in the loop for convenience; it may show `MISSING` if `SMTP_USER` is set (see the table). Do not run `env`, `printenv` without a name, `set` or `export -p` to check: they print secrets. `source` runs the file as shell code, so use only a file you wrote yourself, at a path you typed. Loading applies to this shell only; open a new terminal tab and every variable must be loaded again.
+
+| Variable | Native value |
+|---|---|
+| `PM_AUTH_MODE` | `central` (unset means legacy) |
+| `IDENTITY_DATABASE_URL` | `sqlite:////<absolute path to the identity database file>` (four slashes) |
+| `PM_COMPANY_DB_SALCOMP`, `PM_COMPANY_DB_LITY`, `PM_COMPANY_DB_VALOR_LOG` | same URL form, one distinct file each |
+| `SECRET_KEY` | at least 32 characters, no default |
+| `APP_BASE_URL` | origin the emailed links open (below) |
+| `SMTP_HOST` | required for any email to leave |
+| `SMTP_FROM` | sender address; optional when `SMTP_USER` is set (the mailer uses `SMTP_USER` as the sender), otherwise one of the two must provide it. Production validation requires one of them |
+| `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` | optional: port (default 587, STARTTLS), login user, and password (required whenever `SMTP_USER` is set) |
+| `OPENROUTER_API_KEY` | optional, only for the AI assistant |
+
+`DATABASE_URL` is not used by central mode (only to check that no central file collides with it); leave it out of the file so the legacy database is never in play. The file does not clear a variable that the shell already exports: if `DATABASE_URL` is already exported in this shell, run `unset DATABASE_URL` before starting the backend or the CLI (do not print it). Central mode never falls back to it, but a set value is still parsed, and it is refused if it is malformed or equals one of the four central files. `PM_ENV` is not set for local development (unset means development); with `PM_ENV=production` the stricter checks in "Startup validation" above apply, including an https `APP_BASE_URL`.
+
+**Database paths.** Each URL must name a file that already exists, with the schema already created: neither the app nor the CLI creates a database (the identity engine opens with `mode=rw`, and a missing file or a schema version mismatch is refused). When this is detected depends on the mode: with `PM_ENV=production`, startup validation checks that the identity and company files exist and refuses to start; in development (`PM_ENV` unset) startup only checks that the four variables are set, the identity database is opened on the first central request, and each company database on the first request that needs it, so a wrong or missing path can show up later as a `503` ("Central authentication is unavailable") or a failing company request instead of a startup error. Point them at the intended local development databases that you prepared for this purpose with `create_identity_db.py` and `create_company_db.py`, not at temporary test databases (a throwaway file loses the administrator and invitations at the next cleanup) and **never at a production or commercial database**: the app refuses `pm.db`, `pm.db.bak`, `pm-commercial.db`, the permanent Salcomp path and SQLite sidecar files, but anything else you name is opened for writing, and a production copy used for development gets real invitations, resets and card edits. This document does not name a path for you; the four files must be distinct.
+
+**An existing identity database is not necessarily bootstrapped.** `create_identity_db.py` creates an empty database: no users and no companies. The global administrator and the three companies exist only if `identity_admin_cli.py bootstrap` was run against that file at some point (it is idempotent and refuses a different existing account with the email). Before using an identity file, know which of your existing development identity databases holds the administrator you intend to use. Pointing at an empty one means `send-activation` answers `not eligible` and nobody can sign in. This section does not run or recommend `bootstrap`, and nothing here inspects a database.
+
+**`APP_BASE_URL` for local use.** It is the origin placed in every emailed link (`/?central_reset_token=...`, `/?central_invite_token=...`). Use the origin from which you open the interface: `http://localhost:3000` when running the frontend with `npm run dev` (the default if unset, and the origin the development CORS allow-list expects), or `http://localhost:8000` only when `backend/static` holds a frontend export so FastAPI serves the UI. The link must open the page you are actually using, or the single-use token is spent on the wrong place. `PM_PUBLIC_URL` is the compose-side name for the same value; do not set it for a native start (in production the app refuses a `PM_PUBLIC_URL` that differs from `APP_BASE_URL`).
+
+**SMTP.** Without `SMTP_HOST` nothing is sent and the link cannot be recovered from the logs, so no activation, invitation or reset email is delivered. Nothing connects to the SMTP server at startup; the first real attempt is the first email.
+
+**Start the backend** (start each command block below from the repository root, in the shell where the file was loaded; the parentheses run `cd` in a subshell, so your shell stays at the root and the block can be repeated or followed by the next one):
+
+```bash
+(cd backend && uv run uvicorn main:app --port 8000)
+```
+
+Add `--reload` only if you want auto-reload, and run the frontend separately with `npm run dev` in `frontend/` when using `http://localhost:3000`. Startup validation (`auth_mode.validate_config`) stops the process, naming the missing variable, if any of the four database variables is unset; it does not run `init_db()` in central mode. Environment changes are read once at process start, so after editing the file stop the backend, load the file again in that shell and start it again.
+
+**Activation email for the global administrator.** `identity_admin_cli.py` reads the same environment variables (it opens the identity database from `IDENTITY_DATABASE_URL` and sends through `mailer.py` with `SMTP_*` and `APP_BASE_URL`); it does not read the file. Run it in a shell where the file was loaded:
+
+```bash
+(cd backend && uv run python identity_admin_cli.py send-activation --email "<address>")
+```
+
+It prints `sent` or `not eligible (nothing sent)` (the account must exist, be active and have a verified email; `bootstrap --admin-email <address>` creates the global administrator and the three companies in an existing identity database, and is idempotent). `sent` means only that the mailer returned without raising an error. It does not confirm SMTP acceptance or inbox delivery. In particular, if `SMTP_HOST` is unset the mailer logs a warning and returns normally without sending anything, and the CLI still prints `sent`; check the output for the `Email not sent (SMTP_HOST not set)` warning. The link is never printed. Each run issues a fresh one-hour link and invalidates the earlier ones, even if the email then fails.
+
+**Safe SMTP diagnostics.** The log carries only a masked recipient, the subject and the error class, never a link, body or credential:
+
+- `Email sent: to=a***@domain subject=...`: accepted by the SMTP server (this does not prove inbox delivery).
+- `Email not sent (SMTP_HOST not set)`: the variable is not in this process's environment; load the file and restart.
+- `Email delivery failed: ... error=<ExceptionClass>`: connection, TLS (certificate or hostname verification, STARTTLS on the port) or login failed. Check host, port and credentials in the file, without printing them.
+
+The forgot-password screen answers identically for every address, so it cannot show success; read the backend log. For `send-activation` the CLI prints `sent` or `not eligible`. It configures no logging, so only warnings and errors from the mailer are shown (by Python's default handler, on stderr); the `Email sent` line is informational and does not appear. On an SMTP delivery exception the mailer logs the `Email delivery failed` line and the CLI then exits with a Python traceback (`EmailDeliveryError`, which carries no detail) and prints no `sent`. Treat `sent` without a preceding `Email not sent` or `Email delivery failed` line as "no error was raised", not as delivery. Never paste a reset link or an email body into a log, ticket or chat.
+
+Limits: the commands above were derived from the code and have not been run for this section; real SMTP delivery and STARTTLS verification against the real server, and the real activation, remain unverified (see the other sections).
+
 ### Pending decisions and limits
 
 - Invitation domain policy (above); Admin-per-company role (reserved, no privileges); manual assignment before first write (above); real SMTP, TLS proxy, Linux ownership of the mounted directory and the real start of the stack are unverified; the full backend suite has not been run for this change.
