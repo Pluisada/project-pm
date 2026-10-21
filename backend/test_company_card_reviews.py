@@ -469,3 +469,50 @@ def test_the_legacy_runtime_is_untouched():
     assert card_reviews.is_company_session(Db()) is False
     card_reviews.note_member_edit(Db(), SimpleNamespace(id=1), SimpleNamespace(id=1), {"title": {"old": "a", "new": "b"}})
     assert Db.info == {} and card_rules.record_member_edit is not None
+
+
+# --- F. undo of a deletion never drops a pending review ---------------------------------------------------------------
+
+def test_undo_of_a_deletion_is_refused_while_reviews_were_pending(world):
+    rig, _, mtoken, _, _, stoken = world
+    edit(rig, mtoken)
+    assert len(pending(rig)) == 2
+    cards_before = rig.sql("SELECT COUNT(*) FROM cards")[0][0]
+    entries_before = rig.sql("SELECT COUNT(*) FROM undo_entries")[0][0]  # the member's own edit entry
+    assert rig.call("delete", "/cards/1", stoken).status_code == 204
+    assert rig.sql("SELECT status, closed_reason FROM card_review_obligations WHERE card_id = 1") == [("void", "card_deleted")] * 2
+    assert undo(rig, stoken, method="get").json()["available"] is False
+    assert rig.sql("SELECT COUNT(*) FROM undo_entries") == [(entries_before,)]  # no entry for the deletion
+    assert undo(rig, stoken).status_code == 404
+    assert rig.sql("SELECT COUNT(*) FROM cards")[0][0] == cards_before - 1
+    assert rig.sql("SELECT COUNT(*) FROM cards WHERE title = 'edited'") == [(0,)]
+    assert rig.sql("SELECT COUNT(*) FROM card_review_obligations WHERE status = 'pending'") == [(0,)]
+    assert rig.sql("SELECT COUNT(*) FROM audit_events WHERE action = 'delete'") == [(1,)]
+
+
+def test_undo_of_a_deletion_still_works_without_pending_reviews(world):
+    rig, _, _, _, _, stoken = world
+    assert rig.call("delete", "/cards/1", stoken).status_code == 204
+    assert undo(rig, stoken).status_code == 200
+    assert rig.sql("SELECT COUNT(*) FROM cards WHERE title = 'card 1'") == [(1,)]
+    assert rig.sql("SELECT COUNT(*) FROM card_review_obligations") == [(0,)]
+
+
+def test_undo_of_a_deletion_ignores_cleared_obligations(world):
+    rig, _, mtoken, _, atoken, stoken = world
+    edit(rig, mtoken)
+    assert clear(rig, atoken, "admin").status_code == 200
+    assert clear(rig, stoken, "super_admin").status_code == 200
+    assert pending(rig) == []
+    assert rig.call("delete", "/cards/1", stoken).status_code == 204
+    assert undo(rig, stoken).status_code == 200
+    assert rig.sql("SELECT COUNT(*) FROM cards WHERE title = 'edited'") == [(1,)]
+    assert sorted(r[0] for r in rig.sql("SELECT status FROM card_review_obligations")) == ["cleared", "cleared"]
+
+
+def test_undo_of_a_deletion_ignores_obligations_already_voided(world):
+    rig, _, _, _, _, stoken = world
+    rig.sql("INSERT INTO card_review_obligations (card_id, reviewer_role, status, card_version, context_json, refresh_count, "
+            "created_at, updated_at, closed_reason) VALUES (1, 'admin', 'void', 1, '[]', 0, ?, ?, 'card_deleted')", (NOW, NOW))
+    assert rig.call("delete", "/cards/1", stoken).status_code == 204
+    assert undo(rig, stoken).status_code == 200

@@ -152,6 +152,15 @@ def _tables_ready(conn) -> bool:
     return len(names) == 2
 
 
+def has_pending(db, card_id: int) -> bool:
+    """Whether the card has a pending obligation (company sessions whose database has the review tables only)."""
+    conn = db.connection()
+    if not is_company_session(db) or not _tables_ready(conn):
+        return False
+    return conn.execute(select(_obligations.c.id).where(
+        _obligations.c.card_id == card_id, _obligations.c.status == STATUS_PENDING).limit(1)).first() is not None
+
+
 # --- triggers (recorded by the callers, written by the flush listener) ---------------------------------------
 
 def _record_intent(db, card: Card, roles: tuple[str, ...], entry: dict) -> None:

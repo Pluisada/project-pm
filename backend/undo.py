@@ -97,7 +97,7 @@ UNRESTORABLE = {"op": "unrestorable"}
 def undo_delete(card: Card) -> dict:
     """Step recreating `card` (call before deleting it). Its edit history,
     which cascades with the card, isn't restored. A card carrying Bid details, a Bid source reference or import
-    history cannot be recreated faithfully (those cascade away with it), so its deletion is not undoable:
+    history, or a pending review obligation, cannot be recreated faithfully, so its deletion is not undoable:
     record_undo then records nothing and drops the caller's previous entry."""
     if card.bid_details is not None or card.source_ref is not None or card.import_changes:
         return UNRESTORABLE
@@ -105,6 +105,10 @@ def undo_delete(card: Card) -> dict:
     if session is not None and card_loss.is_company_session(session) and card.column.stage_kind == STAGE_LOST:
         # The recreated card would get a new id, so the loss history (and its reason) would stay with the old one: a
         # lost card is never put back by undo without a reason of its own.
+        return UNRESTORABLE
+    if session is not None and card_reviews.has_pending(session, card.id):
+        # Deleting voids the card's pending reviews and the recreated card would get a new id without them: a card
+        # whose changes still await review is never put back by undo.
         return UNRESTORABLE
     return {"op": "create", "column_id": card.column_id, "position": card.position, "fields": card_fields(card)}
 
