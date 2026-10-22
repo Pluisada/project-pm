@@ -30,6 +30,7 @@ const ACTION_LABEL: Record<CardsImportRow["action"], string> = {
   update: "Update",
   unchanged: "No change",
   invalid: "Error",
+  skipped: "Skipped",
 };
 
 type Phase = "idle" | "previewing" | "preview" | "confirming" | "uncertain" | "done";
@@ -96,6 +97,12 @@ function confirmFailure(error: unknown): { uncertain: boolean; stale: boolean; t
 export const CentralCardsImport = ({ companySlug, boardId, onImported }: CentralCardsImportProps) => {
   const [me, setMe] = useState<CompanyMe | null>(null);
   const [file, setFile] = useState<File | null>(null);
+  // The person's explicit choice (the button shown when a preview finds card_ids that are not on this board) to turn those
+  // rows into new cards; sent with the preview AND its confirmation, and off again for every new workbook.
+  const [newForUnmatched, setNewForUnmatched] = useState(false);
+  // Restore mode: the person's explicit choice to bring back the cards of an already-applied workbook that are missing from
+  // this board (the ledger refused the ordinary import). Sent with the preview AND its confirmation; off for every new workbook.
+  const [recover, setRecover] = useState(false);
   const [phase, setPhase] = useState<Phase>("idle");
   const [preview, setPreview] = useState<CardsImportPreview | null>(null);
   const [result, setResult] = useState<CardsImportResult | CardsImportSummary | null>(null);
@@ -135,6 +142,8 @@ export const CentralCardsImport = ({ companySlug, boardId, onImported }: Central
   if (!caps || caps.readOnly !== false || caps.canImport !== true) return null;
 
   const reset = () => {
+    setNewForUnmatched(false);
+    setRecover(false);
     setFile(null);
     setPreview(null);
     setResult(null);
@@ -146,6 +155,8 @@ export const CentralCardsImport = ({ companySlug, boardId, onImported }: Central
 
   const choose = (picked: File | null) => {
     if (busy.current) return;
+    setNewForUnmatched(false); // consent is per workbook
+    setRecover(false);
     setFile(picked);
     setPreview(null);
     setResult(null);
@@ -154,7 +165,35 @@ export const CentralCardsImport = ({ companySlug, boardId, onImported }: Central
     setPhase("idle");
   };
 
-  const runPreview = async (recheck = false) => {
+  // The explicit choice: turn the rows whose card_id is not on this board into new cards, then preview again. Nothing is
+  // imported by this; the confirmation is bound to the new preview and to this choice.
+  const createNewForUnmatched = () => {
+    if (busy.current) return;
+    setNewForUnmatched(true);
+    setPreview(null);
+    void runPreview(false, true);
+  };
+  const startRestore = () => {
+    if (busy.current) return;
+    setRecover(true);
+    setNewForUnmatched(false);
+    setPreview(null);
+    void runPreview(false, false, true);
+  };
+  const leaveRestore = () => {
+    if (busy.current) return;
+    setRecover(false);
+    setPreview(null);
+    void runPreview(false, newForUnmatched, false);
+  };
+  const keepUnmatchedAsErrors = () => {
+    if (busy.current) return;
+    setNewForUnmatched(false);
+    setPreview(null);
+    void runPreview(false, false);
+  };
+
+  const runPreview = async (recheck = false, createUnmatched: boolean = newForUnmatched, restore: boolean = recover) => {
     if (!file || busy.current) return;
     busy.current = true;
     const controller = new AbortController();
@@ -162,7 +201,7 @@ export const CentralCardsImport = ({ companySlug, boardId, onImported }: Central
     setNotice(null);
     setPhase("previewing");
     try {
-      const body = await previewCompanyCardsImport(companySlug, boardId, file, controller.signal);
+      const body = await previewCompanyCardsImport(companySlug, boardId, file, controller.signal, { newForUnmatchedIds: createUnmatched, recoverMissingCards: restore });
       if (!mounted.current || controller.signal.aborted) return;
       // The ledger record is the only proof of an application; what the preview would change now proves nothing.
       const recorded = body.already_imported ?? body.previous_import;
@@ -205,7 +244,7 @@ export const CentralCardsImport = ({ companySlug, boardId, onImported }: Central
     setNotice(null);
     setPhase("confirming");
     try {
-      const done = await confirmCompanyCardsImport(companySlug, boardId, file, preview.plan_digest);
+      const done = await confirmCompanyCardsImport(companySlug, boardId, file, preview.plan_digest, { newForUnmatchedIds: newForUnmatched, recoverMissingCards: recover });
       if (!mounted.current) {
         onImported?.();
         return;
@@ -239,14 +278,18 @@ export const CentralCardsImport = ({ companySlug, boardId, onImported }: Central
   const changes = preview ? preview.rows.filter((r) => r.action === "create" || r.action === "update") : [];
   const visible = showAll ? changes : changes.slice(0, ROWS_SHOWN);
   const working = phase === "previewing" || phase === "confirming";
+  // Rows refused only (or also) because their card_id is not a card of this board: the rows the choice would turn into new cards.
+  const unmatchedRows = preview ? preview.rows.filter((r) => r.errors.some((e) => e.code === "card_not_found")).length : 0;
 
   return (
     <section aria-labelledby="cards-import-title" className="rounded-[24px] border border-[var(--stroke)] bg-[var(--surface-strong)]/80 p-6 shadow-[var(--shadow)]">
       <h2 id="cards-import-title" className="font-display text-xl font-semibold text-[var(--navy-dark)]">Import Cards from Excel</h2>
       <p className="mt-2 text-sm text-[var(--gray-text)]">
-        Upload a Cards workbook (the export or the template). A row with an empty card_id creates a card; a row with the
-        exported card_id updates that card of this board. Nothing is saved until you confirm, and a workbook with any error
-        is not imported at all.
+        Upload a Cards workbook (the export or the template). A row with an empty card_id creates a card; a row whose
+        card_id is a card of this board updates that card. If the preview finds card_ids that are not on this board (cards
+        deleted since the export, or a workbook exported from another board), it offers to create them as new cards with
+        their own ids; the old card_ids are never reused. Nothing is saved until you confirm, and a workbook with any
+        error is not imported at all.
       </p>
 
       <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -316,6 +359,74 @@ export const CentralCardsImport = ({ companySlug, boardId, onImported }: Central
             <div><dt className="text-[var(--gray-text)]">Errors</dt><dd className="font-semibold">{preview.summary.invalid}</dd></div>
             <div><dt className="text-[var(--gray-text)]">Warnings</dt><dd className="font-semibold">{preview.summary.warnings}</dd></div>
           </dl>
+          {preview.blocked_reason === "already_imported" && !recover && phase === "preview" && (
+            preview.recovery?.available ? (
+              <div role="alert" data-testid="restore-prompt" className="mt-3 rounded-lg border border-amber-400 bg-amber-50 p-4 text-amber-950">
+                <p className="text-sm font-semibold">
+                  This workbook was already imported, so the ordinary import is blocked. {preview.recovery.eligible}{" "}
+                  {preview.recovery.eligible === 1 ? "card" : "cards"} from it {preview.recovery.eligible === 1 ? "is" : "are"} missing from this board.
+                </p>
+                <p className="mt-1 text-sm">
+                  You can restore only those cards: each is created as a new card with a new id (the old ids, and the ids of
+                  deleted cards, are never reused). Cards that exist on this board are not touched, and rows without a card_id
+                  are not imported again. Nothing is imported until you confirm the new preview.
+                </p>
+                <button type="button" onClick={startRestore} disabled={working}
+                  className="mt-3 rounded-lg bg-[var(--secondary-purple)] px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50">
+                  Restore missing cards from this workbook
+                </button>
+              </div>
+            ) : preview.recovery?.message ? (
+              <p data-testid="restore-unavailable" className="mt-3 text-sm text-[var(--navy-dark)]">
+                Restoring is not possible now: {preview.recovery.message}.
+              </p>
+            ) : null
+          )}
+          {recover && phase === "preview" && preview.recovery?.mode && (
+            <div data-testid="restore-mode" className="mt-3 rounded-lg border border-[var(--stroke)] p-3 text-sm text-[var(--navy-dark)]">
+              <p className="font-semibold">Restore mode (your choice)</p>
+              <p className="mt-1">
+                {preview.summary.creates} {preview.summary.creates === 1 ? "card" : "cards"} will be created, each with a new id.
+                No card is updated. {preview.summary.skipped ?? 0} {preview.summary.skipped === 1 ? "row is" : "rows are"} skipped
+                {preview.recovery.skipped
+                  ? ` (${preview.recovery.skipped.exists} already on this board, ${preview.recovery.skipped.empty_id} without a card_id, ${preview.recovery.skipped.already_restored} already restored)`
+                  : ""}.
+              </p>
+              <button type="button" onClick={leaveRestore} disabled={working} className="mt-2 font-semibold underline disabled:opacity-50">
+                Leave restore mode
+              </button>
+            </div>
+          )}
+          {!newForUnmatched && !recover && preview.blocked_reason !== "already_imported" && unmatchedRows > 0 && phase === "preview" && (
+            <div role="alert" data-testid="unmatched-prompt" className="mt-3 rounded-lg border border-amber-400 bg-amber-50 p-4 text-amber-950">
+              <p className="text-sm font-semibold">
+                {unmatchedRows} {unmatchedRows === 1 ? "row has a card_id that is" : "rows have a card_id that is"} not on this board.
+              </p>
+              <p className="mt-1 text-sm">
+                This happens when the cards were deleted after the export, or when the workbook comes from another board. You can
+                create these rows as new cards: each gets a new id from this board&apos;s database and the old card_id is not
+                reused. Rows whose card_id is on this board stay updates. Nothing is imported until you confirm the new preview.
+              </p>
+              <button type="button" onClick={createNewForUnmatched} disabled={working}
+                className="mt-3 rounded-lg bg-[var(--secondary-purple)] px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50">
+                Create new cards for unmatched IDs
+              </button>
+            </div>
+          )}
+          {newForUnmatched && phase === "preview" && (
+            <p data-testid="unmatched-mode" className="mt-2 text-sm text-[var(--navy-dark)]">
+              Card_ids that are not on this board are imported as new cards (your choice).{" "}
+              <button type="button" onClick={keepUnmatchedAsErrors} disabled={working} className="font-semibold underline disabled:opacity-50">
+                Do not create them
+              </button>
+            </p>
+          )}
+          {(preview.creates_from_unmatched_ids ?? 0) > 0 && (
+            <p data-testid="unmatched-note" className="mt-2 text-sm text-[var(--navy-dark)]">
+              {preview.creates_from_unmatched_ids} of the new cards come from a card_id that is not on this board; each gets
+              a new id and the old card_id is not kept.
+            </p>
+          )}
 
           {errors.length > 0 && (
             <div className="mt-3">
@@ -369,8 +480,8 @@ export const CentralCardsImport = ({ companySlug, boardId, onImported }: Central
                 {visible.map((r) => (
                   <tr key={r.row} className="border-t border-[var(--stroke)]">
                     <td className="py-1 pr-3">{r.row}</td>
-                    <td className="py-1 pr-3 font-semibold">{ACTION_LABEL[r.action]}</td>
-                    <td className="py-1 pr-3">{r.title}{r.card_id ? ` (#${r.card_id})` : ""}</td>
+                    <td className="py-1 pr-3 font-semibold">{r.unmatched_id ? "Create (id not on this board)" : ACTION_LABEL[r.action]}</td>
+                    <td className="py-1 pr-3">{r.title}{r.card_id ? (r.unmatched_id ? ` (file card_id #${r.card_id})` : ` (#${r.card_id})`) : ""}</td>
                     <td className="py-1 pr-3">{r.stage}</td>
                     <td className="py-1 break-words">
                       {r.action === "update" ? (
@@ -379,7 +490,7 @@ export const CentralCardsImport = ({ companySlug, boardId, onImported }: Central
                             <li key={d.field}><span className="font-semibold">{FIELD_LABEL[d.field] ?? d.field}:</span> {diffText(d)}</li>
                           ))}
                         </ul>
-                      ) : "new card"}
+                      ) : r.unmatched_id ? "new card with its own id" : "new card"}
                     </td>
                   </tr>
                 ))}

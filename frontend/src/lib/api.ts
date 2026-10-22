@@ -556,7 +556,7 @@ export interface CardsImportIssue {
   message: string;
 }
 
-export type CardsImportAction = "create" | "update" | "unchanged" | "invalid";
+export type CardsImportAction = "create" | "update" | "unchanged" | "invalid" | "skipped";
 
 /** One changed field of an update: the card's current value and the proposed one (null = empty or unassigned). */
 export interface CardsImportDiff {
@@ -577,6 +577,10 @@ export interface CardsImportRow {
   diffs: CardsImportDiff[];
   errors: CardsImportIssue[];
   warnings: CardsImportIssue[];
+  /** A create whose card_id is not a card of this board (only when the "new cards for unknown card_ids" choice is on). */
+  unmatched_id?: boolean;
+  /** Recovery only: why a row is not written (exists | empty_id | already_restored). */
+  skip_reason?: "exists" | "empty_id" | "already_restored" | null;
 }
 
 /** What an applied import recorded: counts and time only. */
@@ -591,9 +595,20 @@ export interface CardsImportSummary {
 export interface CardsImportPreview {
   filename: string;
   file_sha256: string;
-  summary: { rows: number; creates: number; updates: number; unchanged: number; invalid: number; warnings: number };
+  summary: { rows: number; creates: number; updates: number; unchanged: number; invalid: number; warnings: number; skipped?: number };
   rows: CardsImportRow[];
   file_warnings: CardsImportIssue[];
+  /** How many of the new cards come from a card_id that is not a card of this board. */
+  creates_from_unmatched_ids?: number;
+  /** Restoring cards missing from this board from a workbook the ledger already applied. `available` means the server
+   *  would accept a recovery; `mode` means this preview IS one. */
+  recovery?: {
+    mode: boolean;
+    available: boolean;
+    eligible: number;
+    skipped: { exists: number; empty_id: number; already_restored: number } | null;
+    message: string | null;
+  };
   confirmable: boolean;
   /** already_imported | validation_errors | no_changes when not confirmable. */
   blocked_reason: string | null;
@@ -612,15 +627,26 @@ function cardsImportPath(companySlug: string, boardId: number, step: "preview" |
   return `${companyPath(companySlug)}/boards/${Number(boardId)}/excel/import/${step}`;
 }
 
+/** The choice sent with a preview and with its confirmation (the server binds the confirmation to it). */
+export interface CardsImportOptions {
+  /** A card_id that is not a card of this board makes a new card (with its own id) instead of an error. */
+  newForUnmatchedIds?: boolean;
+  /** Restore the cards of an already-applied workbook that are missing from this board (and nothing else). */
+  recoverMissingCards?: boolean;
+}
+
 /** Validate a Cards workbook against one board; writes nothing. */
 export async function previewCompanyCardsImport(
   companySlug: string,
   boardId: number,
   file: File,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options?: CardsImportOptions
 ): Promise<CardsImportPreview> {
   const form = new FormData();
   form.append("file", file);
+  if (options?.newForUnmatchedIds) form.append("new_for_unmatched_ids", "true");
+  if (options?.recoverMissingCards) form.append("recover_missing_cards", "true");
   return apiCall<CardsImportPreview>(cardsImportPath(companySlug, boardId, "preview"), { method: "POST", body: form, signal });
 }
 
@@ -632,12 +658,15 @@ export async function confirmCompanyCardsImport(
   companySlug: string,
   boardId: number,
   file: File,
-  planDigest: string
+  planDigest: string,
+  options?: CardsImportOptions
 ): Promise<CardsImportResult> {
   const form = new FormData();
   form.append("file", file);
   form.append("confirm", "true");
   form.append("plan_digest", planDigest);
+  if (options?.newForUnmatchedIds) form.append("new_for_unmatched_ids", "true");
+  if (options?.recoverMissingCards) form.append("recover_missing_cards", "true");
   return apiCall<CardsImportResult>(cardsImportPath(companySlug, boardId, "confirm"), { method: "POST", body: form });
 }
 
