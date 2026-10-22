@@ -139,7 +139,8 @@ def diff_card_changes(db, card: Card, updates: dict) -> dict:
     return changes
 
 
-def apply_card_updates(db, card: Card, updates: dict, user: User, *, admin: bool | None = None) -> dict:
+def apply_card_updates(db, card: Card, updates: dict, user: User, *, admin: bool | None = None,
+                       precondition=None) -> dict:
     """Apply a validated partial update to a card, logging member edits.
 
     The single update path for both the REST route and the AI sidebar.
@@ -152,6 +153,8 @@ def apply_card_updates(db, card: Card, updates: dict, user: User, *, admin: bool
     reassigns = "salesperson_id" in updates and updates["salesperson_id"] != card.salesperson_id
     if reassigns and not _admin(user, admin):
         raise CardPermissionDenied("Only an administrator can assign or reassign opportunities")
+    if precondition is not None:
+        precondition()  # after the permission checks (a caller never learns anything about a card it may not edit)
     salesperson_id = updates.get("salesperson_id")
     if salesperson_id is not None and db.get(CompanyUser, salesperson_id) is None:
         raise InvalidCardUpdate("Salesperson not found")

@@ -5,6 +5,8 @@ from typing import Optional
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from company_authority import AuthorityRevoked
+from company_database import begin_write
 from card_rules import (
     CardPermissionDenied,
     InvalidCardUpdate,
@@ -29,6 +31,7 @@ from ai import call_ai, AIError
 logger = logging.getLogger(__name__)
 
 ACTION_FAILED_REASON = "This action could not be applied"
+CARD_CONFLICT_REASON = "The card was changed after the assistant was shown it, so this action was not applied"
 ACTIONS_FAILED_ERROR = "Failed to apply actions"
 LOGGED_ACTION_TYPES = ("create", "update", "move", "delete")  # the type is model output: only known values are logged
 
@@ -36,6 +39,15 @@ LOGGED_ACTION_TYPES = ("create", "update", "move", "delete")  # the type is mode
 SAFE_ACTION_ERRORS = (
     ValueError, CardPermissionDenied, ProductError, card_loss.LossError, card_reviews.ReviewError,
 )
+
+
+class StaleAction(Exception):
+    """An action built from an out-of-date card (company boards): refused, nothing of it is applied."""
+
+    def __init__(self, card_id, expected_version, current_version):
+        super().__init__(CARD_CONFLICT_REASON)
+        self.entry = {"reason": CARD_CONFLICT_REASON, "code": "card_version_conflict", "card_id": card_id,
+                      "expected_version": expected_version, "current_version": current_version}
 
 
 # System prompt for AI
@@ -253,9 +265,16 @@ def _board_card(db: Session, board_id: int, card_id) -> Card | None:
 async def apply_board_actions(
     db: Session, board_id: int, actions: list[dict], current_user,
     assignable_ids: set | None = None, record_undo_entry: bool = True, admin: bool | None = None,
-    can_delete: bool | None = None, loss_reason: str | None = None,
+    can_delete: bool | None = None, loss_reason: str | None = None, version_snapshot: dict | None = None,
 ) -> dict:
     """Apply AI-suggested actions to the board.
+
+    `version_snapshot` (company routes) is {card_id: version} of the state the model was shown. An action that
+    changes or deletes an existing card is refused as a structured card_version_conflict when the card's current
+    version differs (or the card was not in the snapshot): newer changes of other people are never overwritten.
+    Each action is still independent (a refused one does not stop the others). The first action on a card is checked;
+    the write lock taken here is held to the commit, so what it validated cannot change before the batch ends, and
+    later actions of the same batch on that card (whose own changes raise the version) are not compared again.
 
     Goes through the same member/admin rules as the REST card routes (see
     card_rules.py) - the AI chat sidebar is another way to move/edit/delete
@@ -268,6 +287,20 @@ async def apply_board_actions(
     from models import Board
 
     set_stage_context(db, current_user, SOURCE_AI)
+    if version_snapshot is not None:
+        begin_write(db)  # versions are read under the write lock: nobody can change a card between check and write
+    validated: set[int] = set()
+
+    def check_version(card_id) -> None:
+        """Raise StaleAction unless the card is still at the version the model was shown."""
+        if version_snapshot is None or card_id in validated:
+            return
+        expected = version_snapshot.get(card_id)
+        current = card_reviews.card_version(db, card_id)
+        if expected is None or current != expected:
+            raise StaleAction(card_id, expected, current)
+        validated.add(card_id)
+
     results = {
         "successful": [],
         "failed": [],
@@ -353,7 +386,8 @@ async def apply_board_actions(
                     try:
                         fields = _validated_card_fields(db, action, assignable_ids)
                         undo_step = undo_update(card, fields)
-                        apply_card_updates(db, card, fields, current_user, admin=admin)
+                        apply_card_updates(db, card, fields, current_user, admin=admin,
+                                           precondition=lambda: check_version(card.id))
                         undo_steps.append(undo_step)
                     except (ValueError, CardPermissionDenied) as e:
                         results["failed"].append({"action": action, "reason": str(e)})
@@ -383,6 +417,7 @@ async def apply_board_actions(
                         results["failed"].append({"action": action, "reason": denial})
                         continue
 
+                    check_version(card.id)  # after the permission check: a refused person learns nothing about the card
                     entering_lost = card_loss.is_company_session(db) and card_loss.enters_lost(card, column)
                     if entering_lost:
                         # Company boards: a move into LOST needs the reason the PERSON gave in this request. The
@@ -419,6 +454,7 @@ async def apply_board_actions(
                         )
                         continue
 
+                    check_version(card.id)
                     undo_steps.append(undo_delete(card))
                     audit_deletion(db, board_id, card, current_user)
                     db.delete(card)
@@ -432,6 +468,10 @@ async def apply_board_actions(
                         {"action": action, "reason": "Unsupported action type"}
                     )
 
+            except card_reviews.ReviewsNotInitialized:
+                raise  # a schema failure is not a rejected action: abort the whole batch
+            except StaleAction as e:
+                results["failed"].append({"action": action, **e.entry})
             except SAFE_ACTION_ERRORS as e:
                 results["failed"].append({"action": action, "reason": str(e)})
             except Exception as e:
@@ -452,6 +492,9 @@ async def apply_board_actions(
         db.commit()
         return {"success": True, **results}
 
+    except (card_reviews.ReviewsNotInitialized, AuthorityRevoked):
+        db.rollback()
+        raise  # the caller answers 503 review_not_initialized / 403 (authority gone at commit); nothing of the batch survives
     except Exception as e:
         logger.error("AI action batch failed: category=batch_error exception=%s", type(e).__name__)
         db.rollback()

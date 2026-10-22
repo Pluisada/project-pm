@@ -340,10 +340,10 @@ def test_an_upgraded_legacy_database_supports_card_review_and_loss_operations(lo
         rig.sql(f"DROP TABLE {table}")
     rig.runtime.dispose()
 
-    # before: operations that need the new tables are refused (503), ordinary reads still work
+    # before: operations that need the new tables are refused (503), and so is the board read (it carries versions)
     assert rig.call("put", "/cards/1", mtoken, json={"title": "x"}).status_code == 503
     assert put_move(rig, atoken, 1, LOST, loss_reason="r").status_code == 503
-    assert rig.call("get", "", atoken).status_code == 200
+    assert rig.call("get", "", atoken).status_code == 503
     assert not diagnose_company("lity", env).complete
 
     for init in INIT.values():

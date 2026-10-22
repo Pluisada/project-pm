@@ -241,10 +241,12 @@ def _race(*fns):
 def test_two_concurrent_member_edits_leave_one_consistent_review_state(world):
     rig, _, mtoken, _, _, _ = world
     warm_up(rig, mtoken)
-    put = lambda title: (lambda: rig.client.put("/api/companies/lity/boards/1/cards/1", json={"title": title}, headers=auth(mtoken)))
+    seen = version(rig)  # both edits start from the same version, as two people looking at the same card would
+    put = lambda title: (lambda: rig.client.put("/api/companies/lity/boards/1/cards/1", json={"title": title, "expected_version": seen}, headers=auth(mtoken)))
     ra, rb = _race(put("A"), put("B"))
     codes = [ra.status_code, rb.status_code]
-    assert all(c in (200, 503) for c in codes), codes
+    assert all(c in (200, 409, 503) for c in codes), codes  # at most one wins; the other is stale (409) or busy (503)
+    assert codes.count(200) <= 1, codes
     done = codes.count(200)
     assert version(rig) == done and rig.sql("SELECT COUNT(*) FROM card_review_obligations") == [(2,)]
     assert pending(rig) == [("admin", done), ("super_admin", done)]
@@ -267,7 +269,8 @@ def test_a_review_racing_a_new_member_edit_never_approves_the_wrong_version(worl
     edit(rig, mtoken, title="one")
     warm_up(rig, atoken)
     review = lambda: rig.client.post("/api/companies/lity/boards/1/cards/1/reviews/admin/clear", json={"card_version": 1}, headers=auth(atoken))
-    change = lambda: rig.client.put("/api/companies/lity/boards/1/cards/1", json={"title": "two"}, headers=auth(mtoken))
+    v_seen = version(rig)
+    change = lambda: rig.client.put("/api/companies/lity/boards/1/cards/1", json={"title": "two", "expected_version": v_seen}, headers=auth(mtoken))
     rr, rc = _race(review, change)
     assert rc.status_code in (200, 503) and rr.status_code in (200, 409, 503)
     current = version(rig)
@@ -440,8 +443,8 @@ def test_without_the_review_tables_changes_needing_a_review_are_refused_not_skip
     assert rig.sql("SELECT title FROM cards WHERE id = 1") == [("card 1",)]
     assert move(rig, atoken, 1, 2).status_code == 503
     assert reviews(rig, atoken).status_code == 503 and clear(rig, atoken, "admin", card_version=1).status_code == 503
-    # reads and unrelated writes are untouched
-    assert rig.call("get", "", atoken).status_code == 200
+    # the board read carries card versions, so it fails closed too (503) without the version table
+    assert rig.call("get", "", atoken).status_code == 503
 
 
 def test_the_init_script_creates_the_tables_only_with_apply_and_is_idempotent(rig, monkeypatch):

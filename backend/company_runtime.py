@@ -18,7 +18,7 @@ from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from central_deps import CompanyContext
-from company_database import company_session_factory, open_company_engine
+from company_database import COMPANY_SLUG_INFO_KEY, company_session_factory, open_company_engine, session_company_slug
 from company_schema import validate_company_schema
 
 logger = logging.getLogger(__name__)
@@ -58,6 +58,12 @@ class CompanyRuntime:
     def session_for(self, context: CompanyContext) -> Iterator[Session]:
         """One session on the authorized company's database, always closed."""
         session = self._session_factory(context.company_slug)()
+        # The authorization was decided for context.company_slug: the session must be bound to exactly that company's
+        # database (label and engine), or nothing may be read or written through it.
+        if session.info.get(COMPANY_SLUG_INFO_KEY) != context.company_slug or session_company_slug(session) != context.company_slug:
+            session.close()
+            logger.error("Company session does not match the authorized company")
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=UNAVAILABLE_DETAIL)
         try:
             yield session
         finally:

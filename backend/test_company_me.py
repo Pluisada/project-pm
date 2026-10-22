@@ -191,6 +191,7 @@ def _probe(w, uid, token):
     base = "/api/companies/lity"
 
     def ok(method, path, codes, **kw):
+        path, kw = w.versioned(method, path, kw)  # the card routes need the card's version (428 without it)
         return w.client.request(method, base + path, headers=h, **kw).status_code in codes
 
     other, _ = write_member(w, "other@example.com")

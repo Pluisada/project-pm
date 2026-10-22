@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session, selectinload
 from starlette.datastructures import FormData, UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
 
+import card_reviews
 from auth import create_purpose_token, decode_purpose_token
 from bid_excel_reader import DEFAULT_LIMITS, BidReadResult, read_bid_excel
 from bid_import_preview import ImportPreview, RowDecision
@@ -412,6 +413,10 @@ async def confirm_import_impl(
         raise HTTPException(status_code=422, detail=str(exc)) from None
     except ImportConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
+    except card_reviews.ReviewsNotInitialized as exc:
+        # The version schema broke after the route's gate (central mode only; legacy never raises it). The service has
+        # already rolled back and recorded the failed attempt; only the answer differs from the generic 500.
+        raise _error(exc.status, exc.code, exc.message) from None
     except Exception as exc:
         # Rolled back and recorded as a failed batch by the service. Only the
         # type is logged: the message may quote SQL parameters (row content).
@@ -601,6 +606,9 @@ def revert_import_impl(db: Session, batch_id: int, current_user, plan_fingerprin
         raise _error(status.HTTP_409_CONFLICT, exc.code, _REFUSALS[exc.code], **extra) from None
     except RevertBusy as exc:
         raise _busy(exc) from None
+    except card_reviews.ReviewsNotInitialized as exc:
+        # Rolled back by the executor before it re-raised (central mode only).
+        raise _error(exc.status, exc.code, exc.message) from None
     except RevertOutcomeUnconfirmed:
         raise _error(
             500, "revert_outcome_unconfirmed",

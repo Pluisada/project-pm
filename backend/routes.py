@@ -25,6 +25,7 @@ from deps import get_current_user, require_admin
 from lead_options import CURRENCIES, ConfidenceFilter, LEAD_SOURCES, PRODUCT_LINES, STAGE_OPEN
 from models import Board, Column, Card, CardEditHistory, User, UserRole, ConversationMessage, UndoEntry
 import ai_limits
+import card_reviews
 import kpis
 import token_store
 from mailer import send_in_background
@@ -653,6 +654,7 @@ async def board_ai_chat_payload(
     db: Session, board_id: int, request: AIChatRequest, current_user,
     assignable_ids: Optional[set] = None, record_undo_entry: bool = True, admin: Optional[bool] = None,
     reauthorize=None, can_delete: Optional[bool] = None, reauthorize_delete=None, refresh_assignable_ids=None,
+    track_versions: bool = False,
 ):
     """The AI chat exchange for one board, shared by the legacy and the company-scoped routes."""
     # Verify board exists and belongs to user
@@ -677,6 +679,9 @@ async def board_ai_chat_payload(
         )
 
     try:
+        # Company routes: the version of every card is read BEFORE the cards the model is shown, so the content is never
+        # older than its version (a concurrent change then only causes a false conflict, never a missed one).
+        version_snapshot = card_reviews.board_version_snapshot(db, board_id) if track_versions else None
         # Get board context and conversation history
         board_state = await get_board_context(db, board_id)
         history = await get_conversation_history(db, board_id)
@@ -723,7 +728,7 @@ async def board_ai_chat_payload(
             actions_result = await apply_board_actions(
                 db, board_id, ai_result["actions"], current_user,
                 assignable_ids=assignable_ids, record_undo_entry=record_undo_entry, admin=admin,
-                can_delete=can_delete, loss_reason=request.loss_reason,
+                can_delete=can_delete, loss_reason=request.loss_reason, version_snapshot=version_snapshot,
             )
             if not actions_result.get("success"):
                 db.rollback()
@@ -752,6 +757,9 @@ async def board_ai_chat_payload(
 
     except HTTPException:
         raise
+    except card_reviews.ReviewsNotInitialized:
+        db.rollback()
+        raise  # central mode only (the legacy runtime never raises it); company_routes answers 503
     except Exception as e:
         db.rollback()
         # str(e) can quote SQL, parameters or paths; log only the type.

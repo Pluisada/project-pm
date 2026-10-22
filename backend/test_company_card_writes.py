@@ -2,6 +2,7 @@
 
 Disposable tmp_path identity and company databases only.
 """
+import re
 import hashlib
 import json
 import sqlite3
@@ -59,9 +60,31 @@ class Rig:
         app.include_router(build_company_router(identity_db_dependency(e.factory), self.runtime))
         self.client = TestClient(app)
 
-    def call(self, method, path, token=None, slug="lity", **kw):
+    def call(self, method, path, token=None, slug="lity", versionless=False, **kw):
+        """One request to board 1. The card update, move and delete routes require `expected_version` (428 without it),
+        so, like the real client, this sends the card's current version unless the test already named one or passes
+        `versionless=True` to exercise the missing precondition."""
         headers = {"Authorization": f"Bearer {token}"} if token else {}
+        if not versionless:
+            path, kw = self.versioned(method, path, kw, slug)
         return self.client.request(method, f"/api/companies/{slug}/boards/1{path}", headers=headers, **kw)
+
+    def versioned(self, method, path, kw, slug="lity"):
+        """(path, kwargs) of a card update, move or delete with the card's current version added when the request does
+        not carry one; any other request is returned unchanged. `path` may carry any prefix before /cards/<id>."""
+        match = re.search(r"/cards/(\d+)(/position)?$", path)
+        if not match or method.lower() not in ("put", "delete"):
+            return path, kw
+        try:
+            rows = self.sql("SELECT version FROM card_versions WHERE card_id = ?", (int(match.group(1)),), slug)
+        except sqlite3.OperationalError:  # a test that broke the version table: the route must refuse, not this helper
+            rows = []
+        current = rows[0][0] if rows else 0
+        if method.lower() == "put":
+            body = dict(kw.get("json") or {})
+            body.setdefault("expected_version", current)
+            return path, {**kw, "json": body}
+        return (path if "?" in path else f"{path}?expected_version={current}"), kw
 
     def sql(self, query, args=(), slug="lity"):
         con = sqlite3.connect(company_database_path(slug, self.e.env))

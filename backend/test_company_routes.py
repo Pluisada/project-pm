@@ -100,11 +100,13 @@ def test_member_reads_board(rig):
 
 
 def test_response_shape_matches_legacy_board_detail(rig):
-    from schemas import BoardDetail
+    from schemas import BoardDetail, CompanyBoardDetail
     rig.e.member("m@example.com")
     body = rig.get("lity", rig.e.token("m@example.com")).json()
     assert set(body) == set(BoardDetail.model_fields)
-    assert body == BoardDetail.model_validate(body).model_dump(mode="json")
+    assert body == CompanyBoardDetail.model_validate(body).model_dump(mode="json")
+    cards = [c for col in body["columns"] for c in col["cards"]]
+    assert cards and all(c["version"] == 0 for c in cards)  # the legacy shape plus the version
 
 
 def test_global_admin_reads_every_active_company(rig):

@@ -22,8 +22,9 @@ The underlying history stays where it already lives (card_edit_history, card_sta
 
 Everything is written from one before_flush listener so that the card change, its version, the obligations and the
 trigger commit or roll back together. The listener acts only on company sessions (session.info["company_slug"]);
-the legacy single-database runtime never reaches it. If a company database lacks the tables, a change that needs an
-obligation is refused (ReviewsNotInitialized) instead of silently skipping it; other changes are unaffected.
+the legacy single-database runtime never reaches it. If a company database lacks the tables or they are malformed
+(review_schema_problem), every tracked card change or deletion is refused (ReviewsNotInitialized) instead of being
+committed without its version.
 """
 import json
 from datetime import datetime, timezone
@@ -31,9 +32,10 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     Column as SQLColumn, DateTime, Index, Integer, String, Text, event, inspect, insert, select, text, update,
 )
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, declarative_base
 
-from models import Card
+from models import Card, CardBidDetails
 from schemas import CardUpdate
 
 ReviewBase = declarative_base()
@@ -115,6 +117,34 @@ class ReviewsNotInitialized(ReviewError):
     code = "review_not_initialized"
 
 
+# --- reading versions ----------------------------------------------------------------------------------------
+
+def card_version(db, card_id: int) -> int:
+    """The card's current version: 0 when the version tables are valid and the card has no row (never changed since
+    it was created). Raises ReviewsNotInitialized when the tables are absent, malformed or cannot be inspected."""
+    return card_versions(db, [card_id]).get(card_id, 0)
+
+
+def card_versions(db, card_ids) -> dict[int, int]:
+    """{card_id: version} for the given ids, 0 for a card without a row. Read-only.
+
+    The version schema is validated on every call (one PRAGMA round, not one per card) and a missing or malformed
+    schema raises ReviewsNotInitialized: it is never read as "every card is at version 0".
+
+    Callers that hand versions to a client together with card content must call this BEFORE loading the cards: a
+    write in between then leaves the content newer than the version (a false conflict later), never older.
+    """
+    ids = list(card_ids)
+    conn = db.connection()
+    _require_version_schema(conn)
+    versions = {card_id: 0 for card_id in ids}
+    for start in range(0, len(ids), 500):
+        rows = conn.execute(select(_versions.c.card_id, _versions.c.version)
+                            .where(_versions.c.card_id.in_(ids[start:start + 500])))
+        versions.update({card_id: version for card_id, version in rows})
+    return versions
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -126,15 +156,61 @@ def create_reviews(bind) -> None:
     ReviewBase.metadata.create_all(bind)
 
 
+def _inspection_failed(exc: SQLAlchemyError) -> None:
+    """Called from an `except` when the schema could not be read. A recognized SQLite lock contention is not a schema
+    problem: it propagates unchanged so the caller's busy handling (503 database_busy / import_busy with Retry-After)
+    applies. Any other failure is fail-closed: ReviewsNotInitialized."""
+    from bid_import_revert import is_lock_error  # lazy: that module sits above this one in the import graph
+    if is_lock_error(exc):
+        raise exc
+    raise ReviewsNotInitialized("The card version tables could not be inspected") from None
+
+
+def version_schema_problem(conn) -> str | None:
+    """None when card_versions exists with every column of the model and `card_id` as its sole primary key;
+    otherwise what is wrong. Raises ReviewsNotInitialized when the schema cannot be inspected: an unreadable schema
+    is never reported as valid or as merely absent."""
+    try:
+        inspector = inspect(conn)
+        if not inspector.has_table(_versions.name):
+            return "table card_versions is missing"
+        columns = {c["name"] for c in inspector.get_columns(_versions.name)}
+        absent = sorted({c.name for c in _versions.columns} - columns)
+        if absent:
+            return f"table card_versions is missing columns: {', '.join(absent)}"
+        if inspector.get_pk_constraint(_versions.name).get("constrained_columns") != ["card_id"]:
+            return "table card_versions does not have card_id as its primary key"
+    except SQLAlchemyError as exc:
+        _inspection_failed(exc)
+    return None
+
+
+def _require_version_schema(conn) -> None:
+    if version_schema_problem(conn) is not None:
+        raise ReviewsNotInitialized("The card version tables are not set up correctly for this company")
+
+
+def review_schema_problem(conn) -> str | None:
+    """None when both tables a card change must write (card_versions as version_schema_problem requires it, and
+    card_review_obligations with every column of its model) are present and well formed; otherwise what is wrong.
+    The one structural check shared by the readers, the routes' gate and the flush listener. Raises
+    ReviewsNotInitialized when the schema cannot be inspected."""
+    problem = version_schema_problem(conn)
+    if problem is not None:
+        return problem
+    try:
+        inspector = inspect(conn)
+        if not inspector.has_table(_obligations.name):
+            return "table card_review_obligations is missing"
+        absent = sorted({c.name for c in _obligations.columns} - {c["name"] for c in inspector.get_columns(_obligations.name)})
+    except SQLAlchemyError as exc:
+        _inspection_failed(exc)
+    return f"table card_review_obligations is missing columns: {', '.join(absent)}" if absent else None
+
+
 def has_reviews(db) -> bool:
-    """Both tables exist with every column of the current model (read-only reflection of the session's connection)."""
-    inspector = inspect(db.connection())
-    for table in (_versions, _obligations):
-        if not inspector.has_table(table.name):
-            return False
-        if not {c.name for c in table.columns} <= {c["name"] for c in inspector.get_columns(table.name)}:
-            return False
-    return True
+    """Both tables are present and well formed (review_schema_problem; read-only reflection of the session's connection)."""
+    return review_schema_problem(db.connection()) is None
 
 
 def require_reviews(db) -> None:
@@ -200,6 +276,72 @@ def _tracked_change(card: Card) -> bool:
     return False
 
 
+def board_card_versions(db, board_id: int) -> dict[int, int]:
+    """{card_id: version} for every card of a board that has a row (read-only; absent cards are version 0).
+
+    Same fail-closed schema validation as card_versions. Read it before loading the board's cards.
+    """
+    conn = db.connection()
+    _require_version_schema(conn)
+    rows = conn.exec_driver_sql(
+        "SELECT v.card_id, v.version FROM card_versions v JOIN cards c ON c.id = v.card_id "
+        "JOIN columns col ON col.id = c.column_id WHERE col.board_id = ?", (board_id,))
+    return {card_id: version for card_id, version in rows}
+
+
+def board_version_snapshot(db, board_id: int) -> dict[int, int]:
+    """{card_id: version} for EVERY card of the board (0 for a card without a row), for a caller that must later prove
+    it acts on the state it was shown (the AI assistant). Read the snapshot before loading the cards it describes.
+    Fails closed like card_versions."""
+    versions = board_card_versions(db, board_id)
+    ids = [row[0] for row in db.connection().exec_driver_sql(
+        "SELECT c.id FROM cards c JOIN columns col ON col.id = c.column_id WHERE col.board_id = ?", (board_id,))]
+    return {card_id: versions.get(card_id, 0) for card_id in ids}
+
+
+# Content columns of the Bid-details row. Its timestamps are bookkeeping, not card content.
+_BID_FIELDS = tuple(c.key for c in CardBidDetails.__table__.columns
+                    if c.key not in ("id", "card_id", "created_at", "updated_at"))
+
+
+def _bid_details_changed(details: CardBidDetails, new: bool) -> bool:
+    """Whether a pending Bid-details row carries a real content change (a new row counts only if it holds a value)."""
+    state = inspect(details)
+    for field in _BID_FIELDS:
+        history = state.attrs[field].history
+        if new:
+            if history.added and history.added[0] is not None:
+                return True
+        elif history.added and (not history.deleted or history.deleted[0] != history.added[0]):
+            return True
+    return False
+
+
+def _bid_details_card_ids(session: Session, deleted_ids: set) -> set:
+    """Ids of persisted cards whose Bid-details row is inserted, changed or deleted in this flush.
+
+    A card that is itself new or deleted in the flush is left to the card's own handling (a new card starts at
+    version 0; a deleted card's pending reviews are closed by the deleted-card branch).
+    """
+    owners = []
+    for details in session.new:
+        if isinstance(details, CardBidDetails) and _bid_details_changed(details, new=True):
+            owners.append(details)
+    for details in session.dirty:
+        if isinstance(details, CardBidDetails) and details not in session.deleted and _bid_details_changed(details, new=False):
+            owners.append(details)
+    owners.extend(d for d in session.deleted if isinstance(d, CardBidDetails))
+    ids = set()
+    for details in owners:
+        card = details.card
+        if card is not None:
+            if card.id is not None and card not in session.new and card not in session.deleted:
+                ids.add(card.id)
+        elif details.card_id is not None and details.card_id not in deleted_ids:
+            ids.add(details.card_id)
+    return ids
+
+
 def _bump(conn, card_id: int, now: datetime) -> int:
     """Raise the card's version by one. The UPDATE takes the write lock first, so the read that follows is exact."""
     conn.execute(insert(_versions).prefix_with("OR IGNORE").values(card_id=card_id, version=0, updated_at=now))
@@ -235,13 +377,18 @@ def _review_before_flush(session: Session, flush_context, instances) -> None:
                if isinstance(c, Card) and c not in session.deleted and c.id is not None and _tracked_change(c)}
     for intent in intents:
         changed.setdefault(intent["card"].id, intent["card"])
-    if not changed and not deleted:
+    for card_id in _bid_details_card_ids(session, {c.id for c in deleted}):
+        changed.setdefault(card_id, None)  # a Bid-details row is part of its card: one bump per card per flush
+    created = any(isinstance(c, Card) for c in session.new)
+    if not changed and not deleted and not created:
         return
     conn = session.connection()
-    if not _tables_ready(conn):
-        if intents:
-            raise ReviewsNotInitialized("The review workflow is not set up for this company yet")
-        return
+    # A card change must never commit without its version: an absent or malformed table refuses the flush (the whole
+    # transaction rolls back), whether or not the change also needs a review obligation. The same holds for creating a
+    # card, although it gets no row (a new card is implicitly version 0): a card must not come into being while its
+    # version schema is invalid, or the first read of its version would fail for a card nobody could have prevented.
+    if review_schema_problem(conn) is not None:
+        raise ReviewsNotInitialized("The review workflow is not set up for this company yet")
     now = utcnow()
     versions = {card_id: _bump(conn, card_id, now) for card_id in changed}
     triggered = {intent["card"].id for intent in intents}

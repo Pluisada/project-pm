@@ -63,6 +63,16 @@ def company_session_factory(engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(autocommit=False, autoflush=False, bind=engine, info={COMPANY_SLUG_INFO_KEY: slug})
 
 
+def session_company_slug(session: Session) -> str | None:
+    """The company whose database the session is bound to, read from its ENGINE (the registry open_company_engine
+    fills), not from labels a caller could have set. None for a session that is not a company session."""
+    try:
+        bind = session.get_bind()
+    except Exception:
+        return None
+    return _ENGINE_SLUGS.get(bind.engine if hasattr(bind, "engine") else bind)
+
+
 def begin_write(session: Session) -> None:
     """Take SQLite's write lock now, before the caller reads the state its decision depends on.
 

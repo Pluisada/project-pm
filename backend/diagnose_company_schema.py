@@ -42,6 +42,7 @@ class Additive:
     unique_guards: tuple[tuple[str, ...], ...]  # column lists that must be covered by a unique index/constraint
     script: str
     partial_guards: tuple["PartialGuard", ...] = ()  # named partial unique indexes that must match exactly
+    primary_key: tuple[str, ...] = ()  # the exact primary-key columns the runtime relies on (empty = not checked)
 
 
 @dataclass(frozen=True)
@@ -60,16 +61,16 @@ def _partial_guards(model) -> tuple[PartialGuard, ...]:
     )
 
 
-def _additive(model, guards, script) -> Additive:
+def _additive(model, guards, script, primary_key=()) -> Additive:
     return Additive(model.__tablename__, frozenset(c.name for c in model.__table__.columns), guards, script,
-                    _partial_guards(model))
+                    _partial_guards(model), primary_key)
 
 
 ADDITIVE: tuple[Additive, ...] = (
     _additive(Product, (), "init_company_products.py"),
     _additive(ExcelImport, (("board_id", "repeat_guard"),), "init_company_excel_imports.py"),
     _additive(CardLossEvent, (), "init_company_card_loss.py"),
-    _additive(CardVersion, (), "init_company_card_reviews.py"),
+    _additive(CardVersion, (), "init_company_card_reviews.py", ("card_id",)),
     _additive(ReviewObligation, (), "init_company_card_reviews.py"),
 )
 
@@ -130,6 +131,10 @@ def table_gaps(connection: sqlite3.Connection, item: Additive) -> list[str]:
     absent = sorted(item.columns - columns)
     if absent:
         gaps.append(f"table {item.table} is missing columns: {', '.join(absent)}")
+    if item.primary_key:
+        pk = tuple(r[1] for r in sorted(connection.execute(f'PRAGMA table_info("{item.table}")'), key=lambda r: r[5]) if r[5])
+        if pk != item.primary_key:
+            gaps.append(f"table {item.table} does not have ({', '.join(item.primary_key)}) as its primary key")
     unique = _unique_column_sets(connection, item.table)
     for guard in item.unique_guards:
         if guard not in unique:

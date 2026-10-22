@@ -53,6 +53,7 @@ from central_deps import (
 )
 from bid_import_revert import is_lock_error
 from central_runtime import central_runtime
+from company_authority import bind_authority
 from company_database import begin_write
 from company_runtime import CompanyRuntime, company_runtime
 from database import seed_stages
@@ -89,14 +90,13 @@ from import_routes import (
     revert_preview_impl,
 )
 from stage_history import SOURCE_API, set_stage_context
-from undo import UNRESTORABLE, UndoError, apply_undo, get_undo, record_undo, undo_create, undo_delete, undo_move, undo_update
+from undo import UNRESTORABLE, UndoError, UndoVersionConflict, apply_undo, get_undo, record_undo, undo_create, undo_delete, undo_move, undo_update
 from schemas import (
     AIChatRequest,
     ReviewClearRequest,
     ReviewClearResult,
     ReviewList,
     BoardCreate,
-    BoardDetail,
     BoardResponse,
     DefaultBoardResponse,
     ColumnCreate,
@@ -106,8 +106,9 @@ from schemas import (
     CardMove,
     CompanyCardMove,
     LossEventItem,
-    CardResponse,
-    CardUpdate,
+    CompanyBoardDetail,
+    CompanyCardUpdate,
+    CompanyCardResponse,
     BoardReport,
     CardEditHistoryEntry,
     KpiAgingResponse,
@@ -132,6 +133,38 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BOARD_TITLE = "Sales Pipeline"
 DEFAULT_BOARD_DESCRIPTION = "Company sales pipeline"
+
+
+def version_conflict(card_id: int, expected_version: int, current_version: int) -> HTTPException:
+    """The stable 409 for a write made from an out-of-date card (raised by the update, move and delete routes)."""
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+        "code": "card_version_conflict",
+        "message": "The card was changed by someone else since you opened it. Reload it and try again.",
+        "card_id": card_id,
+        "expected_version": expected_version,
+        "current_version": current_version,
+    })
+
+
+def card_with_version(card: Card, version: int) -> CompanyCardResponse:
+    response = CompanyCardResponse.model_validate(card)
+    response.version = version
+    return response
+
+
+def board_detail_with_versions(db: Session, board_id: int) -> CompanyBoardDetail:
+    """The board as load_board_detail returns it, each card carrying its version.
+
+    The versions are read before the cards, so a write in between can only make a card look newer than its version
+    (a later false conflict), never older (a silent overwrite).
+    """
+    versions = card_reviews.board_card_versions(db, board_id)
+    detail = load_board_detail(db, board_id)
+    data = detail.model_dump()
+    for column in data["columns"]:
+        for card in column["cards"]:
+            card["version"] = versions.get(card["id"], 0)
+    return CompanyBoardDetail.model_validate(data)
 
 
 def build_company_router(
@@ -212,14 +245,19 @@ def build_company_router(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Company data is unavailable"
             ) from None
 
-    def writer_session(identity: Session, context: CompanyContext) -> Iterator[Session]:
+    def writer_session(identity: Session, context: CompanyContext, revalidate: bool = True) -> Iterator[Session]:
         """A company session for a writer, with the actor's local reference row ensured and stage events attributed.
 
         The row is created only here (a write the central membership already authorized), never on a GET.
+        With `revalidate` the session is bound to the authorized company and, at every commit (under the write lock),
+        the caller's membership is read again from the identity database (company_authority; F8 mitigation). The Bid
+        import routes keep their own, earlier check (`recheck`) and pass False.
         """
         for db in runtime.session_for(context):
             sync_local_references(lambda: sync_company_user(identity, db, context.user_id, context.company_slug))
             set_stage_context(db, context, SOURCE_API)
+            if revalidate:
+                bind_authority(db, context.company_slug, lambda: fresh_role(identity, context) == context.role)
             yield db
 
     def get_writer_db(
@@ -250,7 +288,7 @@ def build_company_router(
     def get_import_admin_db(
         identity: Session = Depends(identity_db), context: CompanyContext = Depends(get_import_admin_context)
     ) -> Iterator[Session]:
-        yield from writer_session(identity, context)
+        yield from writer_session(identity, context, revalidate=False)  # the import services recheck right before their commit
 
     def review_http(exc: card_reviews.ReviewError) -> HTTPException:
         return HTTPException(status_code=exc.status, detail={"code": exc.code, "message": exc.message})
@@ -261,6 +299,23 @@ def build_company_router(
             card_reviews.require_reviews(db)
         except card_reviews.ReviewError as exc:
             raise review_http(exc) from None
+
+    def check_card_version(db: Session, card: Card, expected_version: int | None) -> None:
+        """Refuse a write made without, or from, an out-of-date card. Call it under the write lock, after the existence
+        and permission checks and before anything is changed: no `expected_version` is a 428 (card_version_required),
+        a stale one a 409 (card_version_conflict), and a missing/invalid version schema a 503, never version 0."""
+        if expected_version is None:
+            raise HTTPException(status_code=status.HTTP_428_PRECONDITION_REQUIRED, detail={
+                "code": "card_version_required",
+                "message": "expected_version is required: send the card version you last saw",
+                "card_id": card.id,
+            })
+        try:
+            current = card_reviews.card_version(db, card.id)
+        except card_reviews.ReviewError as exc:
+            raise review_http(exc) from None
+        if current != expected_version:
+            raise version_conflict(card.id, expected_version, current)
 
     def get_reviewer_context(context: CompanyContext = Depends(get_writer_context)) -> CompanyContext:
         """Only the Super Admin and this company's Admin review; Sales Members and Visitors never do. Runs before the
@@ -293,7 +348,7 @@ def build_company_router(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
         return card
 
-    @router.post("/boards/{board_id}/cards", response_model=CardResponse, status_code=201)
+    @router.post("/boards/{board_id}/cards", response_model=CompanyCardResponse, status_code=201)
     def create_company_card(
         board_id: int,
         card: CompanyCardCreate,
@@ -340,15 +395,16 @@ def build_company_router(
         # Undoing a creation deletes the card, which only the Super Admin may do: nobody else is offered that undo.
         record_undo(db, context, board_id, f'Remove new card "{db_card.title}"',
                     [undo_create(db_card) if context.can_delete_cards else UNRESTORABLE])
+        db.flush()
+        response = card_with_version(db_card, 0)  # a new card always starts at version 0; built before the commit
         db.commit()
-        db.refresh(db_card)
-        return db_card
+        return response
 
-    @router.put("/boards/{board_id}/cards/{card_id}", response_model=CardResponse)
+    @router.put("/boards/{board_id}/cards/{card_id}", response_model=CompanyCardResponse)
     def update_company_card(
         board_id: int,
         card_id: int,
-        card_update: CardUpdate,
+        card_update: CompanyCardUpdate,
         identity: Session = Depends(identity_db),
         context: CompanyContext = Depends(get_writer_context),
         db: Session = Depends(get_writer_db),
@@ -357,7 +413,10 @@ def build_company_router(
         begin_write(db)  # owner, permissions, history and the undo snapshot are all read under the write lock
         card = find_card(db, board_id, card_id)
         updates = card_update.model_dump(exclude_unset=True)
+        expected_version = updates.pop("expected_version", None)
         new_owner = updates.get("salesperson_id")
+        if context.can_manage_cards:
+            check_card_version(db, card, expected_version)  # the card-managing roles have no permission check to wait for
         if context.can_manage_cards and new_owner is not None and new_owner != card.salesperson_id:
             # Only a person the central database lets this company assign to (the local row is checked by card_rules).
             if new_owner not in assignable_user_ids(identity, context.company_slug):
@@ -365,17 +424,20 @@ def build_company_router(
         undo_step = undo_update(card, updates)
         undo_description = f'Undo edit to "{card.title}"'
         try:
-            apply_card_updates(db, card, updates, context, admin=context.can_manage_cards)
+            apply_card_updates(db, card, updates, context, admin=context.can_manage_cards,
+                               precondition=lambda: check_card_version(db, card, expected_version))
         except CardPermissionDenied as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
         except InvalidCardUpdate as exc:
             raise HTTPException(status_code=422, detail=str(exc))
         record_undo(db, context, board_id, undo_description, [undo_step])
+        db.flush()
+        # Built before the commit, from the version this write produced: a later writer cannot slip in between.
+        response = card_with_version(card, card_reviews.card_version(db, card.id))
         db.commit()
-        db.refresh(card)
-        return card
+        return response
 
-    @router.put("/boards/{board_id}/cards/{card_id}/position", response_model=CardResponse)
+    @router.put("/boards/{board_id}/cards/{card_id}/position", response_model=CompanyCardResponse)
     def move_company_card(
         board_id: int,
         card_id: int,
@@ -393,6 +455,7 @@ def build_company_router(
         denial = move_denial(context, card, target.position, admin=context.can_manage_cards)
         if denial:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=denial)
+        check_card_version(db, card, move.expected_version)
         loss_reason = None
         if card_loss.enters_lost(card, target):
             # Validated before anything is written: no undo entry, no event, no obligation for a refused move.
@@ -427,20 +490,24 @@ def build_company_router(
             for index, member in enumerate(rest):
                 if member.position != index:
                     member.position = index
+        db.flush()
+        response = card_with_version(card, card_reviews.card_version(db, card.id))
         db.commit()
-        db.refresh(card)
-        return card
+        return response
 
     @router.delete("/boards/{board_id}/cards/{card_id}", status_code=204)
     def delete_company_card(
         board_id: int,
         card_id: int,
+        expected_version: int | None = Query(None, ge=0),
         context: CompanyContext = Depends(get_card_admin_context),
         db: Session = Depends(get_card_admin_db),
     ):
         """Delete a card. Super Admin only (checked before the company database is opened)."""
+        ensure_reviews(db)  # a delete is a versioned change: without valid version tables it is refused (503)
         begin_write(db)  # existence, snapshot and audit are read under the lock: a second delete finds no card (404)
         card = find_card(db, board_id, card_id)
+        check_card_version(db, card, expected_version)
         record_undo(db, context, board_id, f'Restore deleted card "{card.title}"', [undo_delete(card)])
         audit_deletion(db, board_id, card, context)
         db.delete(card)
@@ -465,13 +532,27 @@ def build_company_router(
     ):
         """AI board assistant. Writers only; assignments limited to people the central database allows; recorded for Undo like the REST edits."""
         ensure_reviews(db)
-        return await board_ai_chat_payload(
-            db, board_id, request, context,
-            refresh_assignable_ids=lambda: set(assignable_user_ids(identity, context.company_slug)), record_undo_entry=True,
-            admin=context.can_manage_cards, can_delete=context.can_delete_cards,
-            reauthorize=lambda: can_manage_cards(fresh_role(identity, context)),
-            reauthorize_delete=lambda: can_delete_cards(fresh_role(identity, context)),
-        )
+
+        def ai_reauthorize() -> bool:
+            """After the model answered: the caller's authority as it is NOW decides what the actions may do (a person
+            demoted meanwhile keeps working with less). The commit then only requires that this fresh role is still the
+            one in force, instead of the role the request started with (company_authority)."""
+            role = fresh_role(identity, context)
+            bind_authority(db, context.company_slug, lambda: fresh_role(identity, context) == role)
+            return can_manage_cards(role)
+
+        try:
+            return await board_ai_chat_payload(
+                db, board_id, request, context,
+                refresh_assignable_ids=lambda: set(assignable_user_ids(identity, context.company_slug)), record_undo_entry=True,
+                admin=context.can_manage_cards, can_delete=context.can_delete_cards,
+                reauthorize=ai_reauthorize,
+                reauthorize_delete=lambda: can_delete_cards(fresh_role(identity, context)),
+                track_versions=True,
+            )
+        except card_reviews.ReviewsNotInitialized as exc:  # the schema broke after the gate; the batch is already rolled back
+            db.rollback()
+            raise review_http(exc) from None
 
     @router.get("/boards", response_model=List[BoardResponse])
     def list_company_boards(db: Session = Depends(get_company_db)):
@@ -595,10 +676,13 @@ def build_company_router(
         db.delete(column)
         db.commit()
 
-    @router.get("/boards/{board_id}", response_model=BoardDetail)
-    def get_company_board(board_id: int, db: Session = Depends(get_company_db)) -> BoardDetail:
-        """Board with all columns and cards, from the company's database."""
-        return load_board_detail(db, board_id)
+    @router.get("/boards/{board_id}", response_model=CompanyBoardDetail)
+    def get_company_board(board_id: int, db: Session = Depends(get_company_db)) -> CompanyBoardDetail:
+        """Board with all columns and cards (each with its version), from the company's database."""
+        try:
+            return board_detail_with_versions(db, board_id)
+        except card_reviews.ReviewError as exc:
+            raise review_http(exc) from None
 
     def excel_response(content: bytes, filename: str) -> Response:
         # The filename is built by the server from validated values only, never from client input.
@@ -713,6 +797,14 @@ def build_company_router(
                 assignable_ids=set(assignable_user_ids(identity, context.company_slug)),
             )
             db.commit()
+        except UndoVersionConflict as exc:
+            # A concurrency conflict, not a refusal of the entry: the rollback also undoes the claim, so the entry stays.
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+                "code": "card_version_conflict",
+                "message": "A card of this change was changed by someone else since, so the change was not undone.",
+                "card_id": exc.card_id, "expected_version": exc.expected_version, "current_version": exc.current_version,
+            }) from None
         except (UndoError, ValueError) as exc:
             # Nothing half-applied survives; the entry is used up either way (as in the legacy route).
             db.rollback()
@@ -720,6 +812,10 @@ def build_company_router(
             db.commit()
             code = status.HTTP_404_NOT_FOUND if str(exc) == "Nothing to undo" else status.HTTP_409_CONFLICT
             raise HTTPException(status_code=code, detail=str(exc))
+        except card_reviews.ReviewsNotInitialized as exc:
+            # Infrastructure failure, not a refusal: the rollback also undoes the claim of the entry, so it stays.
+            db.rollback()
+            raise review_http(exc) from None
         return UndoStatus(available=False, description=None, undone=description)
 
     # --- Card reviews: the Super Admin and the company's Admin each see and clear only their own role's obligations ---
@@ -801,6 +897,7 @@ def build_company_router(
             if not can_manage_imports(fresh_role(identity, context)):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
+        ensure_reviews(db)  # imports create, change and (on revert) delete cards: the version schema is checked first
         return await confirm_import_impl(db, board_id, request, context, scope=context.company_slug, recheck=recheck)
 
     @router.get("/boards/{board_id}/imports", response_model=ImportBatchList)
@@ -843,6 +940,7 @@ def build_company_router(
             if not can_manage_imports(fresh_role(identity, context)):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
+        ensure_reviews(db)
         return revert_import_impl(db, batch_id, context, body.plan_fingerprint, recheck=recheck)
 
     # --- Cards workbook import (not the Bid import): same roles as the Bid import, checked before the company DB opens ---
@@ -929,6 +1027,7 @@ def build_company_router(
         cards, or of any workbook applied before on this board, is refused with 409 already_imported and changes nothing."""
         find_board(db, board_id)
         require_import_ledger(db)
+        ensure_reviews(db)
         read, fields = await read_cards_workbook(request)
         if fields.get("confirm") != "true":
             raise HTTPException(status_code=422, detail={"code": "confirm_required", "message": "Set confirm=true to apply the import"})
@@ -962,6 +1061,9 @@ def build_company_router(
         except HTTPException:
             db.rollback()
             raise
+        except card_reviews.ReviewsNotInitialized as exc:
+            db.rollback()  # the version schema broke after the gate: nothing of the workbook survives
+            raise review_http(exc) from None
         except Exception as exc:
             db.rollback()
             if isinstance(exc, OperationalError) and is_lock_error(exc):

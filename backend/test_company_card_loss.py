@@ -236,12 +236,13 @@ def test_two_concurrent_moves_into_lost_leave_one_loss_event_and_a_consistent_ca
         def go():
             barrier.wait()
             return rig.client.put("/api/companies/lity/boards/1/cards/1/position",
-                                  json={"column_id": LOST, "position": 0, "loss_reason": reason}, headers=auth(token))
+                                  json={"column_id": LOST, "position": 0, "loss_reason": reason, "expected_version": 0}, headers=auth(token))
         return go
     a, b = Call(mk(mtoken, "Reason A")), Call(mk(atoken, "Reason B"))
     a.start(); b.start()
     codes = [a.result().status_code, b.result().status_code]
-    assert all(c in (200, 503) for c in codes), codes
+    assert all(c in (200, 409, 503) for c in codes), codes  # the second move was made from a version that is gone
+    assert codes.count(200) <= 1, codes  # both moves started from version 0: at most one can win
     if codes.count(200):
         assert column_of(rig) == LOST
         assert len(losses(rig)) == 1  # the second request found the card already lost: a reorder, not a new loss

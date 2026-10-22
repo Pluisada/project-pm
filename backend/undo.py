@@ -13,6 +13,12 @@ Step shapes (JSON):
   {"op": "delete", "card_id", "expect"}                            remove a created card
   {"op": "create", "column_id", "position", "fields"}              recreate a deleted card
 
+Company (central) boards also stamp each step that names a card with "version": the card's version when the change
+was committed. Undo compares it with the card's current version FIRST: versions only ever rise, so any later change
+(by anyone, the AI or an import) is detected even when the visible values were restored (A -> B -> A), which the
+"expect" comparison alone cannot tell apart. A mismatch is a concurrency conflict (UndoVersionConflict): nothing is
+applied and the entry is kept. "expect" is still checked afterwards, and is the only check for entries without versions.
+
 "expect" is the card as the change left it ({"column_id": ...} and/or card
 fields, JSON values). Undo first checks that every card still matches it:
 if anyone - another user, the AI, an import - changed those values since,
@@ -24,7 +30,8 @@ import json
 from datetime import date
 
 from pydantic import ValidationError
-from sqlalchemy.orm import object_session
+from sqlalchemy import event
+from sqlalchemy.orm import Session, object_session
 
 import card_loss
 import card_reviews
@@ -39,6 +46,16 @@ CARD_FIELDS = list(CardUpdate.model_fields)
 
 class UndoError(Exception):
     """Undo can't be applied; the message is shown to the user."""
+
+
+class UndoVersionConflict(UndoError):
+    """A card the entry would restore was changed after the entry was recorded (company boards, by version).
+
+    Unlike other refusals this one leaves the entry in place: nothing was applied or claimed."""
+
+    def __init__(self, card_id: int, expected_version: int, current_version: int):
+        super().__init__("Can't undo: a card was changed since (by another user, the AI or an import)")
+        self.card_id, self.expected_version, self.current_version = card_id, expected_version, current_version
 
 
 def _json_value(value):
@@ -122,7 +139,36 @@ def record_undo(db, user: User, board_id: int, description: str, steps: list) ->
     db.query(UndoEntry).filter(UndoEntry.user_id == user.id).delete()
     if UNRESTORABLE in steps:
         return  # part of this change cannot be reversed, so none of it is offered (no partial undo)
-    db.add(UndoEntry(user_id=user.id, board_id=board_id, description=description, steps=json.dumps(steps)))
+    entry = UndoEntry(user_id=user.id, board_id=board_id, description=description, steps=json.dumps(steps))
+    db.add(entry)
+    if card_reviews.is_company_session(db):
+        db.info[_UNSTAMPED] = entry  # stamped with the card versions this change commits (see _stamp_versions)
+
+
+_UNSTAMPED = "undo_entry_to_stamp"
+
+
+@event.listens_for(Session, "before_commit")
+def _stamp_versions(session: Session) -> None:
+    """Company sessions: record, in the entry written by this transaction, the version each of its cards has once the
+    transaction's own changes are flushed. Runs at commit because the callers record the entry before or after applying
+    the change, but never after the last flush. The stamp and the versions it reads are part of the same transaction."""
+    entry = session.info.pop(_UNSTAMPED, None)
+    if entry is None:
+        return
+    session.flush()
+    steps = json.loads(entry.steps)
+    ids = {step["card_id"] for step in steps if "card_id" in step}
+    versions = card_reviews.card_versions(session, ids)
+    for step in steps:
+        if "card_id" in step:
+            step["version"] = versions[step["card_id"]]
+    entry.steps = json.dumps(steps)
+
+
+@event.listens_for(Session, "after_soft_rollback")
+def _forget_unstamped(session: Session, previous_transaction) -> None:
+    session.info.pop(_UNSTAMPED, None)
 
 
 def get_undo(db, user: User, board_id: int) -> UndoEntry | None:
@@ -144,6 +190,20 @@ def _board_card(db, board_id: int, card_id: int) -> Card | None:
 
 def _board_column(db, board_id: int, column_id: int) -> Column | None:
     return db.query(Column).filter(Column.id == column_id, Column.board_id == board_id).first()
+
+
+def _check_versions(db, steps: list) -> None:
+    """Company boards: refuse (UndoVersionConflict) when a stamped card's current version is not the recorded one."""
+    recorded = {}
+    for step in steps:
+        if "card_id" in step and "version" in step:
+            recorded[step["card_id"]] = step["version"]
+    if not recorded:
+        return
+    current = card_reviews.card_versions(db, recorded)
+    for card_id, version in recorded.items():
+        if current[card_id] != version:
+            raise UndoVersionConflict(card_id, version, current[card_id])
 
 
 def _check_unchanged_since(db, board_id: int, steps: list) -> None:
@@ -206,6 +266,8 @@ def apply_undo(
             raise UndoError("Can't undo: the card was deleted since")
         if "column_id" in step and _board_column(db, board_id, step["column_id"]) is None:
             raise UndoError("Can't undo: the column no longer exists")
+    if card_reviews.is_company_session(db):
+        _check_versions(db, json.loads(entry.steps))
     _check_unchanged_since(db, board_id, json.loads(entry.steps))
     if assignable_ids is not None:
         for step in steps:

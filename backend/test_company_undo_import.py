@@ -268,7 +268,8 @@ def test_deleting_an_imported_card_offers_no_undo_and_drops_the_stale_entry(rig)
     imported = rig.sql("SELECT id FROM cards WHERE column_id >= 10 ORDER BY id LIMIT 1")[0][0]
     rig.call("put", "/cards/1", token, json={"title": "an earlier undoable edit"})
     assert undo(rig, token, method="get").json()["available"] is True
-    assert imp(rig, "delete", f"/boards/2/cards/{imported}", token).status_code == 204
+    path, kw = rig.versioned("delete", f"/boards/2/cards/{imported}", {})
+    assert imp(rig, "delete", path, token, **kw).status_code == 204
     assert undo(rig, token, method="get").json()["available"] is False  # nothing offered, not even the earlier edit
     assert undo(rig, token).status_code == 404
     assert rig.sql("SELECT COUNT(*) FROM card_bid_details WHERE card_id = ?", (imported,)) == [(0,)]

@@ -89,6 +89,12 @@ def warm_up(rig, token):
     assert rig.call("get", "", token).status_code == 200
 
 
+def ver(rig, card):
+    """The card's current version, as a client that has just read it would send it (the write routes require it)."""
+    rows = rig.sql("SELECT version FROM card_versions WHERE card_id = ?", (card,))
+    return rows[0][0] if rows else 0
+
+
 def columns_url(path=""):
     return f"/api/companies/lity/boards/1/columns{path}"
 
@@ -281,7 +287,7 @@ def test_B2_two_moves_of_different_cards_in_the_same_column(rig):
     token = admin(rig)
     seed_cards(rig)
     warm_up(rig, token)
-    mv = lambda card, pos: (lambda: rig.client.put(move_url(card), json={"column_id": 1, "position": pos}, headers=auth(token)))
+    mv = lambda card, pos: (lambda: rig.client.put(move_url(card), json={"column_id": 1, "position": pos, "expected_version": ver(rig, card)}, headers=auth(token)))
     rx, ry = interleave(rig, mv(1, 2), mv(4, 0), UNDO_CLAIM_FREE_DML)
     assert (rx.status_code, ry.status_code) == (200, 200)
     assert rig.sql("SELECT COUNT(*), COUNT(DISTINCT id) FROM cards") == [(6, 6)]
@@ -294,7 +300,7 @@ def test_B2_moves_between_the_same_two_columns(rig):
     token = admin(rig)
     seed_cards(rig)
     warm_up(rig, token)
-    mv = lambda card, col, pos: (lambda: rig.client.put(move_url(card), json={"column_id": col, "position": pos}, headers=auth(token)))
+    mv = lambda card, col, pos: (lambda: rig.client.put(move_url(card), json={"column_id": col, "position": pos, "expected_version": ver(rig, card)}, headers=auth(token)))
     rx, ry = interleave(rig, mv(1, 2, 0), mv(5, 1, 0), UNDO_CLAIM_FREE_DML)
     assert (rx.status_code, ry.status_code) == (200, 200)
     assert rig.sql("SELECT COUNT(*), COUNT(DISTINCT id) FROM cards") == [(6, 6)]
@@ -310,9 +316,11 @@ def test_B3_same_card_moved_to_two_destinations(rig):
     seed_cards(rig)
     rig.sql("INSERT INTO cards (id, column_id, title, position, created_at, updated_at) VALUES (7, 3, 'card 7', 0, ?, ?)", (NOW, NOW))
     warm_up(rig, token)
-    mv = lambda col: (lambda: rig.client.put(move_url(1), json={"column_id": col, "position": 0}, headers=auth(token)))
+    v0 = ver(rig, 1)  # both clients read the card at the same version
+    mv = lambda col: (lambda: rig.client.put(move_url(1), json={"column_id": col, "position": 0, "expected_version": v0}, headers=auth(token)))
     rx, ry = interleave(rig, mv(2), mv(3), UNDO_CLAIM_FREE_DML)
     assert 500 not in (rx.status_code, ry.status_code)
+    assert sorted((rx.status_code, ry.status_code)) == [200, 409]  # the second move was made from a version that is gone
     assert rig.sql("SELECT COUNT(*), COUNT(DISTINCT id) FROM cards") == [(7, 7)]
     assert len(rig.sql("SELECT column_id FROM cards WHERE id = 1")) == 1
     for col in (1, 2, 3):
@@ -352,7 +360,8 @@ def test_C1_undo_applied_between_a_moves_card_load_and_its_first_write(rig):
     uid, owner = member(rig, "second@example.com")
     rig.assign(1, uid)
     assert rig.call("put", "/cards/1/position", token, json={"column_id": 2, "position": 0}).status_code == 200
-    run_move = lambda: rig.client.put(move_url(1), json={"column_id": 3, "position": 0}, headers=auth(owner))
+    v1 = ver(rig, 1)
+    run_move = lambda: rig.client.put(move_url(1), json={"column_id": 3, "position": 0, "expected_version": v1}, headers=auth(owner))
     rm, ru = interleave(rig, run_move, lambda: undo(rig, token), UNDO_CLAIM_FREE_DML)
     # The move holds the write lock from its first statement, so the undo runs after it and must find card 1 in
     # column 3, not where its `expect` says (column 2): refused with 409, the later placement kept.
@@ -476,8 +485,8 @@ def test_F1_edit_after_reassignment_is_refused_and_leaves_no_trace(rig):
     rig.sql("INSERT INTO users (id, username, created_at, updated_at) VALUES (?, 'second', ?, ?)", (uid2, NOW, NOW))
     rig.assign(1, uid1)
     warm_up(rig, token)
-    edit = lambda: rig.client.put(card_url(1), json={"title": "stale edit"}, headers=auth(owner))
-    reassign = lambda: rig.client.put(card_url(1), json={"salesperson_id": uid2}, headers=auth(token))
+    edit = lambda: rig.client.put(card_url(1), json={"title": "stale edit", "expected_version": 0}, headers=auth(owner))
+    reassign = lambda: rig.client.put(card_url(1), json={"salesperson_id": uid2, "expected_version": 0}, headers=auth(token))
     re_, rr = interleave(rig, edit, reassign, BEGIN_WRITE)
     assert (rr.status_code, re_.status_code) == (200, 403), (rr.text, re_.text)
     assert rig.sql("SELECT salesperson_id FROM cards WHERE id = 1") == [(uid2,)]
@@ -491,7 +500,7 @@ def test_F1_concurrent_deletes_succeed_once(rig):
     """Two deletes of the same card: one 204, the other 404, one audit row and one restorable undo entry."""
     token = admin(rig)
     warm_up(rig, token)
-    delete = lambda: rig.client.delete(card_url(1), headers=auth(token))
+    delete = lambda: rig.client.delete(card_url(1) + "?expected_version=0", headers=auth(token))
     ra, rb = interleave(rig, delete, delete, BEGIN_WRITE)
     assert sorted((ra.status_code, rb.status_code)) == [204, 404], (ra.text, rb.text)
     assert rig.sql("SELECT COUNT(*) FROM cards WHERE id = 1") == [(0,)]
@@ -506,8 +515,8 @@ def test_F1_edit_that_loses_the_race_to_a_delete_is_404_without_records(rig):
     uid, owner = member(rig, "first@example.com")
     rig.assign(1, uid)
     warm_up(rig, token)
-    edit = lambda: rig.client.put(card_url(1), json={"title": "too late"}, headers=auth(owner))
-    delete = lambda: rig.client.delete(card_url(1), headers=auth(token))
+    edit = lambda: rig.client.put(card_url(1), json={"title": "too late", "expected_version": 0}, headers=auth(owner))
+    delete = lambda: rig.client.delete(card_url(1) + "?expected_version=0", headers=auth(token))
     re_, rd = interleave(rig, edit, delete, BEGIN_WRITE)
     assert (rd.status_code, re_.status_code) == (204, 404), (rd.text, re_.text)
     assert rig.sql("SELECT COUNT(*) FROM card_edit_history") == [(0,)]
@@ -515,33 +524,34 @@ def test_F1_edit_that_loses_the_race_to_a_delete_is_404_without_records(rig):
     assert rig.sql("SELECT action FROM audit_events WHERE card_id = 1") == [("delete",)]
 
 
-def test_F1_delete_that_loses_the_race_to_an_edit_snapshots_the_edited_card(rig):
-    """The edit is made by an administrator: it leaves no pending review, so the deletion stays undoable and the undo
-    snapshot taken under the lock must carry the edited title (a member's edit is the next test)."""
+def test_F1_delete_that_loses_the_race_to_an_edit_is_refused_as_stale_and_leaves_the_edited_card(rig):
+    """Both requests were made from version 0. The edit wins the write lock; the delete then finds the card at version 1
+    and is refused (409): the edited card stays, nothing is audited, no undo entry is written for the delete."""
     token = admin(rig)
     warm_up(rig, token)
-    delete = lambda: rig.client.delete(card_url(1), headers=auth(token))
-    edit = lambda: rig.client.put(card_url(1), json={"title": "edited first"}, headers=auth(token))
+    delete = lambda: rig.client.delete(card_url(1) + "?expected_version=0", headers=auth(token))
+    edit = lambda: rig.client.put(card_url(1), json={"title": "edited first", "expected_version": 0}, headers=auth(token))
     rd, re_ = interleave(rig, delete, edit, BEGIN_WRITE)
-    assert (re_.status_code, rd.status_code) == (200, 204), (re_.text, rd.text)
-    assert rig.sql("SELECT action FROM audit_events WHERE card_id = 1") == [("delete",)]
-    assert rig.sql("SELECT COUNT(*) FROM card_review_obligations") == [(0,)]
-    assert undo(rig, token).status_code == 200
-    assert rig.sql("SELECT COUNT(*) FROM cards WHERE title = ?", ("edited first",)) == [(1,)]
+    assert (re_.status_code, rd.status_code) == (200, 409), (re_.text, rd.text)
+    assert rd.json()["detail"]["code"] == "card_version_conflict"
+    assert rig.sql("SELECT title FROM cards WHERE id = 1") == [("edited first",)]
+    assert rig.sql("SELECT COUNT(*) FROM audit_events WHERE action = 'delete'") == [(0,)]
+    assert undo(rig, token).status_code == 200  # the only entry is the edit's, and it still applies
+    assert rig.sql("SELECT title FROM cards WHERE id = 1") == [("card 1",)]
 
 
-def test_F1_F3_delete_that_loses_the_race_to_a_member_edit_voids_the_review_and_is_not_undoable(rig):
-    """A member's edit that wins the race leaves pending reviews; the deletion voids them and (F3) cannot be undone."""
+def test_F1_F3_delete_that_loses_the_race_to_a_member_edit_is_refused_and_keeps_the_pending_reviews(rig):
+    """A member's edit that wins the race leaves pending reviews; the delete, made from the older version, is refused
+    (409), so the card and its reviews stay."""
     token = admin(rig)
     uid, owner = member(rig, "first@example.com")
     rig.assign(1, uid)
     warm_up(rig, token)
-    delete = lambda: rig.client.delete(card_url(1), headers=auth(token))
-    edit = lambda: rig.client.put(card_url(1), json={"title": "edited first"}, headers=auth(owner))
+    delete = lambda: rig.client.delete(card_url(1) + "?expected_version=0", headers=auth(token))
+    edit = lambda: rig.client.put(card_url(1), json={"title": "edited first", "expected_version": 0}, headers=auth(owner))
     rd, re_ = interleave(rig, delete, edit, BEGIN_WRITE)
-    assert (re_.status_code, rd.status_code) == (200, 204), (re_.text, rd.text)
-    assert rig.sql("SELECT action FROM audit_events WHERE card_id = 1") == [("delete",)]
+    assert (re_.status_code, rd.status_code) == (200, 409), (re_.text, rd.text)
+    assert rig.sql("SELECT COUNT(*) FROM audit_events WHERE action = 'delete'") == [(0,)]
     assert rig.sql("SELECT reviewer_role, status FROM card_review_obligations ORDER BY id") == [
-        ("admin", "void"), ("super_admin", "void")]
-    assert undo(rig, token).status_code == 404
-    assert rig.sql("SELECT COUNT(*) FROM cards WHERE title = ?", ("edited first",)) == [(0,)]
+        ("admin", "pending"), ("super_admin", "pending")]
+    assert rig.sql("SELECT title FROM cards WHERE id = 1") == [("edited first",)]

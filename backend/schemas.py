@@ -213,8 +213,17 @@ class CardMove(BaseModel):
 
 class CompanyCardMove(CardMove):
     """Company-scoped move. `loss_reason` is required (non-blank after trimming) when the destination is the lost stage
-    and ignored otherwise; the backend validates it, whatever the client checked."""
+    and ignored otherwise; the backend validates it, whatever the client checked.
+
+    `expected_version` is the card version the client last saw: when sent, the move is refused (409) unless it is
+    still current. Left out, the move is unconditional (accepted while clients are migrated)."""
     loss_reason: Optional[str] = None
+    expected_version: Optional[int] = Field(None, ge=0)
+
+
+class CompanyCardUpdate(CardUpdate):
+    """Company-scoped card update: CardUpdate plus the optional version precondition (see CompanyCardMove)."""
+    expected_version: Optional[int] = Field(None, ge=0)
 
 
 class LossEventItem(BaseModel):
@@ -300,6 +309,15 @@ class CardResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class CompanyCardResponse(CardResponse):
+    """A card as the company (central) routes return it: the shared card plus its version.
+
+    `version` is the card's card_versions counter (0 = no change since creation). It is not a Card attribute, so
+    company_routes fills it from the database; the shared CardResponse is unchanged.
+    """
+    version: int = Field(0, ge=0)
 
 
 class CardEditHistoryEntry(BaseModel):
@@ -663,6 +681,15 @@ class ColumnWithCards(ColumnResponse):
 class BoardDetail(BoardResponse):
     """Board with all columns and cards."""
     columns: List[ColumnWithCards] = []
+
+
+class CompanyColumnWithCards(ColumnResponse):
+    cards: List[CompanyCardResponse] = []
+
+
+class CompanyBoardDetail(BoardResponse):
+    """Board with all columns and cards as the company routes return it (cards carry their version)."""
+    columns: List[CompanyColumnWithCards] = []
 
 
 # Error Schemas
