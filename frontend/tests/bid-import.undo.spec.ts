@@ -136,7 +136,8 @@ test("an import records no Undo entry and Undo leaves the imported card in place
 
   // Back on the board, Undo still offers the manual change, not the import.
   await backToBoard(page);
-  await expect(page.getByText(manualEntry)).toBeVisible();
+  // The entry is shown as the Undo button's tooltip (its title), not as page text.
+  await expect(undoButton(page)).toHaveAttribute("title", manualEntry);
   await undoButton(page).click();
   await expect(page.getByText(`Undone: ${manualEntry}`)).toBeVisible();
   await expect(cardByTitle(page, title)).toHaveCount(0);
