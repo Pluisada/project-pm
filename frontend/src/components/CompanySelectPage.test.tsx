@@ -29,9 +29,16 @@ describe("CompanySelectPage", () => {
 
   it("shows decorative logos only for known companies", () => {
     const { container } = render(<CompanySelectPage companies={companies} onSelect={vi.fn()} onLogout={vi.fn()} />);
-    const logos = [...container.querySelectorAll("img")];
+    const logos = [...container.querySelectorAll("img")].filter((i) => i.getAttribute("src")?.startsWith("/brand/")); // not the artwork
     expect(logos.map((i) => i.getAttribute("src"))).toEqual(["/brand/salcomp-logo.png", "/brand/lity-logo.webp", "/brand/valorlog-wordmark.png"]);
     for (const img of logos) expect(img).toHaveAttribute("alt", "");
+  });
+
+  it("shows the Sales Tracker artwork (the three racehorses) behind the picker", () => {
+    const { container } = render(<CompanySelectPage companies={companies} onSelect={vi.fn()} onLogout={vi.fn()} />);
+    expect(screen.getByRole("img", { name: /three racehorses/ })).toHaveAttribute("src", "/sales-tracker-login.jpg");
+    expect(container.querySelectorAll('img[src="/sales-tracker-login.jpg"]')).toHaveLength(2); // the sharp image and its blurred backdrop
+    expect(screen.getByRole("heading", { name: "Choose a company" })).toBeInTheDocument(); // the picker is still on top and usable
   });
 
   it("explains an account with no company instead of listing anything", () => {

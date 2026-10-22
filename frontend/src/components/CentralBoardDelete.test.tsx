@@ -99,7 +99,7 @@ describe("CentralBoardView delete", () => {
     await askDelete(2);
     await userEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
     expect(await screen.findByRole("button", { name: "Undo" })).toBeInTheDocument();
-    expect(screen.getByText('Restore deleted card "Lead 2"')).toBeInTheDocument();
+    expect(screen.getByTestId("undo-button")).toHaveAttribute("title", 'Restore deleted card "Lead 2"'); // the description is the button's tooltip
     expect(calls.filter((c) => c.method === "GET" && c.url.endsWith("/undo")).length).toBeGreaterThanOrEqual(2);
   });
 

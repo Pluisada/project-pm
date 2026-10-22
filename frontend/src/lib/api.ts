@@ -407,11 +407,13 @@ export async function updateCompanyCard(
   boardId: number,
   cardId: number,
   updates: CardUpdatePayload,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** The version of the card the person started from; the server answers 409 card_version_conflict if it moved on. */
+  expectedVersion?: number
 ): Promise<CardResponse> {
   return apiCall<CardResponse>(`${companyPath(companySlug)}/boards/${Number(boardId)}/cards/${Number(cardId)}`, {
     method: "PUT",
-    body: JSON.stringify(updates),
+    body: JSON.stringify(expectedVersion === undefined ? updates : { ...updates, expected_version: expectedVersion }),
     signal,
   });
 }
@@ -429,11 +431,18 @@ export async function moveCompanyCard(
   position: number,
   signal?: AbortSignal,
   /** Required by the backend when the destination is the lost stage (trimmed, non-blank); omitted otherwise. */
-  lossReason?: string
+  lossReason?: string,
+  /** The version of the card when the person picked it up; a card that changed since is refused with 409. */
+  expectedVersion?: number
 ): Promise<CardResponse> {
   return apiCall<CardResponse>(`${companyPath(companySlug)}/boards/${Number(boardId)}/cards/${Number(cardId)}/position`, {
     method: "PUT",
-    body: JSON.stringify({ column_id: columnId, position, ...(lossReason !== undefined ? { loss_reason: lossReason } : {}) }),
+    body: JSON.stringify({
+      column_id: columnId,
+      position,
+      ...(lossReason !== undefined ? { loss_reason: lossReason } : {}),
+      ...(expectedVersion !== undefined ? { expected_version: expectedVersion } : {}),
+    }),
     signal,
   });
 }
@@ -442,9 +451,26 @@ export async function moveCompanyCard(
  * Delete one card of one company board (204; admins only, the backend decides). Never retried automatically:
  * after a network or 5xx failure the card may or may not be gone, so the caller re-reads the board instead.
  */
-export async function deleteCompanyCard(companySlug: string, boardId: number, cardId: number, signal?: AbortSignal): Promise<void> {
-  await apiCall<void>(`${companyPath(companySlug)}/boards/${Number(boardId)}/cards/${Number(cardId)}`, { method: "DELETE", signal });
+export async function deleteCompanyCard(
+  companySlug: string,
+  boardId: number,
+  cardId: number,
+  signal?: AbortSignal,
+  /** The version of the card when the person asked to delete it; a card that changed since is refused with 409. */
+  expectedVersion?: number
+): Promise<void> {
+  const query = expectedVersion === undefined ? "" : `?expected_version=${Number(expectedVersion)}`;
+  await apiCall<void>(`${companyPath(companySlug)}/boards/${Number(boardId)}/cards/${Number(cardId)}${query}`, { method: "DELETE", signal });
 }
+
+/** True for the 409 the central card routes answer when the card changed after the person's version (never retried automatically). */
+export function isCardVersionConflict(error: unknown): boolean {
+  const e = error as Partial<ApiError> | null;
+  return !!e && e.status_code === 409 && e.code === "card_version_conflict";
+}
+
+/** Shown wherever a write was refused because the card changed meanwhile. */
+export const CARD_CONFLICT_TEXT = "This card was changed by someone else after you opened it, so your change was not saved.";
 
 /**
  * Member-edit history of one card of one company board (GET .../history, every role with a membership may read).
@@ -701,6 +727,8 @@ export interface CardResponse extends LeadFields {
   salesperson_name: string | null;
   bid_details?: BidDetails | null;
   source_ref?: SourceRef | null;
+  /** Central (company) routes only: the card's version, sent back as `expected_version` by the next write. 0 = never changed. */
+  version?: number;
   created_at: string;
   updated_at: string;
 }
@@ -1172,8 +1200,18 @@ export interface AIChatResponse {
   // Empty object when the AI suggested no actions
   actions_applied: {
     successful?: { type: string }[];
-    failed?: { type: string }[];
+    /** Central boards: a refused action carries its reason, and `code: "card_version_conflict"` when the card changed
+     *  after the assistant was shown it (with `card_id`, `expected_version`, `current_version`). */
+    failed?: { type?: string; reason?: string; code?: string; card_id?: number }[];
   };
+}
+
+/** The assistant of one company board (POST /api/companies/{slug}/boards/{id}/ai; writers only, the backend decides). */
+export async function sendCompanyAIMessage(companySlug: string, boardId: number, message: string): Promise<AIChatResponse> {
+  return apiCall<AIChatResponse>(`${companyPath(companySlug)}/boards/${Number(boardId)}/ai`, {
+    method: "POST",
+    body: JSON.stringify({ message }),
+  });
 }
 
 export async function sendAIMessage(

@@ -5,8 +5,10 @@ import {
   CONFIDENCE_LEVELS,
   createCompanyCard,
   getCompanyLeadOptions,
+  CARD_CONFLICT_TEXT,
   getErrorMessage,
   isAbortError,
+  isCardVersionConflict,
   updateCompanyCard,
   type ApiError,
   type CardResponse,
@@ -99,9 +101,16 @@ const inputClass =
   "mt-1 w-full rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] px-3 py-2 text-sm text-[var(--navy-dark)] outline-none focus:border-[var(--primary-blue)] disabled:opacity-50";
 const labelClass = "block text-xs font-semibold text-[var(--gray-text)]";
 
-type Failure = { text: string; unknownOutcome: boolean };
+type Failure = { text: string; unknownOutcome: boolean; conflict?: boolean };
 
 function describeFailure(err: Partial<ApiError>, action: string): Failure {
+  if (isCardVersionConflict(err)) {
+    return {
+      text: `${CARD_CONFLICT_TEXT} What you typed is kept below, but saving it now would overwrite the other change, so Save is off. Reload the board to see the latest version, note your changes, then close this form and open the card again.`,
+      unknownOutcome: false,
+      conflict: true,
+    };
+  }
   switch (err.status_code) {
     case 0:
       return { text: `Could not confirm whether the card was ${action}: the connection failed. Reload the board to check before trying again.`, unknownOutcome: true };
@@ -191,7 +200,8 @@ export const CentralCardForm = ({ companySlug, boardId, target, canAssign = fals
     } else {
       const updates = buildCardUpdates(target.card, values);
       if (Object.keys(updates).length === 0) return onClose();
-      call = updateCompanyCard(companySlug, boardId, target.card.id, updates);
+      // The version is the one of the card this form was opened on (never re-read before saving).
+      call = updateCompanyCard(companySlug, boardId, target.card.id, updates, undefined, target.card.version);
     }
 
     // The write carries no AbortSignal on purpose: if the form goes away mid-save (the company or board changed) the
@@ -237,7 +247,7 @@ export const CentralCardForm = ({ companySlug, boardId, target, canAssign = fals
         {(fieldError || failure) && (
           <div role="alert" className="text-sm font-medium text-red-800">
             <p>{fieldError ?? failure?.text}</p>
-            {failure?.unknownOutcome && (
+            {(failure?.unknownOutcome || failure?.conflict) && (
               <button type="button" onClick={() => void checkBoard()} disabled={reload === "loading"}
                 className="mt-1 font-semibold text-[var(--primary-blue)] hover:underline disabled:opacity-50">
                 Reload board
@@ -330,7 +340,7 @@ export const CentralCardForm = ({ companySlug, boardId, target, canAssign = fals
             className="rounded-lg border border-[var(--stroke)] px-4 py-2 text-sm font-semibold text-[var(--gray-text)] disabled:opacity-50">
             Cancel
           </button>
-          <button type="submit" disabled={saving || blocked}
+          <button type="submit" disabled={saving || blocked || !!failure?.conflict}
             className="rounded-lg bg-[var(--secondary-purple)] px-5 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50">
             {saving ? "Saving..." : edit ? "Save" : uncertain ? "Add card again" : "Add card"}
           </button>

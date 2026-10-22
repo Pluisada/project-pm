@@ -19,7 +19,8 @@ import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalList
 import { CSS } from "@dnd-kit/utilities";
 import { CentralCardForm, type CardFormTarget } from "@/components/CentralCardForm";
 import { CentralCardHistory } from "@/components/CentralCardHistory";
-import { CentralReviews } from "@/components/CentralReviews";
+import { CentralReviewDialog, reviewLabel, useCompanyReviews } from "@/components/CentralReviews";
+import { InNavSlot } from "@/components/NavSlot";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { applyMove, cardDndId, columnDndId, currentIndex, planMove } from "@/lib/centralMove";
 import { DEAL_CURRENCY, formatDate, formatMoney } from "@/lib/format";
@@ -28,8 +29,10 @@ import {
   getCompanyMe,
   deleteCompanyCard,
   getCompanyUndoStatus,
+  CARD_CONFLICT_TEXT,
   getErrorMessage,
   isAbortError,
+  isCardVersionConflict,
   moveCompanyCard,
   undoCompanyChange,
   type ApiError,
@@ -37,6 +40,7 @@ import {
   type CardResponse,
   type ColumnResponse,
   type CompanyMe,
+  type ReviewItem,
   type UndoStatus,
 } from "@/lib/api";
 
@@ -72,7 +76,7 @@ const pointerFirst: CollisionDetection = (args) => {
   return underPointer.length > 0 ? underPointer : closestCenter(args);
 };
 
-const CentralCard = ({ card, onEdit, onDelete, onHistory, movable, overlay, reviewPending }: { card: CardResponse; onEdit?: () => void; onDelete?: () => void; onHistory?: () => void; movable?: boolean; overlay?: boolean; reviewPending?: boolean }) => {
+const CentralCard = ({ card, onEdit, onDelete, onHistory, movable, overlay, reviews, onOpenReview }: { card: CardResponse; onEdit?: () => void; onDelete?: () => void; onHistory?: () => void; movable?: boolean; overlay?: boolean; reviews?: ReviewItem[]; onOpenReview?: (item: ReviewItem) => void }) => {
   const sortable = useSortable({ id: cardDndId(card.id), disabled: { draggable: !movable || overlay } });
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = sortable;
   const nextYear = card.deal_value_next_year;
@@ -91,10 +95,18 @@ const CentralCard = ({ card, onEdit, onDelete, onHistory, movable, overlay, revi
           </svg>
         </button>
       )}
-      {reviewPending && (
-        <p data-testid={`review-badge-${card.id}`} className="mb-1 inline-block rounded-full bg-amber-200 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-950">
-          Review pending
-        </p>
+      {reviews && reviews.length > 0 && (
+        // One small marker per pending review obligation, always in the same corner; it opens that obligation only.
+        <div className="mb-1 flex flex-wrap gap-1">
+          {reviews.map((item) => (
+            <button key={item.id} type="button" data-testid={`review-marker-${item.id}`} onClick={() => onOpenReview?.(item)}
+              aria-label={`${reviewLabel(item)}: ${card.title}`} title={reviewLabel(item)}
+              className="inline-flex items-center gap-1 rounded-full bg-amber-200 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-950 hover:bg-amber-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-900">
+              <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-amber-800" />
+              Review
+            </button>
+          ))}
+        </div>
       )}
       <p className="line-clamp-2 break-words font-display text-sm font-semibold leading-5 text-[var(--navy-dark)]">{card.title}</p>
       {card.company && <p className="mt-0.5 truncate text-xs text-[var(--gray-text)]">{card.company}</p>}
@@ -170,7 +182,9 @@ const DroppableList = ({ columnId, cardIds, children }: { columnId: number; card
  * board is re-read. A move is never retried, and an answer that arrives after the selection changed is ignored.
  * `refreshToken` changes after a structural change made elsewhere (column administration): the board is then
  * re-read in place, without remounting, so an open form, history or drag keeps its state.
- * There is no concurrency control in the backend: with two people moving cards the last write wins.
+ * Every write carries the card's version as the person first saw it (when the form opened, the drag started or the
+ * delete was requested; a board re-read in between never replaces it). A 409 card_version_conflict changes nothing, is
+ * never retried with the latest version, and the board is re-read so the person sees what the other person did.
  */
 export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { companySlug: string; boardId: number; refreshToken?: number }) => {
   const [attempt, setAttempt] = useState(0);
@@ -182,9 +196,10 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
   const [historyOf, setHistoryOf] = useState<{ key: string; cardId: number } | null>(null);
   const [activeCardId, setActiveCardId] = useState<number | null>(null);
   // The reason being collected for a move into the lost stage (one selection, like the form and the history).
-  const [lossPrompt, setLossPrompt] = useState<{ key: string; cardId: number; title: string; target: { columnId: number; index: number }; reason: string; error: string | null } | null>(null);
-  // Card ids with a pending review of the caller's role, as last reported by CentralReviews (persisted backend state).
-  const [reviewCardIds, setReviewCardIds] = useState<{ key: string; ids: number[] } | null>(null);
+  const [lossPrompt, setLossPrompt] = useState<{ key: string; cardId: number; title: string; target: { columnId: number; index: number }; version?: number; reason: string; error: string | null } | null>(null);
+  // The review obligation open in its dialog, and the outcome of the last clearing; each belongs to one selection.
+  const [reviewOpen, setReviewOpen] = useState<{ key: string; item: ReviewItem } | null>(null);
+  const [reviewNotice, setReviewNotice] = useState<{ key: string; text: string } | null>(null);
   // Both belong to one selection and are only shown while it is still the current one.
   const [moveErrorFor, setMoveErrorFor] = useState<{ key: string; text: string } | null>(null);
   const [movingFor, setMovingFor] = useState<string | null>(null);
@@ -196,7 +211,7 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
   const [undoNoticeFor, setUndoNoticeFor] = useState<{ key: string; kind: "ok" | "error" | "uncertain"; text: string } | null>(null);
   const [undoTick, setUndoTick] = useState(0);
   // Deletion: the card awaiting confirmation, the one in flight and the outcome, each tied to one selection.
-  const [confirmDelete, setConfirmDelete] = useState<{ key: string; id: number; title: string } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<{ key: string; id: number; title: string; version?: number } | null>(null);
   const [deletingFor, setDeletingFor] = useState<string | null>(null);
   const [deleteNoticeFor, setDeleteNoticeFor] = useState<{ key: string; kind: "ok" | "error" | "uncertain"; text: string } | null>(null);
   const deleteKey = useRef<string | null>(null);
@@ -211,6 +226,8 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
   const movingKey = useRef<string | null>(null);
   const undoKey = useRef<string | null>(null);
   const reloadSeq = useRef(0);
+  // The version of the card being dragged, taken when the drag starts: a board re-read during the drag never replaces it.
+  const dragVersion = useRef<{ cardId: number; version?: number } | null>(null);
   const undoSeq = useRef(0);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -224,6 +241,9 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
     deleteKey.current = null;
   }, [key]);
 
+  // Pending reviews of the caller's own role: read from the backend whenever its capabilities say the caller reviews.
+  const canReviewNow = !!result && result.key === key && "data" in result && !!result.data.me.capabilities.canReview && !result.data.me.capabilities.readOnly;
+  const reviews = useCompanyReviews(companySlug, boardId, canReviewNow, undoTick);
   // Undo is offered to writers only (the endpoint refuses a Visitor); this is the loaded, writable state of this selection.
   const writable = !!result && result.key === key && "data" in result && !result.data.me.capabilities.readOnly;
   useEffect(() => {
@@ -302,7 +322,7 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
 
   /** Returns true when the server confirmed the move. A move into the lost stage (`lossReason` given) is never shown
    *  before the server confirms it, so a refused one needs no revert. */
-  const moveCard = async (cardId: number, to: { columnId: number; index: number }, lossReason?: string): Promise<boolean> => {
+  const moveCard = async (cardId: number, to: { columnId: number; index: number }, lossReason?: string, expectedVersion?: number): Promise<boolean> => {
     if (!result || result.key !== key || !("data" in result) || movingKey.current || undoKey.current || deleteKey.current) return false;
     const from = currentIndex(result.data.board.columns, cardId);
     if (!from || (from.columnId === to.columnId && from.index === to.index)) return false;
@@ -312,7 +332,7 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
     setMoveErrorFor(null);
     if (lossReason === undefined) replaceColumns((cols) => applyMove(cols, cardId, to), startKey);
     try {
-      const saved = await moveCompanyCard(companySlug, boardId, cardId, to.columnId, to.index, undefined, lossReason);
+      const saved = await moveCompanyCard(companySlug, boardId, cardId, to.columnId, to.index, undefined, lossReason, expectedVersion);
       if (keyRef.current !== startKey) return false;
       if (saved?.id !== cardId || saved.column_id !== to.columnId) throw { status_code: 0, detail: "Unexpected response from the server." } as ApiError;
       if (lossReason !== undefined) replaceColumns((cols) => applyMove(cols, cardId, to), startKey);
@@ -322,10 +342,12 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
       if (keyRef.current !== startKey) return false;
       const failure = err as Partial<ApiError>;
       if (lossReason === undefined) replaceColumns((cols) => applyMove(cols, cardId, from), startKey);
+      const conflict = isCardVersionConflict(err);
       setMoveErrorFor({ key: startKey, text: failure.status_code === 0
         ? "Network error - the move may not have been saved. The board was reloaded."
+        : conflict ? `${CARD_CONFLICT_TEXT} The board was reloaded with the latest version; move it again if you still want to.`
         : getErrorMessage(err, "Could not move the card.") });
-      if (failure.status_code === 0) void reloadBoard(); // never retry the move: just see what the server has
+      if (failure.status_code === 0 || conflict) void reloadBoard(); // never retry the move: just see what the server has
       return false;
     } finally {
       if (movingKey.current === startKey) {
@@ -336,7 +358,7 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
     }
   };
 
-  const deleteCard = async (cardId: number, title: string) => {
+  const deleteCard = async (cardId: number, title: string, expectedVersion?: number) => {
     if (!result || result.key !== key || !("data" in result) || deleteKey.current || movingKey.current || undoKey.current) return;
     const startKey = key;
     deleteKey.current = startKey;
@@ -344,7 +366,7 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
     setDeleteNoticeFor(null);
     const notice = (kind: "ok" | "error" | "uncertain", text: string) => setDeleteNoticeFor({ key: startKey, kind, text });
     try {
-      await deleteCompanyCard(companySlug, boardId, cardId);
+      await deleteCompanyCard(companySlug, boardId, cardId, undefined, expectedVersion);
       if (keyRef.current !== startKey) return;
       // Only now, with the server's 204, does the card leave the board; the board is then re-read for the
       // positions the server kept.
@@ -371,6 +393,9 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
         notice("error", "You are not allowed to delete cards.");
       } else if (code === 401) {
         notice("error", "Your session expired.");
+      } else if (isCardVersionConflict(err)) {
+        notice("error", `${CARD_CONFLICT_TEXT} "${title}" was not deleted. The board was reloaded with the latest version; delete it again if you still want to.`);
+        void reloadBoard();
       } else if (code === 409 || code === 422) {
         notice("error", getErrorMessage(err, "Could not delete the card."));
         void reloadBoard();
@@ -412,6 +437,10 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
         void reloadBoard();
       } else if (code === 404) {
         notice("error", "Nothing to undo.");
+      } else if (isCardVersionConflict(err)) {
+        // The server kept the entry (nothing was applied); it simply cannot be applied while the card has moved on.
+        notice("error", "A card of this change was changed by someone else since, so nothing was undone. The board was reloaded with the latest version.");
+        void reloadBoard();
       } else if (code === 409) {
         notice("error", getErrorMessage(err, "The change can no longer be undone.")); // the entry is used up
         void reloadBoard();
@@ -459,11 +488,15 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
   const openIndex = new Map(columns.filter((c) => c.stage_kind === "open").map((c, i) => [c.id, i]));
   const canMoveCard = canEditCard;
   const cardsById = new Map(columns.flatMap((c) => c.cards ?? []).map((c) => [c.id, c]));
+  const reviewsByCard = new Map<number, ReviewItem[]>();
+  for (const item of reviews.items) reviewsByCard.set(item.card_id, [...(reviewsByCard.get(item.card_id) ?? []), item]);
   const activeCard = activeCardId != null ? cardsById.get(activeCardId) : undefined;
 
   const handleDragStart = (event: DragStartEvent) => {
     const raw = String(event.active.id);
-    setActiveCardId(raw.startsWith("card-") ? Number(raw.slice(5)) : null);
+    const id = raw.startsWith("card-") ? Number(raw.slice(5)) : null;
+    setActiveCardId(id);
+    dragVersion.current = id != null ? { cardId: id, version: cardsById.get(id)?.version } : null;
   };
   const handleDragEnd = (event: DragEndEvent) => {
     setActiveCardId(null);
@@ -480,14 +513,17 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
       setMoveErrorFor({ key, text: "Members can only move cards forward, not back to an earlier column." });
       return;
     }
+    const started = dragVersion.current;
+    dragVersion.current = null;
+    const version = started?.cardId === cardId ? started.version : card.version;
     const targetColumn = columns.find((c) => c.id === target.columnId);
     if (targetColumn?.stage_kind === "lost" && card.column_id !== target.columnId) {
       // Entering the lost stage needs a reason: ask for it first. Nothing is sent or shown as moved until it is given.
       setMoveErrorFor(null);
-      setLossPrompt({ key, cardId, title: card.title, target, reason: "", error: null });
+      setLossPrompt({ key, cardId, title: card.title, target, version, reason: "", error: null });
       return;
     }
-    void moveCard(cardId, target);
+    void moveCard(cardId, target, undefined, version);
   };
 
   const submitLoss = async () => {
@@ -501,7 +537,7 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
       setLossPrompt({ ...lossPrompt, error: "The reason can have at most 1000 characters." });
       return;
     }
-    const ok = await moveCard(lossPrompt.cardId, lossPrompt.target, reason);
+    const ok = await moveCard(lossPrompt.cardId, lossPrompt.target, reason, lossPrompt.version);
     if (ok) setLossPrompt(null); // on a refusal the form stays, with what was typed, and the error above explains why
   };
 
@@ -510,14 +546,14 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
       <h2 className="font-display text-xl font-semibold text-[var(--navy-dark)]">{board.title}</h2>
       {me.capabilities.readOnly && <p className="mt-1 text-xs text-[var(--gray-text)]">View only</p>}
       {!me.capabilities.readOnly && (undoStatus?.available || undoing) && (
-        <div className="mt-2 flex items-center gap-3">
+        // The button lives in the top navigation (NavSlot "central-undo-slot"); its description is its tooltip.
+        <InNavSlot id="central-undo-slot">
           <button type="button" onClick={() => void undoLast()} disabled={undoing || moving || deleting} data-testid="undo-button"
             title={undoStatus?.description ?? undefined}
-            className="rounded-lg border border-[var(--stroke)] px-3 py-1.5 text-xs font-semibold text-[var(--primary-blue)] transition hover:border-[var(--primary-blue)] disabled:opacity-60">
+            className="rounded-md border border-[var(--nav-line)] px-3 py-1.5 text-sm font-semibold text-[var(--nav-ink)] transition hover:border-[var(--nav-brand)] disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--nav-brand)]">
             {undoing ? "Undoing..." : "Undo"}
           </button>
-          {undoStatus?.description && !undoing && <span className="truncate text-xs text-[var(--gray-text)]">{undoStatus.description}</span>}
-        </div>
+        </InNavSlot>
       )}
       {undoNotice && (
         <p role={undoNotice.kind === "ok" ? "status" : "alert"} data-testid="undo-notice"
@@ -535,7 +571,7 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
         <div role="alertdialog" aria-labelledby="delete-confirm-title" data-testid="delete-confirm"
           className="mt-2 flex flex-wrap items-center gap-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2">
           <p id="delete-confirm-title" className="text-sm text-red-900">Delete the card &quot;{pendingDelete.title}&quot;?</p>
-          <button type="button" disabled={deleting} onClick={() => void deleteCard(pendingDelete.id, pendingDelete.title)}
+          <button type="button" disabled={deleting} onClick={() => void deleteCard(pendingDelete.id, pendingDelete.title, pendingDelete.version)}
             className="rounded-lg bg-red-700 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60">
             {deleting ? "Deleting..." : "Confirm delete"}
           </button>
@@ -545,10 +581,21 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
           </button>
         </div>
       )}
-      {caps.canReview && !caps.readOnly && (
-        <CentralReviews key={`${companySlug}:${boardId}`} companySlug={companySlug} boardId={boardId} refreshToken={undoTick}
-          onPendingChange={(ids) => setReviewCardIds({ key, ids })}
-          onOpenHistory={(cardId) => setHistoryOf({ key, cardId })} />
+      {reviewNotice && reviewNotice.key === key && (
+        <p role="status" data-testid="review-notice" className="mt-2 text-sm font-medium text-green-800">{reviewNotice.text}</p>
+      )}
+      {reviewOpen && reviewOpen.key === key && (
+        <CentralReviewDialog companySlug={companySlug} boardId={boardId}
+          item={reviews.items.find((i) => i.id === reviewOpen.item.id) ?? reviewOpen.item}
+          stillPending={reviews.items.some((i) => i.id === reviewOpen.item.id)}
+          onClose={() => setReviewOpen(null)}
+          onCleared={(cleared) => {
+            setReviewOpen(null);
+            setReviewNotice({ key, text: `The review of "${cleared.card_title}" was cleared.` });
+            reviews.reload();
+          }}
+          onFailed={() => reviews.reload()}
+          onOpenHistory={(cardId) => { setReviewOpen(null); setHistoryOf({ key, cardId }); }} />
       )}
       {lossPrompt && lossPrompt.key === key && (
         <form data-testid="loss-prompt" role="dialog" aria-label="Loss reason" noValidate
@@ -575,7 +622,10 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
       {moveError && <p role="alert" data-testid="move-error" className="mt-2 text-sm font-medium text-red-800">{moveError}</p>}
       <DndContext sensors={sensors} collisionDetection={pointerFirst} onDragStart={handleDragStart}
         onDragEnd={handleDragEnd} onDragCancel={() => setActiveCardId(null)}>
-      <div className="mt-4 flex gap-4 overflow-x-auto pb-2" aria-busy={moving}>
+      {/* The scroll area is the whole width of the window (it bleeds through the page gutter, -mx-6 / px-6), so the first and
+          last columns rest 24px from the edge and every column scrolls into reach; the small top padding and the
+          scrollbar space keep borders, rings and the scrollbar from being cut by the overflow. */}
+      <div className="-mx-6 mt-4 flex gap-4 overflow-x-auto px-6 pb-3 pt-1 [scrollbar-width:thin]" aria-busy={moving} data-testid="central-columns">
         {columns.map((column) => {
           const tone = stageTone(column, openIndex.get(column.id) ?? 0);
           const cards = [...(column.cards ?? [])].sort((a, b) => a.position - b.position);
@@ -591,9 +641,9 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
               <p className="text-xs font-semibold text-[var(--gray-text)]">{cards.length} {cards.length === 1 ? "card" : "cards"}</p>
               <DroppableList columnId={column.id} cardIds={cards.map((c) => cardDndId(c.id))}>
                 {cards.map((card) => (
-                  <CentralCard key={card.id} card={card} reviewPending={caps.canReview && reviewCardIds?.key === key && reviewCardIds.ids.includes(card.id)} movable={canMoveCard(card) && !moving && !undoing && !deleting}
+                  <CentralCard key={card.id} card={card} reviews={reviewsByCard.get(card.id)} onOpenReview={(item) => { setReviewNotice(null); setReviewOpen({ key, item }); }} movable={canMoveCard(card) && !moving && !undoing && !deleting}
                     onHistory={() => setHistoryOf({ key, cardId: card.id })}
-                    onDelete={!caps.readOnly && caps.canDeleteCards && !deleting ? () => setConfirmDelete({ key, id: card.id, title: card.title }) : undefined}
+                    onDelete={!caps.readOnly && caps.canDeleteCards && !deleting ? () => setConfirmDelete({ key, id: card.id, title: card.title, version: card.version }) : undefined}
                     onEdit={canEditCard(card) ? () => setForm({ key, target: { mode: "edit", card } }) : undefined} />
                 ))}
               </DroppableList>

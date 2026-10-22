@@ -11,6 +11,8 @@ const eslintConfig = defineConfig([
     ".next/**",
     // Build dir of the isolated E2E dev server (playwright.config.ts).
     ".next-e2e/**",
+    // Build dir of the central E2E dev server (playwright.central.config.ts).
+    ".next-e2e-central/**",
     // Generated dev build dir (.next-eval).
     ".next-eval/**",
     // Generated build dir used for validation checks (.next-check).

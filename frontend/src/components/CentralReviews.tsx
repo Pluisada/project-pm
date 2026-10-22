@@ -10,7 +10,8 @@ import {
   type ReviewItem,
 } from "@/lib/api";
 
-const ROLE_LABEL: Record<string, string> = { admin: "Admin", super_admin: "Super Admin" };
+export const ROLE_LABEL: Record<string, string> = { admin: "Admin", super_admin: "Super Admin" };
+const KIND_LABEL: Record<string, string> = { member_edit: "Sales Member edit", backward_move: "Move to an earlier stage" };
 
 const FIELD_LABELS: Record<string, string> = {
   title: "Title", details: "Details", company: "Customer", contact: "Contact", deal_value: "Deal value (current year)",
@@ -20,129 +21,180 @@ const FIELD_LABELS: Record<string, string> = {
 
 const show = (value: unknown) => (value === null || value === undefined || value === "" ? "(empty)" : String(value));
 
-function describeTrigger(t: ReviewItem["triggers"][number]): string {
-  if (t.kind === "backward_move") return `Moved back from ${t.from_title ?? "?"} to ${t.to_title ?? "?"}`;
-  const parts = Object.entries(t.changes ?? {}).map(([field, c]) => `${FIELD_LABELS[field] ?? field}: ${show(c?.old)} -> ${show(c?.new)}`);
-  return parts.length ? `Edited by a Sales Member - ${parts.join("; ")}` : "Edited by a Sales Member";
+type Trigger = ReviewItem["triggers"][number] & { user_id?: number | null };
+
+/** What the marker says: whose review it is and what caused it (from the obligation's own recorded triggers). */
+export function reviewLabel(item: ReviewItem): string {
+  const kinds = [...new Set(item.triggers.map((t) => KIND_LABEL[t.kind] ?? t.kind))];
+  return `${ROLE_LABEL[item.reviewer_role] ?? item.reviewer_role} review required${kinds.length ? ` (${kinds.join(", ")})` : ""}`;
 }
 
-type Props = {
+const when = (iso: string) => {
+  const date = new Date(iso.endsWith("Z") || /[+-]\d\d:\d\d$/.test(iso) ? iso : `${iso}Z`);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
+};
+
+/**
+ * The caller's own pending reviews on a board, read from the backend (never derived locally). `enabled` is the
+ * backend's own canReview capability; the endpoint refuses everyone else. `reload` always shows what the server has now.
+ */
+export function useCompanyReviews(companySlug: string, boardId: number, enabled: boolean, refreshToken: number) {
+  const [state, setState] = useState<{ key: string; items: ReviewItem[]; failed: boolean } | null>(null);
+  const seq = useRef(0);
+  const key = `${companySlug}:${boardId}`;
+
+  const reload = useCallback((signal?: AbortSignal) => {
+    const mine = ++seq.current;
+    return getCompanyReviews(companySlug, boardId, signal).then(
+      (items) => { if (mine === seq.current && !signal?.aborted) setState({ key, items, failed: false }); },
+      (err: unknown) => {
+        if (signal?.aborted || isAbortError(err) || mine !== seq.current) return;
+        setState((cur) => ({ key, items: cur?.key === key ? cur.items : [], failed: true }));
+      }
+    );
+  }, [companySlug, boardId, key]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const controller = new AbortController();
+    void reload(controller.signal);
+    return () => controller.abort();
+  }, [enabled, reload, refreshToken]);
+
+  const current = enabled && state?.key === key ? state : null;
+  return { items: current?.items ?? [], failed: current?.failed ?? false, reload: () => reload() };
+}
+
+type DialogProps = {
   companySlug: string;
   boardId: number;
-  /** Changes whenever the board may have changed, so the list is read again. */
-  refreshToken: number;
-  /** Reports the card ids with a pending review of the caller's role (for the badge on the cards). */
-  onPendingChange?: (cardIds: number[]) => void;
+  /** The obligation as the server last reported it. */
+  item: ReviewItem;
+  /** True while the server still lists it; false once a re-read no longer does (cleared or voided elsewhere). */
+  stillPending: boolean;
+  onClose: () => void;
+  /** The backend confirmed the clearing: the parent drops the marker and reads the list again. */
+  onCleared: (item: ReviewItem) => void;
+  /** A clearing failed: the parent reads the list again so the marker shows the server's state. */
+  onFailed: () => void;
   onOpenHistory?: (cardId: number) => void;
 };
 
 /**
- * Pending reviews of the caller's own role, read from the backend (never derived locally). Shown only to a
- * reviewer: the caller (CentralBoardView) mounts it when the backend's capabilities say canReview, and the endpoints
- * refuse everyone else. "Mark as reviewed" sends the version that is on screen; if the card changed since, the backend
- * answers 409, nothing is cleared, the list is read again and the reviewer sees the latest version.
+ * One review obligation in a focused dialog: its category and status, every recorded change with who made it, when,
+ * and the old and new values, and an explicit Clear. Clear sends the card version the reviewer is looking at; if the
+ * card changed since, the backend answers 409, nothing is cleared and the marker stays. Nothing disappears before the
+ * backend confirms.
  */
-export const CentralReviews = ({ companySlug, boardId, refreshToken, onPendingChange, onOpenHistory }: Props) => {
-  const [items, setItems] = useState<ReviewItem[] | null>(null);
-  const [loadFailed, setLoadFailed] = useState(false);
-  const [busyId, setBusyId] = useState<number | null>(null);
-  const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
-  const seq = useRef(0);
-  const report = useRef(onPendingChange);
-  useEffect(() => { report.current = onPendingChange; });
+export const CentralReviewDialog = ({ companySlug, boardId, item, stillPending, onClose, onCleared, onFailed, onOpenHistory }: DialogProps) => {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const busyRef = useRef(false);
 
-  const load = useCallback((signal?: AbortSignal) => {
-    const mine = ++seq.current;
-    return getCompanyReviews(companySlug, boardId, signal).then(
-      (list) => {
-        if (mine !== seq.current || signal?.aborted) return;
-        setItems(list);
-        setLoadFailed(false);
-        report.current?.(list.map((i) => i.card_id));
-      },
-      (err: unknown) => {
-        if (signal?.aborted || isAbortError(err) || mine !== seq.current) return;
-        setLoadFailed(true);
-      }
-    );
-  }, [companySlug, boardId]);
-
+  useEffect(() => { closeRef.current?.focus(); }, []);
   useEffect(() => {
-    const controller = new AbortController();
-    void load(controller.signal);
-    return () => controller.abort();
-  }, [load, refreshToken]);
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !busyRef.current) onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
-  const clear = async (item: ReviewItem) => {
-    if (busyId !== null) return;
-    setBusyId(item.id);
-    setNotice(null);
+  const clear = async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setError(null);
     try {
       await clearCompanyReview(companySlug, boardId, item.card_id, item.reviewer_role, item.card_version);
-      setNotice({ kind: "ok", text: `"${item.card_title}" marked as reviewed.` });
+      onCleared(item);
+      return;
     } catch (err) {
       const failure = err as Partial<ApiError>;
       if (failure.status_code === 409 || failure.code === "review_stale") {
-        setNotice({ kind: "error", text: "This card changed after you opened it, so it was not marked as reviewed. Review the latest version." });
+        setError("This card changed after the review was opened, so nothing was cleared. The review below is the latest version: read it again before clearing.");
       } else if (failure.status_code === 404) {
-        setNotice({ kind: "error", text: "There is nothing left to review for this card." });
+        setError("There is nothing left to review for this card; nothing was cleared by this request.");
+      } else if (failure.status_code === 403) {
+        setError("You are not allowed to clear this review.");
       } else if (failure.status_code === 0) {
-        setNotice({ kind: "error", text: "Network error - it is not known whether the review was saved. The list was reloaded." });
+        setError("Network error - it is not known whether the review was cleared. The list was read again; check whether the marker is still there.");
       } else {
-        setNotice({ kind: "error", text: getErrorMessage(err, "Could not mark the card as reviewed.") });
+        setError(getErrorMessage(err, "The review could not be cleared."));
       }
+      onFailed();
     } finally {
-      setBusyId(null);
-      void load(); // always show what the server has now, success or not
+      busyRef.current = false;
+      setBusy(false);
     }
   };
 
-  if (items === null && !loadFailed) return null;
-  if (items !== null && items.length === 0 && !notice) return null;
-
+  const triggers = [...item.triggers].reverse() as Trigger[]; // newest first
   return (
-    <section aria-label="Pending reviews" data-testid="central-reviews"
-      className="mt-4 rounded-[14px] border border-amber-300 bg-amber-50 p-4">
-      <h3 className="font-display text-base font-semibold text-amber-950">
-        Pending reviews{items ? ` (${items.length})` : ""}{items?.[0] ? ` - ${ROLE_LABEL[items[0].reviewer_role] ?? ""} review` : ""}
-      </h3>
-      {loadFailed && (
-        <p role="alert" className="mt-2 text-sm font-medium text-red-800">
-          The pending reviews could not be loaded.{" "}
-          <button type="button" onClick={() => void load()} className="font-semibold underline">Try again</button>
-        </p>
-      )}
-      {notice && (
-        <p role={notice.kind === "ok" ? "status" : "alert"} data-testid="review-notice"
-          className={`mt-2 text-sm font-medium ${notice.kind === "ok" ? "text-green-800" : "text-red-800"}`}>
-          {notice.text}
-        </p>
-      )}
-      <ul className="mt-2 divide-y divide-amber-200">
-        {(items ?? []).map((item) => (
-          <li key={item.id} data-testid={`review-${item.card_id}`} className="py-2 text-sm">
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="min-w-0 flex-1 truncate font-semibold text-[var(--navy-dark)]">
-                {item.card_title} <span className="font-normal text-[var(--gray-text)]">({item.column_title})</span>
-              </span>
-              {onOpenHistory && (
-                <button type="button" onClick={() => onOpenHistory(item.card_id)} aria-label={`Review history of ${item.card_title}`}
-                  className="text-xs font-semibold text-[var(--primary-blue)] hover:underline">
-                  History
-                </button>
-              )}
-              <button type="button" disabled={busyId !== null} onClick={() => void clear(item)}
-                aria-label={`Mark ${item.card_title} as reviewed`}
-                className="rounded-lg bg-[var(--secondary-purple)] px-3 py-1.5 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-60">
-                {busyId === item.id ? "Saving..." : "Mark as reviewed"}
-              </button>
-            </div>
-            <ul className="mt-1 list-disc pl-5 text-xs text-[var(--gray-text)]">
-              {item.triggers.slice(-3).map((t, i) => <li key={`${t.version}-${i}`}>{describeTrigger(t)}</li>)}
-            </ul>
-          </li>
-        ))}
-      </ul>
-    </section>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div role="dialog" aria-modal="true" aria-labelledby="review-dialog-title" data-testid="review-dialog"
+        className="flex max-h-[90vh] w-full max-w-xl flex-col gap-3 overflow-y-auto rounded-[24px] border border-[var(--stroke)] bg-[var(--surface-strong)] p-6 shadow-[var(--shadow)]">
+        <h3 id="review-dialog-title" className="font-display text-lg font-semibold text-[var(--navy-dark)]">
+          {ROLE_LABEL[item.reviewer_role] ?? item.reviewer_role} review: {item.card_title}
+        </h3>
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+          <dt className="font-semibold text-[var(--gray-text)]">Category</dt>
+          <dd>{reviewLabel(item)}</dd>
+          <dt className="font-semibold text-[var(--gray-text)]">Status</dt>
+          <dd data-testid="review-status">{stillPending ? "Pending" : "No longer pending on the server"}</dd>
+          <dt className="font-semibold text-[var(--gray-text)]">Stage</dt>
+          <dd>{item.column_title}</dd>
+          <dt className="font-semibold text-[var(--gray-text)]">Opened</dt>
+          <dd>{when(item.created_at)}</dd>
+          <dt className="font-semibold text-[var(--gray-text)]">Last change</dt>
+          <dd>{when(item.updated_at)}</dd>
+        </dl>
+        <h4 className="text-xs font-semibold uppercase tracking-[0.15em] text-[var(--gray-text)]">What changed</h4>
+        {triggers.length === 0 ? (
+          <p className="text-sm text-[var(--gray-text)]">No change details were recorded for this review.</p>
+        ) : (
+          <ul className="space-y-3">
+            {triggers.map((t, i) => (
+              <li key={`${t.version}-${i}`} data-testid="review-trigger" className="rounded-lg border border-[var(--stroke)] p-3 text-sm">
+                <p className="font-semibold text-[var(--navy-dark)]">{KIND_LABEL[t.kind] ?? t.kind}</p>
+                <p className="text-xs text-[var(--gray-text)]">
+                  {t.user_id != null ? `By user #${t.user_id}` : "By a user not recorded"} - {when(t.at)}
+                </p>
+                {t.kind === "backward_move" ? (
+                  <p className="mt-1">Moved back from <strong>{t.from_title ?? "?"}</strong> to <strong>{t.to_title ?? "?"}</strong></p>
+                ) : Object.keys(t.changes ?? {}).length ? (
+                  <table className="mt-1 w-full text-left text-xs">
+                    <thead><tr className="text-[var(--gray-text)]"><th className="pr-2 font-semibold">Field</th><th className="pr-2 font-semibold">Before</th><th className="font-semibold">After</th></tr></thead>
+                    <tbody>
+                      {Object.entries(t.changes ?? {}).map(([field, c]) => (
+                        <tr key={field}><td className="pr-2 align-top">{FIELD_LABELS[field] ?? field}</td><td className="pr-2 align-top">{show(c?.old)}</td><td className="align-top">{show(c?.new)}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <p className="mt-1 text-xs text-[var(--gray-text)]">No field details were recorded.</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {error && <p role="alert" data-testid="review-error" className="text-sm font-medium text-red-800">{error}</p>}
+        <div className="mt-2 flex flex-wrap justify-end gap-2">
+          {onOpenHistory && (
+            <button type="button" onClick={() => onOpenHistory(item.card_id)} disabled={busy}
+              className="mr-auto text-sm font-semibold text-[var(--primary-blue)] hover:underline disabled:opacity-50">
+              History
+            </button>
+          )}
+          <button ref={closeRef} type="button" onClick={onClose} disabled={busy}
+            className="rounded-lg border border-[var(--stroke)] px-4 py-2 text-sm font-semibold text-[var(--gray-text)] disabled:opacity-50">
+            Close
+          </button>
+          <button type="button" onClick={() => void clear()} disabled={busy || !stillPending}
+            className="rounded-lg bg-[var(--secondary-purple)] px-5 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50">
+            {busy ? "Clearing..." : "Clear"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 };

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, type Ref } from "react";
-import { getErrorMessage, sendAIMessage } from "@/lib/api";
+import { getErrorMessage, sendAIMessage, type AIChatResponse } from "@/lib/api";
 
 interface Message {
   role: "user" | "assistant";
@@ -14,6 +14,11 @@ interface AIChatSidebarProps {
   onBoardChange?: () => void;
   onClose?: () => void;
   closeRef?: Ref<HTMLButtonElement>;
+  /** Sends a message somewhere other than the legacy board endpoint (the central company board). When given, actions
+   *  the server refused are listed under the answer, so a conflict is never mistaken for a success. */
+  send?: (message: string) => Promise<AIChatResponse>;
+  /** Central pages: surfaces and text follow the theme (the legacy panel keeps its white surfaces). */
+  themed?: boolean;
 }
 
 const TYPING_DOT_DELAYS = ["0s", "0.2s", "0.4s"];
@@ -24,7 +29,8 @@ const EXAMPLE_PROMPTS = [
   "Move the Acme lead to Proposal",
 ];
 
-export const AIChatSidebar = ({ boardId, onBoardChange, onClose, closeRef }: AIChatSidebarProps) => {
+export const AIChatSidebar = ({ boardId, onBoardChange, onClose, closeRef, send, themed }: AIChatSidebarProps) => {
+  const white = themed ? "bg-[var(--surface)] text-[var(--navy-dark)]" : "bg-white";
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -49,8 +55,12 @@ export const AIChatSidebar = ({ boardId, onBoardChange, onClose, closeRef }: AIC
     setIsLoading(true);
 
     try {
-      const result = await sendAIMessage(boardId, message);
-      addMessage("assistant", result.response);
+      const result = send ? await send(message) : await sendAIMessage(boardId, message);
+      const refused = send ? (result.actions_applied?.failed ?? []) : [];
+      const notApplied = refused.length
+        ? `\n\nNot applied:\n${refused.map((f) => `- ${f.code === "card_version_conflict" ? `${f.reason ?? "The card changed"} (reload the board and ask again)` : (f.reason ?? "This action could not be applied")}`).join("\n")}`
+        : "";
+      addMessage("assistant", `${result.response}${notApplied}`);
 
       // The board is reloaded by the parent, so only signal that it changed
       if (result.actions_applied?.successful?.length) {
@@ -83,7 +93,7 @@ export const AIChatSidebar = ({ boardId, onBoardChange, onClose, closeRef }: AIC
   };
 
   return (
-    <div className="flex h-full flex-col border-l border-[var(--stroke)] bg-white/50 backdrop-blur">
+    <div className={`flex h-full flex-col border-l border-[var(--stroke)] ${themed ? "" : "bg-white/50"} backdrop-blur`}>
       {/* Header */}
       <div className="border-b border-t-[3px] border-b-[var(--stroke)] border-t-[var(--secondary-purple)] px-6 py-4">
         <div className="flex items-center justify-between gap-3">
@@ -93,7 +103,7 @@ export const AIChatSidebar = ({ boardId, onBoardChange, onClose, closeRef }: AIC
             type="button"
             onClick={onClose}
             aria-label="Close AI Assistant"
-            className="rounded-lg border border-[var(--stroke)] bg-white px-3 py-1 text-xs font-semibold text-[var(--gray-text)] transition hover:bg-[var(--surface)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--primary-blue)]"
+            className={`rounded-lg border border-[var(--stroke)] ${white} px-3 py-1 text-xs font-semibold text-[var(--gray-text)] transition hover:bg-[var(--surface)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--primary-blue)]`}
           >
             Close
           </button>
@@ -183,7 +193,7 @@ export const AIChatSidebar = ({ boardId, onBoardChange, onClose, closeRef }: AIC
             onKeyDown={handleKeyDown}
             placeholder="Ask me to organize your board... (Shift+Enter for newline)"
             disabled={isLoading}
-            className="flex-1 resize-none rounded-lg border border-[var(--stroke)] bg-white px-3 py-2 text-sm outline-none placeholder:text-[var(--gray-text)] disabled:opacity-50 focus:border-[var(--primary-blue)] focus:ring-2 focus:ring-[var(--primary-blue)]/20"
+            className={`flex-1 resize-none rounded-lg border border-[var(--stroke)] ${white} px-3 py-2 text-sm outline-none placeholder:text-[var(--gray-text)] disabled:opacity-50 focus:border-[var(--primary-blue)] focus:ring-2 focus:ring-[var(--primary-blue)]/20`}
             rows={3}
           />
           <button

@@ -52,4 +52,16 @@ describe("CentralHeader", () => {
     expect(screen.getByRole("button", { name: "Light" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Dark" })).toHaveAttribute("aria-pressed", "false");
   });
+
+  it("shows section navigation only when there is more than one section, marks the current one and reports a choice", async () => {
+    const onSelect = vi.fn();
+    const items = [{ id: "board" as const, label: "Board" }, { id: "users" as const, label: "Users" }, { id: "database" as const, label: "Database" }];
+    const { rerender } = render(<CentralHeader {...props({ nav: { current: "users", items, onSelect } })} />);
+    expect(screen.getByRole("button", { name: "Users" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: "Board" })).not.toHaveAttribute("aria-current");
+    await userEvent.click(screen.getByRole("button", { name: "Database" }));
+    expect(onSelect).toHaveBeenCalledWith("database");
+    rerender(<CentralHeader {...props({ nav: { current: "board", items: items.slice(0, 1), onSelect } })} />);
+    expect(screen.queryByRole("navigation", { name: "Sections" })).not.toBeInTheDocument();
+  });
 });

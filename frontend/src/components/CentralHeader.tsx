@@ -4,6 +4,9 @@ import type { CentralCompany } from "@/lib/api";
 import { brandFor } from "@/lib/branding";
 import type { ThemePreference } from "@/lib/theme";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { NavSlot } from "@/components/NavSlot";
+
+export type CentralView = "board" | "users" | "database";
 
 interface CentralHeaderProps {
   company: CentralCompany;
@@ -14,13 +17,18 @@ interface CentralHeaderProps {
   theme: ThemePreference;
   onThemeChange: (next: ThemePreference) => void;
   onSignOut: () => void;
+  /** Sections of the company the person may open (the backend still decides every request). Omitted: no navigation. */
+  nav?: { current: CentralView; items: { id: CentralView; label: string }[]; onSelect: (view: CentralView) => void };
+  /** The Board section's own controls: places for Undo and "Manage boards and columns" (rendered into them by the
+   *  board), and the AI Assistant toggle (omitted for a role that cannot use it). */
+  boardTools?: { ai?: { open: boolean; onToggle: () => void } };
 }
 
 /**
- * The bar above a company's pages: its identity, an explicit way to change company, the theme, who is signed in and
- * sign-out. It links to nothing else: pages that do not exist in central mode yet are not offered.
+ * The bar above a company's pages: its identity, an explicit way to change company, the sections the person may open
+ * (Board, Users, Database; only those offered by the caller), the theme, who is signed in and sign-out.
  */
-export const CentralHeader = ({ company, email, canSwitch, onSwitch, theme, onThemeChange, onSignOut }: CentralHeaderProps) => {
+export const CentralHeader = ({ company, email, canSwitch, onSwitch, theme, onThemeChange, onSignOut, nav, boardTools }: CentralHeaderProps) => {
   const brand = brandFor(company.slug);
   const button =
     "rounded-md border border-[var(--nav-line)] px-3 py-1.5 text-sm font-semibold text-[var(--nav-ink)] transition hover:border-[var(--nav-brand)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--nav-brand)]";
@@ -43,6 +51,29 @@ export const CentralHeader = ({ company, email, canSwitch, onSwitch, theme, onTh
           <button type="button" onClick={onSwitch} className={button}>
             Switch company
           </button>
+        )}
+        {nav && nav.items.length > 1 && (
+          <nav aria-label="Sections" className="flex flex-wrap items-center gap-2">
+            {nav.items.map((item) => (
+              <button key={item.id} type="button" onClick={() => nav.onSelect(item.id)}
+                aria-current={nav.current === item.id ? "page" : undefined}
+                className={`${button} ${nav.current === item.id ? "border-[var(--nav-brand)] bg-[var(--nav-line)]" : ""}`}>
+                {item.label}
+              </button>
+            ))}
+          </nav>
+        )}
+        {boardTools && (
+          <div className="flex flex-wrap items-center gap-2" data-testid="board-tools">
+            <NavSlot id="central-undo-slot" />
+            <NavSlot id="central-boards-slot" />
+            {boardTools.ai && (
+              <button type="button" onClick={boardTools.ai.onToggle} aria-expanded={boardTools.ai.open} aria-controls="central-ai-panel"
+                className={`${button} ${boardTools.ai.open ? "border-[var(--nav-brand)] bg-[var(--nav-line)]" : ""}`}>
+                AI Assistant
+              </button>
+            )}
+          </div>
         )}
         <div className="ml-auto flex flex-wrap items-center gap-3">
           <ThemeToggle value={theme} onChange={onThemeChange} />

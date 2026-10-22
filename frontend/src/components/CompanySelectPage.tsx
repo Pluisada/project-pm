@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import type { CentralCompany } from "@/lib/api";
 import { brandFor } from "@/lib/branding";
+import { LandingArtwork } from "@/components/CentralLanding";
 
 const ROLE_LABEL: Record<string, string> = {
   super_admin: "Administrator",
@@ -28,7 +29,9 @@ interface CompanySelectPageProps {
  * what the server returned for this account and reports the choice; the server decides what each request may do.
  */
 export const CompanySelectPage = ({ companies, onSelect, onLogout, notice, problem, children }: CompanySelectPageProps) => (
-  <main className="flex min-h-screen items-center justify-center px-6">
+  <div className="fixed inset-0 overflow-hidden bg-[#0b1f3a]">
+  <LandingArtwork />
+  <main className="absolute inset-0 flex items-center justify-center overflow-y-auto bg-black/50 px-6 py-8">
     <div className="w-full max-w-md rounded-[24px] border border-[var(--stroke)] bg-[var(--surface-strong)]/80 p-8 shadow-[var(--shadow)]">
       <h1 className="font-display text-2xl font-semibold text-[var(--navy-dark)]">Choose a company</h1>
       {notice && <p role="status" className="mt-4 text-sm font-medium text-amber-900">{notice}</p>}
@@ -71,4 +74,5 @@ export const CompanySelectPage = ({ companies, onSelect, onLogout, notice, probl
       </button>
     </div>
   </main>
+  </div>
 );

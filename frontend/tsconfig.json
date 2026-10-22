@@ -42,7 +42,9 @@
     ".next-eval/types/**/*.ts",
     ".next-eval/dev/types/**/*.ts",
     ".next-check/types/**/*.ts",
-    ".next-check/dev/types/**/*.ts"
+    ".next-check/dev/types/**/*.ts",
+    ".next-e2e-central/types/**/*.ts",
+    ".next-e2e-central/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

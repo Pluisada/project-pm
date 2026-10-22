@@ -62,7 +62,7 @@ describe("CentralApp", () => {
     });
     render(<CentralApp />);
     await pickCompany("Lity");
-    await screen.findByRole("button", { name: "Export Current Database" });
+    await screen.findByTestId("central-board");
     expect(getActiveCompany()).toBe("lity");
     const companyCalls = fetchMock.mock.calls.filter(([u]) => String(u).includes("/api/companies/"));
     expect(companyCalls.length).toBeGreaterThan(0);
@@ -86,14 +86,14 @@ describe("CentralApp", () => {
     });
     render(<CentralApp />);
     await pickCompany("Salcomp");
-    await screen.findByRole("button", { name: "Export Current Database" });
+    await screen.findByTestId("central-board");
     // Let Salcomp's own reads (board, capabilities, undo status) all be sent before the switch, so what follows is
     // only what the switch itself causes.
     await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/companies/salcomp/boards/3/undo"))).toBe(true));
     fetchMock.mockClear();
     await switchCompany("Lity");
     await waitFor(() => expect(getActiveCompany()).toBe("lity"));
-    await screen.findByRole("button", { name: "Export Current Database" });
+    await screen.findByTestId("central-board");
     const urls = fetchMock.mock.calls.map(([u]) => String(u)).filter((u) => u.includes("/api/companies/"));
     expect(urls.length).toBeGreaterThan(0);
     expect(urls.every((u) => u.includes("/api/companies/lity/"))).toBe(true);
@@ -190,7 +190,7 @@ describe("CentralApp", () => {
       signedIn();
       render(<CentralApp />);
       await pickCompany("Lity");
-      await screen.findByRole("button", { name: "Export Current Database" });
+      await screen.findByTestId("central-board");
       await userEvent.click(screen.getByRole("button", { name: "Switch company" }));
       expect(await screen.findByRole("heading", { name: "Choose a company" })).toBeInTheDocument();
       expect(getActiveCompany()).toBeNull();
@@ -239,7 +239,7 @@ describe("CentralApp", () => {
       signedIn();
       render(<CentralApp />);
       await pickCompany("Lity");
-      await screen.findByRole("button", { name: "Export Current Database" });
+      await screen.findByTestId("central-board");
       expect(screen.queryAllByRole("link")).toEqual([]);
       for (const name of [/Reports/, /Dashboard/, /Products/, /Import Bids/]) {
         expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
@@ -252,10 +252,10 @@ describe("CentralApp", () => {
       const fetchMock = signedIn();
       render(<CentralApp />);
       await pickCompany("Lity");
-      await screen.findByRole("button", { name: "Export Current Database" });
+      await screen.findByTestId("central-board");
       localStorage.setItem("pm_auth_token", "tok2"); // another tab signed in; no event processed yet
       await switchCompany("Salcomp");
-      await screen.findByRole("button", { name: "Export Current Database" });
+      await screen.findByTestId("central-board");
       const withOther = (fetchMock.mock.calls as unknown as [string, RequestInit][]).filter(
         ([, init]) => (init?.headers as Record<string, string> | undefined)?.Authorization === "Bearer tok2"
       );
@@ -281,7 +281,7 @@ describe("CentralApp", () => {
       });
       render(<CentralApp />);
       await pickCompany("Lity");
-      await screen.findByRole("button", { name: "Export Current Database" });
+      await screen.findByTestId("central-board");
       // Everything the company view reads on opening (board, capabilities, undo status) has been sent: what a test
       // sees after this is caused by the test.
       await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/companies/lity/boards/3/undo"))).toBe(true));
@@ -301,7 +301,7 @@ describe("CentralApp", () => {
     it("keeps the same account and company after asking the server who the new token belongs to", async () => {
       const fetchMock = await signedInOnLity();
       tokenChanged("tok2");
-      await screen.findByRole("button", { name: "Export Current Database" });
+      await screen.findByTestId("central-board");
       expect(getActiveCompany()).toBe("lity");
       expect(calls(fetchMock, "/api/central/me")).toHaveLength(1);
       expect(screen.queryByText(/account signed in on this browser changed/)).not.toBeInTheDocument();
@@ -364,7 +364,7 @@ describe("CentralApp", () => {
       });
       expect(getActiveCompany()).toBe("lity");
       expect(fetchMock).not.toHaveBeenCalled();
-      expect(screen.getByRole("button", { name: "Export Current Database" })).toBeInTheDocument();
+      expect(screen.getByTestId("central-board")).toBeInTheDocument();
     });
 
     const authOf = (call: unknown) =>
@@ -384,7 +384,7 @@ describe("CentralApp", () => {
       act(() => {
         window.dispatchEvent(new StorageEvent("storage", { key: "pm_auth_token", oldValue: "tok", newValue: "tok2" }));
       });
-      await screen.findByRole("button", { name: "Export Current Database" });
+      await screen.findByTestId("central-board");
       expect(lastAuthFor(fetchMock, "/api/central/me")).toBe("Bearer tok2");
       // ... and once it is verified, this tab runs it.
       await listCompanyBoards("lity");
@@ -425,7 +425,7 @@ describe("CentralApp", () => {
     });
   });
 
-  it("signs in, loads the company and shows both buttons to a super admin", async () => {
+  it("signs in, loads the company and keeps the downloads off the board, in the Database section", async () => {
     route({
       "/api/central/login": () => json(200, { access_token: "tok", token_type: "bearer" }),
       "/api/central/me": () => me([{ slug: "salcomp", name: "Salcomp", role: "super_admin" }]),
@@ -436,7 +436,10 @@ describe("CentralApp", () => {
     await userEvent.type(await screen.findByLabelText("Email"), "a@b.com");
     await userEvent.type(screen.getByLabelText("Password"), "pw");
     await userEvent.click(screen.getByRole("button", { name: "Sign In" }));
-    expect(await screen.findByRole("button", { name: "Export Current Database" })).toBeInTheDocument();
+    expect(await screen.findByTestId("central-board")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Download Import Template" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Database" }));
+    expect(screen.getByRole("button", { name: "Export Current Database" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download Import Template" })).toBeInTheDocument();
   });
 
@@ -545,6 +548,7 @@ describe("CentralApp", () => {
     });
     render(<CentralApp />);
     await pickCompany("Salcomp");
+    await userEvent.click(await screen.findByRole("button", { name: "Database" }));
     await userEvent.click(await screen.findByRole("button", { name: "Export Current Database" }));
     expect(await screen.findByRole("alert")).toBeInTheDocument();
     // the button is usable again after the failure
@@ -556,6 +560,7 @@ describe("CentralApp", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
     await switchCompany("Salcomp");
+    await userEvent.click(await screen.findByRole("button", { name: "Database" })); // a company always opens on its board
     expect(await screen.findByRole("button", { name: "Export Current Database" })).toBeEnabled();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
@@ -599,7 +604,7 @@ describe("CentralApp", () => {
       up = true;
       const retry = screen.getByRole("button", { name: "Try again" });
       await userEvent.dblClick(retry);
-      expect(await screen.findByRole("button", { name: "Export Current Database" })).toBeInTheDocument();
+      expect(await screen.findByTestId("central-board")).toBeInTheDocument();
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
       expect(count(fetchMock, "/boards")).toBe(2);
@@ -619,7 +624,7 @@ describe("CentralApp", () => {
       expect(await screen.findByRole("alert")).toHaveTextContent("Network error");
       up = true;
       await userEvent.click(screen.getByRole("button", { name: "Try again" }));
-      expect(await screen.findByRole("button", { name: "Export Current Database" })).toBeInTheDocument();
+      expect(await screen.findByTestId("central-board")).toBeInTheDocument();
     });
 
     it("does not offer a retry for 403, which keeps its own handling", async () => {
@@ -653,7 +658,7 @@ describe("CentralApp", () => {
       await pickCompany("Salcomp");
       await waitFor(() => expect(count(fetchMock, "/companies/salcomp/boards")).toBe(1));
       await switchCompany("Acme");
-      expect(await screen.findByRole("button", { name: "Export Current Database" })).toBeInTheDocument();
+      expect(await screen.findByTestId("central-board")).toBeInTheDocument();
       // the abandoned request fails late: nothing about it may surface
       await act(async () => releaseSalcomp(json(500, { detail: "late failure" })));
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -684,7 +689,7 @@ describe("CentralApp", () => {
       expect(await screen.findByRole("alert")).toHaveTextContent("acme down");
       acmeUp = true;
       await userEvent.click(screen.getByRole("button", { name: "Try again" }));
-      expect(await screen.findByRole("button", { name: "Export Current Database" })).toBeInTheDocument();
+      expect(await screen.findByTestId("central-board")).toBeInTheDocument();
       expect(count(fetchMock, "/companies/salcomp/boards")).toBe(1);
       expect(count(fetchMock, "/companies/acme/boards")).toBe(2);
     });

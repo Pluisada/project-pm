@@ -17,11 +17,14 @@ import {
   getErrorMessage,
   listCompanyBoards,
   type ApiError,
+  ROLE_COMPANY_ADMIN,
   ROLE_SUPER_ADMIN,
+  sendCompanyAIMessage,
   type BoardResponse,
   type CentralMe,
 } from "@/lib/api";
 import { CentralBoardAdmin } from "@/components/CentralBoardAdmin";
+import { AIChatSidebar } from "@/components/AIChatSidebar";
 import { CentralBoardView } from "@/components/CentralBoardView";
 import { CentralDefaultBoard } from "@/components/CentralDefaultBoard";
 import { CentralCardsImport } from "@/components/CentralCardsImport";
@@ -39,7 +42,7 @@ import { LoadingScreen } from "@/components/LoadingScreen";
 import { setActiveCompany } from "@/lib/activeCompany";
 import { useCompanyBranding } from "@/lib/branding";
 import { useThemePreference } from "@/lib/theme";
-import { CentralHeader } from "@/components/CentralHeader";
+import { CentralHeader, type CentralView } from "@/components/CentralHeader";
 import { CompanySelectPage } from "@/components/CompanySelectPage";
 import { WriteOutcomeNotices } from "@/components/WriteOutcomeNotices";
 import { clearWriteOutcomes } from "@/lib/writeOutcomes";
@@ -178,6 +181,11 @@ export const CentralApp = () => {
   const meRef = useRef<CentralMe | null>(null);
   const sessionEpoch = useRef(0);
   const [accountNotice, setAccountNotice] = useState<string | null>(null);
+  // The section on screen (board, users, database), tied to the company it was opened in: another company, or leaving
+  // one, always starts on the board. Which sections exist for a person is decided below from their role.
+  const [viewFor, setViewFor] = useState<{ slug: string; view: CentralView }>({ slug: "", view: "board" });
+  // The AI Assistant panel, tied to the company it was opened in like the section above.
+  const [aiFor, setAiFor] = useState<string | null>(null);
   useEffect(() => {
     meRef.current = me;
   }, [me]);
@@ -332,6 +340,8 @@ export const CentralApp = () => {
   }, []);
 
   const chooseCompany = (slug: string) => {
+    setViewFor({ slug: "", view: "board" });
+    setAiFor(null);
     setBoardNote(null);
     denied.current.delete(slug);
     remember(slug);
@@ -343,6 +353,8 @@ export const CentralApp = () => {
 
   // Leave the company explicitly: nothing of it stays registered, loaded or remembered, and the picker is shown.
   const leaveCompany = () => {
+    setViewFor({ slug: "", view: "board" });
+    setAiFor(null);
     setBoardNote(null);
     remember(null);
     setProblem(null);
@@ -435,11 +447,36 @@ export const CentralApp = () => {
   const boards = loaded && loaded.slug === companySlug ? loaded.boards : [];
   const boardId = pickedBoardId !== null && boards.some((b) => b.id === pickedBoardId) ? pickedBoardId : (boards[0]?.id ?? null);
 
+  // Sections: Users is the Super Admin's (the screen it shows is the invitation and member management, which the
+  // backend refuses to anyone else); Database (export and import template) is for the Super Admin and the company
+  // Admin, as ExcelDownloadButtons and the backend already decide. A section the role does not have is never shown,
+  // and a stale choice falls back to the board.
+  const canUsers = company.role === ROLE_SUPER_ADMIN;
+  const canDatabase = company.role === ROLE_SUPER_ADMIN || company.role === ROLE_COMPANY_ADMIN;
+  const requested: CentralView = viewFor.slug === company.slug ? viewFor.view : "board";
+  const view: CentralView = requested === "users" && canUsers ? "users" : requested === "database" && canDatabase ? "database" : "board";
+  const navItems: { id: CentralView; label: string }[] = [
+    { id: "board", label: "Board" },
+    ...(canUsers ? [{ id: "users" as const, label: "Users" }] : []),
+    ...(canDatabase ? [{ id: "database" as const, label: "Database" }] : []),
+  ];
+  const page = "mx-auto max-w-7xl";
+
+  // The assistant is for writers (the backend refuses a Visitor) and needs a board to talk about.
+  const canAi = company.role !== "visitor" && boardId !== null;
+  const aiOpen = canAi && aiFor === company.slug;
+
   return (
     <>
     <CentralHeader company={company} email={me.email} canSwitch={me.companies.length > 1} onSwitch={leaveCompany}
-      theme={theme} onThemeChange={setTheme} onSignOut={signOut} />
-    <div className="mx-auto max-w-7xl px-6 py-10">
+      theme={theme} onThemeChange={setTheme} onSignOut={signOut}
+      nav={{ current: view, items: navItems, onSelect: (next) => setViewFor({ slug: company.slug, view: next }) }}
+      boardTools={view === "board"
+        ? { ai: canAi ? { open: aiOpen, onToggle: () => setAiFor((cur) => (cur === company.slug ? null : company.slug)) } : undefined }
+        : undefined} />
+    <div className="flex items-start">
+    <div className="min-w-0 flex-1 px-6 py-10">
+      <div className={page}>
       <WriteOutcomeNotices companies={me.companies} />
       {accountNotice && <p role="status" className="mt-4 text-sm font-medium text-amber-900">{accountNotice}</p>}
       {problem && <p role="alert" className="mt-6 text-sm font-medium text-red-800">{problem}</p>}
@@ -450,8 +487,37 @@ export const CentralApp = () => {
           Try again
         </button>
       )}
+      </div>
+      {view === "users" && company && loaded && loaded.slug === company.slug && (
+        <section className={`${page} mt-8`}>
+          <CentralMembers key={company.slug} companySlug={company.slug} companyName={company.name} />
+        </section>
+      )}
+      {view === "database" && company && (
+        <section data-testid="central-database-screen" className={`${page} mt-8`}>
+          <h2 className="font-display text-xl font-semibold text-[var(--navy-dark)]">Database</h2>
+          <p className="mt-2 text-sm text-[var(--gray-text)]">
+            Download the current board as a workbook or the empty import template, or import cards from a workbook.
+          </p>
+          <div className="mt-4">
+            {boardId !== null ? (
+              <ExcelDownloadButtons key={`${company.slug}:${boardId}`} companySlug={company.slug} boardId={boardId} role={company.role} />
+            ) : (
+              <p className="text-sm text-[var(--gray-text)]">{company.name} has no board yet; the downloads need one.</p>
+            )}
+          </div>
+          {boardId !== null && (
+            <div className="mt-8">
+              <CentralCardsImport key={`${company.slug}:${boardId}`} companySlug={company.slug} boardId={boardId}
+                onImported={() => setStructureTick((n) => n + 1)} />
+            </div>
+          )}
+        </section>
+      )}
+      {view === "board" && (
+        <>
       {company && boards.length > 1 && (
-        <section className="mt-6">
+        <section className={`${page} mt-6`}>
           <label htmlFor="board-select" className={labelClass}>Board</label>
           <select id="board-select" value={boardId ?? ""} onChange={(e) => setPickedBoardId(Number(e.target.value))} className={inputClass}>
             {boards.map((b) => (
@@ -460,13 +526,27 @@ export const CentralApp = () => {
           </select>
         </section>
       )}
+      {company && loaded && loaded.slug === company.slug && (
+        <section className={`${page} mt-6`}>
+          <CentralBoardAdmin key={company.slug} companySlug={company.slug} boards={boards} boardId={boardId}
+            onSelectBoard={setPickedBoardId} onRefreshBoards={() => refreshBoards(company.slug)} onColumnsChanged={() => setStructureTick((n) => n + 1)}
+            onBoardCreated={(created) => {
+              // The board belongs to the company it was created in. If the person has switched since, its id means
+              // nothing here (ids are per company database), so it must not select anything.
+              if (companyRef.current !== company.slug) return;
+              setLoaded((cur) => (cur && cur.slug === company.slug ? { slug: cur.slug, boards: [...cur.boards, created] } : cur));
+              setPickedBoardId(created.id);
+            }} />
+        </section>
+      )}
       {company && boardId !== null && (
+        // Not capped at the page width: the board scrolls across the whole window (see the scroll area in CentralBoardView).
         <section className="mt-8">
           <CentralBoardView key={`${company.slug}:${boardId}`} companySlug={company.slug} boardId={boardId} refreshToken={structureTick} />
         </section>
       )}
       {company && loaded && loaded.slug === company.slug && boards.length === 0 && (
-        <section data-testid="central-empty-workspace" className="mt-8 rounded-[24px] border border-[var(--stroke)] bg-[var(--surface-strong)]/80 p-6 shadow-[var(--shadow)]">
+        <section data-testid="central-empty-workspace" className="mx-auto mt-8 max-w-7xl rounded-[24px] border border-[var(--stroke)] bg-[var(--surface-strong)]/80 p-6 shadow-[var(--shadow)]">
           <h2 className="font-display text-xl font-semibold text-[var(--navy-dark)]">No board yet</h2>
           <p className="mt-2 text-sm text-[var(--gray-text)]">
             {company.role === ROLE_SUPER_ADMIN
@@ -488,35 +568,19 @@ export const CentralApp = () => {
             }} />
         </section>
       )}
-      {company && loaded && loaded.slug === company.slug && (
-        <section className="mt-8">
-          <CentralBoardAdmin key={company.slug} companySlug={company.slug} boards={boards} boardId={boardId}
-            onSelectBoard={setPickedBoardId} onRefreshBoards={() => refreshBoards(company.slug)} onColumnsChanged={() => setStructureTick((n) => n + 1)}
-            onBoardCreated={(created) => {
-              // The board belongs to the company it was created in. If the person has switched since, its id means
-              // nothing here (ids are per company database), so it must not select anything.
-              if (companyRef.current !== company.slug) return;
-              setLoaded((cur) => (cur && cur.slug === company.slug ? { slug: cur.slug, boards: [...cur.boards, created] } : cur));
-              setPickedBoardId(created.id);
-            }} />
-        </section>
+        </>
       )}
-      {company && loaded && loaded.slug === company.slug && company.role === ROLE_SUPER_ADMIN && (
-        <section className="mt-8">
-          <CentralMembers key={company.slug} companySlug={company.slug} companyName={company.name} />
-        </section>
-      )}
-      {company && boardId !== null && (
-        <section className="mt-8">
-          <ExcelDownloadButtons key={`${company.slug}:${boardId}`} companySlug={company.slug} boardId={boardId} role={company.role} />
-        </section>
-      )}
-      {company && boardId !== null && (
-        <section className="mt-8">
-          <CentralCardsImport key={`${company.slug}:${boardId}`} companySlug={company.slug} boardId={boardId}
-            onImported={() => setStructureTick((n) => n + 1)} />
-        </section>
-      )}
+    </div>
+    {view === "board" && aiOpen && company && boardId !== null && (
+      <>
+        <div data-testid="ai-sidebar-backdrop" onClick={() => setAiFor(null)} className="fixed inset-0 z-30 bg-black/40 lg:hidden" />
+        <aside id="central-ai-panel" aria-label="AI Assistant"
+          className="border-l border-[var(--stroke)] bg-[var(--surface-strong)] max-lg:fixed max-lg:inset-y-0 max-lg:right-0 max-lg:z-40 max-lg:w-[min(20rem,100vw)] max-lg:shadow-[var(--shadow)] lg:sticky lg:top-0 lg:h-[calc(100vh-3.7rem)] lg:w-80 lg:shrink-0">
+          <AIChatSidebar themed boardId={boardId} send={(message) => sendCompanyAIMessage(company.slug, boardId, message)}
+            onClose={() => setAiFor(null)} onBoardChange={() => setStructureTick((n) => n + 1)} />
+        </aside>
+      </>
+    )}
     </div>
     </>
   );

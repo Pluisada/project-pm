@@ -71,7 +71,7 @@ describe("CentralBoardView undo", () => {
     const { calls } = setup();
     const button = await screen.findByRole("button", { name: "Undo" });
     expect(button).toBeEnabled();
-    expect(screen.getByText('Move "Lead 1" back')).toBeInTheDocument();
+    expect(screen.getByTestId("undo-button")).toHaveAttribute("title", 'Move "Lead 1" back'); // the description is the button's tooltip
     expect(calls.some((c) => c.method === "GET" && c.url.endsWith("/api/companies/acme/boards/3/undo"))).toBe(true);
   });
 

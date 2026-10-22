@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { InNavSlot } from "@/components/NavSlot";
 import {
   createCompanyBoard,
   createCompanyColumn,
@@ -29,6 +30,10 @@ const primaryButton =
   "rounded-lg bg-[var(--secondary-purple)] px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50";
 const secondaryButton =
   "rounded-lg border border-[var(--stroke)] px-3 py-1.5 text-xs font-semibold text-[var(--primary-blue)] transition hover:border-[var(--primary-blue)] disabled:cursor-not-allowed disabled:opacity-50";
+
+// The toggle sits in the dark top navigation: same look as the other navigation buttons.
+const navButton =
+  "rounded-md border border-[var(--nav-line)] px-3 py-1.5 text-sm font-semibold text-[var(--nav-ink)] transition hover:border-[var(--nav-brand)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--nav-brand)]";
 
 type Notice = { kind: "ok" | "error" | "uncertain"; text: string };
 
@@ -286,9 +291,12 @@ export const CentralBoardAdmin = ({
 
   return (
     <section aria-label="Board administration" data-testid="board-admin">
-      <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)} className={secondaryButton}>
-        {open ? "Hide board administration" : "Manage boards and columns"}
-      </button>
+      {/* The control lives in the top navigation (NavSlot "central-boards-slot"); the panel opens above the board. */}
+      <InNavSlot id="central-boards-slot">
+        <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)} className={navButton}>
+          {open ? "Hide board administration" : "Manage boards and columns"}
+        </button>
+      </InNavSlot>
       {open && (
         <div className="mt-4 rounded-[14px] border border-[var(--stroke)] bg-[var(--surface-strong)]/70 p-5" aria-busy={busy}>
           {notice && (

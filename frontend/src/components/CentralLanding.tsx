@@ -1,12 +1,8 @@
 "use client";
 
-/**
- * Full-screen Sales Tracker artwork shown before the central sign-in form. Wide screens fill the viewport;
- * narrow ones show the whole image over a blurred copy. Without `open` it offers the LOGIN button; with it,
- * the children (the sign-in form) sit over the artwork.
- */
-export const CentralLanding = ({ open, onLogin, children }: { open: boolean; onLogin: () => void; children: React.ReactNode }) => (
-  <div className="fixed inset-0 overflow-hidden bg-[#0b1f3a]">
+/** The Sales Tracker artwork (a blurred copy behind the whole image), filling its positioned parent. */
+export const LandingArtwork = () => (
+  <>
     {/* eslint-disable-next-line @next/next/no-img-element -- static export, local asset */}
     <img src="/sales-tracker-login.jpg" alt="" aria-hidden="true" className="absolute inset-0 h-full w-full scale-110 object-cover blur-2xl" />
     {/* eslint-disable-next-line @next/next/no-img-element -- static export, local asset */}
@@ -15,6 +11,17 @@ export const CentralLanding = ({ open, onLogin, children }: { open: boolean; onL
       alt="Sales Tracker: three racehorses wearing the Lity, Salcomp and Valor Log colors"
       className="absolute inset-0 h-full w-full object-cover object-[50%_20%] [@media(max-aspect-ratio:3/2)]:object-contain [@media(max-aspect-ratio:3/2)]:object-center"
     />
+  </>
+);
+
+/**
+ * Full-screen Sales Tracker artwork shown before the central sign-in form. Wide screens fill the viewport;
+ * narrow ones show the whole image over a blurred copy. Without `open` it offers the LOGIN button; with it,
+ * the children (the sign-in form) sit over the artwork. The company picker uses the same artwork (LandingArtwork).
+ */
+export const CentralLanding = ({ open, onLogin, children }: { open: boolean; onLogin: () => void; children: React.ReactNode }) => (
+  <div className="fixed inset-0 overflow-hidden bg-[#0b1f3a]">
+    <LandingArtwork />
     {open ? (
       <div className="absolute inset-0 overflow-y-auto bg-black/50">{children}</div>
     ) : (

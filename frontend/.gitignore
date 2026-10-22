@@ -16,6 +16,7 @@
 # next.js
 /.next/
 /.next-e2e/
+/.next-e2e-central/
 /.next-eval/
 /out/
 
@@ -45,4 +46,5 @@ next-env.d.ts
 # generated test/build artifacts
 /.next-check/
 /test-results/
+/test-results-central/
 /playwright-report/
