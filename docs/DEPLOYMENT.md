@@ -369,6 +369,44 @@ Use it for each deployment review and keep the filled-in record with the deploym
 - The checklist covers central mode. For legacy single-database deployments use "C6 release" and "Backup, migration and restore procedure" above.
 - No diagnostic or deployment has been run against a production database, VPS or real company database.
 
+## Phase 7B release: operator procedure for the real central databases (procedure; executed once for the developer's local databases on 2026-10-22, not for any server)
+
+Phase 7B (card versions, mandatory `expected_version`, version-aware AI and Undo, commit-time authority recheck, the central UI sections and the Cards import recovery) is committed locally (not pushed) and not deployed to a server. Every value in angle brackets is a placeholder the authorized operator must fill in; do not guess them. The procedure below was executed once, for the developer's local central databases on their Mac only; see "Executed record" at the end of this section. It has not been run for any server (VPS) database.
+
+**Client contract to know before deploying.** The central REST card update, move and delete require `expected_version` (HTTP 428 `card_version_required` without it, 409 `card_version_conflict` when stale). The shipped UI sends it; any other client of `/api/companies/{slug}/boards/{id}/cards/...` must be updated first. The code needs `card_versions` and `card_review_obligations` in every company database (503 `review_not_initialized` otherwise).
+
+1. **Identify and confirm the targets (a person, in writing).** For each of `salcomp`, `lity`, `valor-log` record the absolute path of the real database file and who confirmed it. The identity database is a fourth file. Source of truth is the deployment's environment file (`PM_COMPANY_DB_<SLUG>`, `IDENTITY_DATABASE_URL`; docker: `PM_CENTRAL_DATA_HOST_PATH`); check only that the names are set, never print the values ("Required variables"). Refuse to continue if a path is unconfirmed, is `backend/pm.db`, the legacy commercial database, or one of the acceptance/scratch databases.
+2. **Make the backup safe.** Stop the application first (the documented rule above), or have the operator who owns the deployment confirm that the online backup of step 3 is acceptable for the running instance (SQLite's online backup API gives a consistent snapshot; the source is opened read-only). Note the free disk space and keep the backup directory outside the repository.
+3. **Verified backup, never overwriting.** From `backend/`, one file per database (the helper refuses an existing destination and checks integrity, foreign keys and logical equality):
+   ```bash
+   cd backend
+   uv run python commercial_import.py backup --database <ABS_SOURCE_DB> --dest <ABS_NEW_BACKUP_FILE>
+   ```
+   If that command refuses a non-commercial database, call the same helper directly: `uv run python -c "from db_target_guard import make_backup; print(make_backup('<ABS_SOURCE_DB>', '<ABS_NEW_BACKUP_FILE>'))"`. Record, per database: the backup path, its SHA-256 (printed), that the integrity check passed, and that the source file's modification time and hash are unchanged afterwards. Copy the backups to a second failure domain. Do not report a backup as successful without all of that.
+4. **Read-only diagnostics, on the verified copies** (or on the live file only if the operator authorizes it; the diagnostic opens `mode=ro`, `query_only`, and prints no paths or rows):
+   ```bash
+   cd backend
+   PM_COMPANY_DB_<SLUG>=sqlite:///<ABS_BACKUP_COPY_OF_THAT_COMPANY> uv run python diagnose_company_schema.py --company <slug>
+   ```
+   (`<SLUG>` is `SALCOMP`, `LITY` or `VALOR_LOG`; `<slug>` is `salcomp`, `lity` or `valor-log`; the URL form for an absolute path is `sqlite:////abs/path`.) Run it once per company and keep the exit status.
+5. **Compare.** Required result per database: exit 0 and "Schema complete." (schema version 4, `cards.confidence_level`, and the four additive tables `card_versions`, `card_review_obligations`, `card_loss_events`, `card_excel_imports`, plus `products`). Exit 1 lists each gap and names the script that closes it (`init_company_card_reviews.py`, `init_company_card_loss.py`, `init_company_excel_imports.py`, `init_company_products.py`, or `migrate_confidence_level.py` for a version below 4). Exit 2 means the file could not be opened. An `INCOMPATIBLE` table stops the deployment (see "Backup and recovery prerequisites").
+6. **Decide and report.** Per company: backup path/hash/integrity, diagnostic exit status and listed gaps, and whether an upgrade is required. If any database needs an upgrade, the upgrade is a separate, separately authorized task following "Dry run, apply, verify" above, always on a copy first, with the application stopped and a fresh verified backup; none of those commands belongs to this procedure.
+
+Then, for the intended commit only: run the full backend suite and the checklist's other steps ("Deployment-readiness checklist"), and record the commit hash with the totals.
+
+### Executed record (2026-10-22, developer's Mac; local databases only)
+
+- The developer confirmed the directory holding the four local central databases (identity, Salcomp, Lity, Valor Log). Before any change the four files were backed up with the verified, never-overwriting helper into a new directory (integrity ok, 0 foreign-key violations, logical content equal to the source, sources unchanged, backups kept at mode 0600 in a 0700 directory outside the repository).
+- `diagnose_company_schema.py` on the backup copies reported schema version 4 and the same three missing tables for each company (`card_versions`, `card_review_obligations`, `card_loss_events`).
+- After the developer's explicit authorization, `init_company_card_reviews.py` and `init_company_card_loss.py` were run for Salcomp, Lity and Valor Log, each as a dry run, then again as a dry run immediately before its `--apply`, then applied. Result per company: 3 tables and 4 indexes created, diagnostic exit 0 ("Schema complete."), integrity ok, 0 foreign-key violations, `user_version` still 4, existing tables' row counts unchanged, new tables empty, `identity.db` unchanged (same hash), the four backups still unchanged.
+- The application was then started in central mode on 127.0.0.1:8010 (backend) and :3010 (frontend) from start scripts kept outside the repository, with the signing key in a 0600 file beside them and no SMTP settings (so no email is sent: invitations and "Forgot my password?" cannot deliver until SMTP is configured). The backend is restarted by the developer's start script whenever backend code changes (it is not run with auto-reload).
+- The developer then tested manually on that environment (UI sections, navigation, review markers, layout, and the Cards import restore of deleted cards on the real Valor Log board). That is manual validation by the developer, not an automated test; the assistant did not read business records. Server (VPS), TLS/proxy and real SMTP delivery remain unvalidated, and any server database still needs its own backup, diagnostic and upgrade by an authorized operator.
+
+### Browser E2E suites
+
+- Legacy UI: `cd frontend && npm run test:e2e` (own backend :8001 and frontend :3001, temporary SQLite).
+- Central UI (Phase 7B): `cd frontend && npm run test:e2e:central` (`playwright.central.config.ts`). It creates a new temporary directory, seeds an identity database, the three company databases, a global administrator and a second company Admin with a disposable test password (`tests-central/seed_central.py`), starts a central-mode backend on :8002 and a frontend on :3002, and never names a real or development database (an inherited `DATABASE_URL` is overridden with a nonexistent file in the temporary directory). Neither server is reused. It covers a successful edit and the stale edit, move, delete and Undo conflicts in a real browser against the real backend.
+
 ## Central mode (Salcomp, Lity, Valor Log): configuration, users and boards (Part 2A; nothing here has been run on a server)
 
 Status: prepared and tested in development only, on disposable databases. No commercial or production database was created or opened (disposable development databases were), no container was started, and the VPS was not touched. The first publication (C6 section above) is legacy-only; central mode is a separate release.
