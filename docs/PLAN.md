@@ -1348,9 +1348,9 @@ Evidence (outside the repo): `pm-commercial-backups/20261016-cpm-migration/` and
 - **Not evidenced:** the reports contain no quoted authorization text; the authorization is recorded here on the user's statement. Duplicates, conflicts and rejects are not separate fields in the reports; zero is inferred from 0 review/0 skipped/0 mismatch and a `completed` batch.
 - **Not done:** administrator activation (the administrator row still carries the placeholder password `!`), SMTP delivery, cleanup.
 
-## Phase 7B: optimistic concurrency, central UI and Cards import recovery (implemented and committed locally; not pushed, not deployed to a server)
+## Phase 7B: optimistic concurrency, central UI and Cards import recovery (implemented, committed and pushed to `origin/main`; not deployed to a server)
 
-Status as of 2026-10-22: the work below is implemented and committed locally on `main` (the commits after `1fc5623`: legacy Undo spec fix `638c9c5`, versions/AI/Undo/authority backend `74c4329`, Cards import unmatched-id and recovery backend `3b41d52`, central UI `d4c3a70`, guided import UX `8c30ac2`, then this documentation) and tested as listed under "Test evidence". Nothing is pushed or deployed to a server, and nothing has had a deployment review. It has run on the developer's Mac against the real central databases (see "Real environment"). The legacy single-database module is untouched in behavior (a few shared files carry guarded additions, see "Shared files").
+Status as of 2026-10-22: the work below is implemented, committed and pushed to `origin/main` (the commits after `1fc5623`: legacy Undo spec fix `638c9c5`, versions/AI/Undo/authority backend `74c4329`, Cards import unmatched-id and recovery backend `3b41d52`, central UI `d4c3a70`, guided import UX `8c30ac2`, then the documentation commit `66aef7c`; pushed on 2026-10-22) and tested as listed under "Test evidence". Nothing is deployed to a server, and nothing has had a deployment review. It has run on the developer's Mac against the real central databases (see "Real environment"). The legacy single-database module is untouched in behavior (a few shared files carry guarded additions, see "Shared files").
 
 ### Scope and design decisions
 - Protects card operations in the central module, which uses separate databases for Salcomp, Lity and Valor Log. The legacy single-database module is permanently out of scope for development.
@@ -1410,4 +1410,4 @@ Kept apart on purpose: automated results (unit, integration, browser E2E) are fr
 1. Server-side validation by an authorized operator: the upgrade, diagnostics and backups were done for the developer's local databases only; a server deployment (VPS) needs the same procedure on its own databases, plus TLS/proxy and real SMTP checks (`docs/DEPLOYMENT.md`).
 2. A whole-suite backend rerun on the exact commit that will be deployed (the last full run predates the Cards import recovery code).
 3. Optional follow-ups noted above: reviewer names in the review dialog (the API returns only ids), a decision on whether two review markers per card are wanted (it would need an API or authorization change), and configuring a model key for the AI Assistant.
-4. Review the final diff and obtain explicit authorization before any commit, push or deployment.
+4. Obtain explicit authorization and a deployment review before any deployment (the commits are already pushed).
