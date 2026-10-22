@@ -98,3 +98,10 @@ def find_guard(db: Session, board_id: int, fingerprint: str) -> ExcelImport | No
     return db.scalars(
         select(ExcelImport).where(ExcelImport.board_id == board_id, ExcelImport.repeat_guard == fingerprint)
     ).first()
+
+
+def all_by_fingerprint(db: Session, board_id: int, fingerprint: str) -> list[ExcelImport]:
+    """Every applied import of this workbook content on this board (ordinary and recovery), oldest first. Read-only."""
+    return list(db.scalars(
+        select(ExcelImport).where(ExcelImport.board_id == board_id, ExcelImport.fingerprint == fingerprint).order_by(ExcelImport.id)
+    ))

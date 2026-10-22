@@ -1009,8 +1009,10 @@ def build_company_router(
         Writes nothing."""
         find_board(db, board_id)
         require_import_ledger(db)
-        read, _fields = await read_cards_workbook(request)
-        plan = build_plan(db, board_id, context.company_slug, read, assignable_by_email(identity, context.company_slug, db))
+        read, fields = await read_cards_workbook(request)
+        plan = build_plan(db, board_id, context.company_slug, read, assignable_by_email(identity, context.company_slug, db),
+                          create_unmatched=fields.get("new_for_unmatched_ids") == "true",
+                          recover_missing=fields.get("recover_missing_cards") == "true")
         return plan_body(plan, read)
 
     @router.post("/boards/{board_id}/excel/import/confirm", status_code=201)
@@ -1040,7 +1042,9 @@ def build_company_router(
         people = assignable_by_email(identity, context.company_slug, db)  # syncs references (commits): before the write lock
         try:
             begin_write(db)  # everything below is decided on the state this request will write to
-            plan = build_plan(db, board_id, context.company_slug, read, people)
+            plan = build_plan(db, board_id, context.company_slug, read, people,
+                              create_unmatched=fields.get("new_for_unmatched_ids") == "true",
+                              recover_missing=fields.get("recover_missing_cards") == "true")
             refusal = plan.refusal()
             if refusal:
                 raise refusal
