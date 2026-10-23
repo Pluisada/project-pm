@@ -250,9 +250,11 @@ uv run python migrate_stage_kind.py --apply      # backup + migrate in one trans
 | position | INTEGER | NOT NULL, DEFAULT 0 | Order within column |
 | company | TEXT | - | Lead's company |
 | contact | TEXT | - | Contact person |
+| contact_email | VARCHAR(254) | - | Contact email, optional. Added to company databases by `migrate_card_contact.py` (dry run by default; two nullable columns, no schema-version change); listed in `company_schema.REQUIRED_COMPANY_SCHEMA`, so an un-migrated company database is refused until it runs |
+| contact_phone | VARCHAR(40) | - | Contact telephone, optional; digits, spaces and `+ ( ) - . / # * x` |
 | deal_value | REAL | - | Deal value (>= 0), in `currency` |
 | currency | VARCHAR(3) | - | Legacy. Deal Value is always USD: only `USD` is accepted on write (and set whenever an amount is saved), reads always report `USD`, and older codes left in existing rows are ignored. No migration rewrites them |
-| expected_close_date | DATE | - | Expected close date |
+| expected_close_date | DATE | - | Legacy "Closing Date": retained and still accepted by the API and the Cards workbook, but no longer shown, edited or used by the application (see CHANGELOG, "Closing Date removed from active use") |
 | lead_source | TEXT | - | Website, Referral, Trade show, Cold outreach, Existing customer, Other |
 | product_line | TEXT | - | Chargers or Power supplies |
 | confidence_level | VARCHAR(6) | - | The sales team's own assessment: exactly `LOW`, `MEDIUM` or `HIGH`; NULL = not assigned. Company schema version 4 (the Bid report's old confidence columns no longer exist) |

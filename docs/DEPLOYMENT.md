@@ -336,6 +336,37 @@ Before any future upgrade of a real company database: stop the application, take
 - Manual: choosing the target through `PM_COMPANY_DB_<SLUG>`, stopping the application, the backup, running each script, running the diagnostic, repairing an `INCOMPATIBLE` table, and migrating a database below version 4.
 - Validated only on temporary databases built in automated tests: the diagnostic, dry-run no-write checks, the four scripts on a legacy-shaped database in both orders, repeat runs, a simulated partial failure and recovery, and Card, review and loss operations afterwards. Not validated: any real company database, the Salcomp database, a server, Docker, a concurrent application during the upgrade, large data.
 
+## Batch 2: contact email and telephone columns (migration procedure; nothing here has been run on a real database)
+
+The cards table gained two optional columns, `contact_email` (VARCHAR 254) and `contact_phone` (VARCHAR 40). They are in `company_schema.REQUIRED_COMPANY_SCHEMA` (the schema version stays 4) and in `models.Card`. **Every database the updated code opens must have them first**:
+
+| Database | Effect without the migration | Script |
+|---|---|---|
+| Each central company database (Salcomp, Lity, Valor Log) | `validate_company_schema` fails: that company answers 503 "Company data is unavailable" for every request, nothing is written (tested on a temporary database); the other companies are unaffected | `migrate_card_contact.py --company <slug>` |
+| A legacy single database (for example the one `DATABASE_URL` names, `pm.db`) | `init_db()` refuses to start ("cards lacks columns contact_email, contact_phone") | `migrate_card_contact.py --database <absolute path>` |
+
+The script adds the two nullable columns with `ALTER TABLE ADD COLUMN` in one transaction (a failure between them rolls both back), rewrites no row, leaves `PRAGMA user_version` alone, is idempotent (a second run reports nothing to do) and never creates a database. Dry run is the default and opens the file read-only. It prints only column names, never paths, rows or credentials. `--company` takes its target from `PM_COMPANY_DB_<SLUG>` through `database_targets.company_database_path`, so the protected-path rules apply. **Limitation:** that check refuses the permanent Salcomp path (`.../SalcompSalesPipeline/data/pm-commercial.db`), so `--company salcomp` cannot reach that file; it needs `--database <absolute path>` after an explicit decision. `--database` does not apply the protected-path check (legacy files must be migratable): the operator chooses the path and owns the backup. No path is documented or assumed here.
+
+Procedure per database (the placeholders are yours to fill; run only on a database you have decided to migrate and only after stopping the application that uses it):
+
+```bash
+# 1. Backup, then verify the copy. Keep it off the machine that holds the original.
+sqlite3 <source.db> ".backup '<backup.db>'"
+sqlite3 <backup.db> "PRAGMA integrity_check; PRAGMA foreign_key_check; PRAGMA user_version;"   # ok / no rows / the version printed before
+# 2. Dry run (writes nothing) - expect "Would add cards.contact_email, cards.contact_phone."
+cd backend
+PM_COMPANY_DB_<SLUG>=sqlite:////abs/path/<source.db> uv run python migrate_card_contact.py --company <slug>
+#    legacy or the Salcomp path: uv run python migrate_card_contact.py --database /abs/path/<source.db>
+# 3. Apply - expect "Added cards.contact_email, cards.contact_phone."
+PM_COMPANY_DB_<SLUG>=sqlite:////abs/path/<source.db> uv run python migrate_card_contact.py --company <slug> --apply
+# 4. Verify: a repeat run says nothing to do; schema, integrity and version are as before
+uv run python migrate_card_contact.py --company <slug>
+uv run python diagnose_company_schema.py --company <slug>            # must exit 0 ("Schema complete.")
+sqlite3 <source.db> "PRAGMA integrity_check; PRAGMA foreign_key_check; PRAGMA user_version; SELECT COUNT(*) FROM cards;"
+```
+
+Compare the card count and `user_version` with the backup. Recovery: stop the application and put the verified backup back. Run the migration on **all** affected databases before starting the new code against any of them. Automated evidence (temporary databases only, `backend/test_card_contact.py`, 34 tests): the dry run is byte-identical, apply adds only the two columns, data and history are preserved, a repeat is a no-op, a simulated failure between the two columns rolls back, a database without `cards` or a locked one changes nothing, other companies' files are untouched, the application returns to service after the migration, and the output contains no card data or secret. Not validated: any real or Salcomp database, a server, a large database, a concurrent application.
+
 ## Deployment-readiness checklist (central mode; a template, nothing here has been run against a real database)
 
 Use it for each deployment review and keep the filled-in record with the deployment approval. Known deferred risks (F4, F8, F10) are described in `docs/SECURITY.md`, section 11 (subsection "Deferred technical risks (F4, F8, F10)"); they are accepted limitations, not checklist failures.
