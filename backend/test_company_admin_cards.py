@@ -58,11 +58,19 @@ def test_assignment_validation_is_unchanged_for_the_company_admin(rig):
     no_row, _ = member(rig, "n@example.com")  # eligible centrally, no local row
     if no_row == 7:  # id 7 is the seeded local user "ana"; use a user without any local row
         no_row, _ = member(rig, "n2@example.com")
-    for uid in (visitor, outsider, lapsed, other_admin, aid, no_row, 9999):
-        local_row(rig, uid) if uid not in (no_row, 9999) else None
+    for uid in (visitor, outsider, lapsed, other_admin, aid, 9999):
+        local_row(rig, uid) if uid != 9999 else None
         r = call(rig, "put", "/cards/1", token, json={"salesperson_id": uid})
         assert r.status_code == 422, (uid, r.text)
     assert rig.sql("SELECT salesperson_id FROM cards WHERE id = 1") == [(None,)]
+    # A centrally eligible person without a local row is accepted: the edit creates the local reference first, as card
+    # creation does (correction batch 1). Only ineligible ids (above) are refused.
+    assert rig.sql("SELECT COUNT(*) FROM users WHERE id = ?", (no_row,)) == [(0,)]
+    r = call(rig, "put", "/cards/1", token, json={"salesperson_id": no_row})
+    assert r.status_code == 200, r.text
+    assert r.json()["salesperson_id"] == no_row
+    assert rig.sql("SELECT COUNT(*) FROM users WHERE id = ?", (no_row,)) == [(1,)]
+    assert rig.sql("SELECT salesperson_id FROM cards WHERE id = 1") == [(no_row,)]
     # the open policy question stays open: company Admins are not assignable salespeople
     assert aid not in svc.assignable_user_ids(rig.e.session, "lity")
 
