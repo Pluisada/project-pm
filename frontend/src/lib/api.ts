@@ -1244,21 +1244,30 @@ export interface AIChatResponse {
   };
 }
 
+/** An earlier message of the conversation on screen; the server gives the model exactly these and nothing stored. */
+export interface AIChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
 /** The assistant of one company board (POST /api/companies/{slug}/boards/{id}/ai; writers only, the backend decides). */
-export async function sendCompanyAIMessage(companySlug: string, boardId: number, message: string): Promise<AIChatResponse> {
+export async function sendCompanyAIMessage(
+  companySlug: string, boardId: number, message: string, history: AIChatTurn[] = []
+): Promise<AIChatResponse> {
   return apiCall<AIChatResponse>(`${companyPath(companySlug)}/boards/${Number(boardId)}/ai`, {
     method: "POST",
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, history }),
   });
 }
 
 export async function sendAIMessage(
   boardId: number,
-  message: string
+  message: string,
+  history: AIChatTurn[] = []
 ): Promise<AIChatResponse> {
   return apiCall<AIChatResponse>(`/api/boards/${boardId}/ai`, {
     method: "POST",
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, history }),
   });
 }
 

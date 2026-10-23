@@ -1,5 +1,5 @@
 """Pydantic schemas for request/response validation."""
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 import re
 from datetime import date, datetime
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -913,6 +913,12 @@ class RevertResult(BaseModel):
     counts: RevertResultCounts
 
 
+class AIChatTurn(BaseModel):
+    """One earlier message of the conversation the person is looking at."""
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=4000)
+
+
 class AIChatRequest(BaseModel):
     """Chat message. Length is checked in the route (against AI_MAX_MESSAGE_CHARS)
     so an over-long message gets a short error that doesn't echo it back."""
@@ -920,3 +926,6 @@ class AIChatRequest(BaseModel):
     # Company AI only: the reason for any move into the lost stage in this request. It must come from the person; the
     # model's own text is never used as a loss reason.
     loss_reason: Optional[str] = None
+    # The conversation as shown to the person (the client keeps it per company). When sent it is the only history the
+    # model sees; when absent the server falls back to this person's own stored messages on the board.
+    history: Optional[list[AIChatTurn]] = Field(default=None, max_length=10)

@@ -152,12 +152,14 @@ async def get_board_context(db: Session, board_id: int) -> dict:
 
 
 async def get_conversation_history(
-    db: Session, board_id: int, limit: int = 10
+    db: Session, board_id: int, limit: int = 10, user_id: int | None = None
 ) -> list[dict]:
-    """Get recent conversation history."""
+    """Get recent conversation history (of one person when user_id is given)."""
+    query = db.query(ConversationMessage).filter(ConversationMessage.board_id == board_id)
+    if user_id is not None:
+        query = query.filter(ConversationMessage.user_id == user_id)
     messages = (
-        db.query(ConversationMessage)
-        .filter(ConversationMessage.board_id == board_id)
+        query
         .order_by(ConversationMessage.created_at.desc())
         .limit(limit)
         .all()

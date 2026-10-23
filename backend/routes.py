@@ -684,7 +684,10 @@ async def board_ai_chat_payload(
         version_snapshot = card_reviews.board_version_snapshot(db, board_id) if track_versions else None
         # Get board context and conversation history
         board_state = await get_board_context(db, board_id)
-        history = await get_conversation_history(db, board_id)
+        if request.history is not None:
+            history = [{"role": t.role, "content": t.content} for t in request.history]
+        else:
+            history = await get_conversation_history(db, board_id, user_id=current_user.id)
 
         # Call AI with board context
         ai_result = await call_ai_with_board(board_state, history, user_message)

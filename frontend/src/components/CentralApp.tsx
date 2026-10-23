@@ -596,7 +596,7 @@ export const CentralApp = () => {
         <div data-testid="ai-sidebar-backdrop" onClick={() => setAiFor(null)} className="fixed inset-0 z-30 bg-black/40 lg:hidden" />
         <aside id="central-ai-panel" aria-label="AI Assistant"
           className="border-l border-[var(--stroke)] bg-[var(--surface-strong)] max-lg:fixed max-lg:inset-y-0 max-lg:right-0 max-lg:z-40 max-lg:w-[min(20rem,100vw)] max-lg:shadow-[var(--shadow)] lg:sticky lg:top-0 lg:h-[calc(100vh-3.7rem)] lg:w-80 lg:shrink-0">
-          <AIChatSidebar themed boardId={boardId} send={(message) => sendCompanyAIMessage(company.slug, boardId, message)}
+          <AIChatSidebar key={company.slug} scopeKey={company.slug} themed boardId={boardId} send={(message, history) => sendCompanyAIMessage(company.slug, boardId, message, history)}
             onClose={() => setAiFor(null)} onBoardChange={() => setStructureTick((n) => n + 1)} />
         </aside>
       </>

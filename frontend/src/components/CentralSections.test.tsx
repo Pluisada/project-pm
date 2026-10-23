@@ -207,7 +207,7 @@ describe("CentralApp sections", () => {
       await userEvent.type(within(panel).getByPlaceholderText(/Ask me to organize/), "tidy up");
       await userEvent.click(within(panel).getByRole("button", { name: "Send" }));
       expect(await within(panel).findByText(/Done what I could\./)).toHaveTextContent("changed after the assistant was shown it");
-      expect(ask).toHaveBeenCalledWith({ message: "tidy up" });
+      expect(ask).toHaveBeenCalledWith({ message: "tidy up", history: [] });
       expect(calls.some((u) => /\/api\/companies\/lity\/boards\/3\/ai$/.test(u))).toBe(true); // the company endpoint, never the legacy one
       expect(calls.some((u) => /^\/api\/boards\//.test(u) || /\/api\/boards\/3\/ai/.test(u))).toBe(false);
       await userEvent.click(within(panel).getByRole("button", { name: "Close AI Assistant" }));

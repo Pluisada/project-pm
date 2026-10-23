@@ -1,12 +1,14 @@
 "use client";
 
 import { useState, useEffect, useRef, type Ref } from "react";
-import { getErrorMessage, sendAIMessage, type AIChatResponse } from "@/lib/api";
+import { getErrorMessage, sendAIMessage, type AIChatResponse, type AIChatTurn } from "@/lib/api";
 
 interface Message {
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
+  /** An error notice shown to the person; never sent back to the model. */
+  failed?: boolean;
 }
 
 interface AIChatSidebarProps {
@@ -16,10 +18,15 @@ interface AIChatSidebarProps {
   closeRef?: Ref<HTMLButtonElement>;
   /** Sends a message somewhere other than the legacy board endpoint (the central company board). When given, actions
    *  the server refused are listed under the answer, so a conflict is never mistaken for a success. */
-  send?: (message: string) => Promise<AIChatResponse>;
+  send?: (message: string, history: AIChatTurn[]) => Promise<AIChatResponse>;
+  /** Identifies the conversation (the company). When it changes, the visible conversation is dropped at once and any
+   *  answer still in flight for the previous one is discarded. */
+  scopeKey?: string;
   /** Central pages: surfaces and text follow the theme (the legacy panel keeps its white surfaces). */
   themed?: boolean;
 }
+
+const UNMOUNTED = Symbol("unmounted");
 
 const TYPING_DOT_DELAYS = ["0s", "0.2s", "0.4s"];
 
@@ -29,33 +36,56 @@ const EXAMPLE_PROMPTS = [
   "Move the Acme lead to Proposal",
 ];
 
-export const AIChatSidebar = ({ boardId, onBoardChange, onClose, closeRef, send, themed }: AIChatSidebarProps) => {
+export const AIChatSidebar = ({ boardId, onBoardChange, onClose, closeRef, send, themed, scopeKey }: AIChatSidebarProps) => {
   const white = themed ? "bg-[var(--surface)] text-[var(--navy-dark)]" : "bg-white";
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scopeRef = useRef<string | undefined | symbol>(scopeKey);
+  const [shownScope, setShownScope] = useState(scopeKey);
+
+  // Render-time reset: the first paint after a company switch already shows an empty conversation.
+  if (shownScope !== scopeKey) {
+    setShownScope(scopeKey);
+    setMessages([]);
+    setInput("");
+    setError(null);
+    setIsLoading(false);
+  }
+  useEffect(() => {
+    scopeRef.current = scopeKey;
+    return () => {
+      scopeRef.current = UNMOUNTED; // an answer arriving after the panel is gone belongs to nobody
+    };
+  }, [scopeKey]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const addMessage = (role: Message["role"], content: string) => {
-    setMessages((prev) => [...prev, { role, content, timestamp: new Date() }]);
+  const addMessage = (role: Message["role"], content: string, failed = false) => {
+    setMessages((prev) => [...prev, { role, content, timestamp: new Date(), failed }]);
   };
 
   const sendMessage = async () => {
     if (!input.trim() || isLoading) return;
 
     const message = input;
+    const scope = scopeKey;
+    const history: AIChatTurn[] = messages
+      .filter((m) => !m.failed)
+      .slice(-10)
+      .map(({ role, content }) => ({ role, content }));
     addMessage("user", message);
     setInput("");
     setError(null);
     setIsLoading(true);
 
     try {
-      const result = send ? await send(message) : await sendAIMessage(boardId, message);
+      const result = send ? await send(message, history) : await sendAIMessage(boardId, message, history);
+      if (scopeRef.current !== scope) return;
       const refused = send ? (result.actions_applied?.failed ?? []) : [];
       const notApplied = refused.length
         ? `\n\nNot applied:\n${refused.map((f) => `- ${f.code === "card_version_conflict" ? `${f.reason ?? "The card changed"} (reload the board and ask again)` : (f.reason ?? "This action could not be applied")}`).join("\n")}`
@@ -67,11 +97,12 @@ export const AIChatSidebar = ({ boardId, onBoardChange, onClose, closeRef, send,
         onBoardChange?.();
       }
     } catch (err) {
+      if (scopeRef.current !== scope) return;
       const detail = getErrorMessage(err, "Failed to get AI response");
       setError(detail);
-      addMessage("assistant", `Error: ${detail}. Please try again.`);
+      addMessage("assistant", `Error: ${detail}. Please try again.`, true);
     } finally {
-      setIsLoading(false);
+      if (scopeRef.current === scope) setIsLoading(false);
     }
   };
 

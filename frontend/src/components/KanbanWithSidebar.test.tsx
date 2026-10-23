@@ -84,6 +84,6 @@ describe("KanbanWithSidebar responsive drawer", () => {
     await user.click(screen.getByRole("button", { name: "Close AI Assistant" }));
     await user.click(screen.getByRole("button", { name: "Open AI Assistant" }));
     expect(screen.getByText("Done")).toBeInTheDocument();
-    expect(api.sendAIMessage).toHaveBeenCalledWith(1, "hello");
+    expect(api.sendAIMessage).toHaveBeenCalledWith(1, "hello", []);
   });
 });
