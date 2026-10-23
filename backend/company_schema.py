@@ -62,7 +62,7 @@ REQUIRED_COMPANY_SCHEMA: dict[str, frozenset[str]] = {
         "id", "card_id", "board_id", "event_type", "from_column_id", "from_stage_kind", "to_column_id", "to_stage_kind", "user_id", "source", "occurred_at", "deal_value_snapshot", "deal_currency_snapshot", "value_snapshot_taken"
     }),
     "cards": frozenset({
-        "id", "column_id", "title", "details", "position", "company", "contact", "deal_value", "deal_value_next_year", "deal_year", "currency", "expected_close_date", "lead_source", "product_line", "confidence_level", "salesperson_id", "created_at", "updated_at"
+        "id", "column_id", "title", "details", "position", "company", "contact", "contact_email", "contact_phone", "deal_value", "deal_value_next_year", "deal_year", "currency", "expected_close_date", "lead_source", "product_line", "confidence_level", "salesperson_id", "created_at", "updated_at"
     }),
     "columns": frozenset({
         "id", "board_id", "title", "position", "stage_kind", "created_at", "updated_at"

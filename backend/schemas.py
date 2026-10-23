@@ -1,5 +1,6 @@
 """Pydantic schemas for request/response validation."""
 from typing import Any, Dict, List, Optional
+import re
 from datetime import date, datetime
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -157,6 +158,35 @@ class CompanyCardCreate(CardCreate):
 
 
 NEXT_STEP_MAX_LENGTH = 100
+CONTACT_EMAIL_MAX_LENGTH = 254
+CONTACT_PHONE_MAX_LENGTH = 40
+_EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
+_PHONE_CHARS = re.compile(r"^[0-9+()\-./\s#*xX]+$")
+
+
+def normalize_contact_email(value):
+    """Trim; blank means none. Rejects only what is clearly not an address (no @, spaces, no dotted domain)."""
+    if not isinstance(value, str):
+        return value
+    value = value.strip()
+    if not value:
+        return None
+    if not _EMAIL_SHAPE.match(value):
+        raise ValueError("Enter a valid email address")
+    return value
+
+
+def normalize_contact_phone(value):
+    """Trim and collapse spaces; blank means none. International formats are accepted: only digits and the usual
+    separators (+ ( ) - . / # * and an x for an extension) are allowed, with at least three digits."""
+    if not isinstance(value, str):
+        return value
+    value = " ".join(value.split())
+    if not value:
+        return None
+    if not _PHONE_CHARS.match(value) or sum(ch.isdigit() for ch in value) < 3:
+        raise ValueError("Enter a valid telephone number")
+    return value
 
 
 class CardUpdate(BaseModel):
@@ -169,6 +199,9 @@ class CardUpdate(BaseModel):
     details: Optional[str] = Field(None, max_length=5000)
     company: Optional[str] = Field(None, max_length=255)
     contact: Optional[str] = Field(None, max_length=255)
+    # The customer contact's email and telephone (optional; blank clears).
+    contact_email: Optional[str] = Field(None, max_length=CONTACT_EMAIL_MAX_LENGTH)
+    contact_phone: Optional[str] = Field(None, max_length=CONTACT_PHONE_MAX_LENGTH)
     deal_value: Optional[float] = Field(None, ge=0, allow_inf_nan=False)
     # Same currency as deal_value; "cleared" means 0, the column is never null.
     deal_value_next_year: Optional[float] = Field(None, ge=0, allow_inf_nan=False)
@@ -183,6 +216,16 @@ class CardUpdate(BaseModel):
     # Next Action Date and its Action (stored in card_bid_details).
     next_step_due: Optional[date] = None
     next_step: Optional[str] = Field(None, max_length=NEXT_STEP_MAX_LENGTH)
+
+    @field_validator("contact_email", mode="before")
+    @classmethod
+    def clean_contact_email(cls, value):
+        return normalize_contact_email(value)
+
+    @field_validator("contact_phone", mode="before")
+    @classmethod
+    def clean_contact_phone(cls, value):
+        return normalize_contact_phone(value)
 
     @field_validator("next_step", mode="before")
     @classmethod
@@ -286,6 +329,8 @@ class CardResponse(BaseModel):
     has_member_edits: bool
     company: Optional[str] = None
     contact: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
     deal_value: Optional[float] = None
     deal_value_next_year: float = 0
     deal_year: int

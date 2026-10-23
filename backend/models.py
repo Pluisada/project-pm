@@ -119,6 +119,9 @@ class Card(CompanyBase):
     # (DatabaseSchemaIncomplete) until an explicit migration, not yet written, is applied.
     company = SQLColumn(String, nullable=True)
     contact = SQLColumn(String, nullable=True)
+    # The contact's email and telephone, optional (added by migrate_card_contact.py; schemas.py validates them).
+    contact_email = SQLColumn(String(254), nullable=True)
+    contact_phone = SQLColumn(String(40), nullable=True)
     # deal_value is the amount for deal_year (the "current year"); the next
     # year's amount is deal_value_next_year (0 = none). Both share `currency`.
     # deal_year is stamped when the card is created and only changes through
