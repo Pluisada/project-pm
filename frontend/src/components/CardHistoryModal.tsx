@@ -56,7 +56,7 @@ export const CardHistoryModal = ({ cardTitle, entries, isLoading, onClose }: Car
       onClick={onClose}
     >
       <div
-        className="max-h-[80vh] w-full max-w-lg overflow-hidden rounded-[24px] border border-[var(--stroke)] bg-white shadow-[var(--shadow)]"
+        className="max-h-[80vh] w-full max-w-lg overflow-hidden rounded-[24px] border border-[var(--stroke)] bg-[var(--surface-strong)] shadow-[var(--shadow)]"
         onClick={(event) => event.stopPropagation()}
         role="dialog"
         aria-modal="true"

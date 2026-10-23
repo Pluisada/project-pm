@@ -64,7 +64,7 @@ export const AppNav = ({ view, role, username, onNavigate, onLogout }: AppNavPro
     ));
 
   return (
-    <header className="relative z-40 border-b border-[var(--stroke)] bg-white">
+    <header className="relative z-40 border-b border-[var(--stroke)] bg-[var(--surface-strong)]">
       <div className="flex h-12 items-center gap-3 px-4">
         <span className="whitespace-nowrap text-sm font-bold text-[var(--navy-dark)]">
           <span className="mr-2 inline-block h-2 w-2 rounded-full bg-[var(--accent-yellow)] align-middle" />
@@ -107,7 +107,7 @@ export const AppNav = ({ view, role, username, onNavigate, onLogout }: AppNavPro
         <nav
           id="mobile-nav"
           aria-label="Main"
-          className="absolute inset-x-0 top-full flex flex-col gap-1 border-b border-[var(--stroke)] bg-white p-2 shadow-[var(--shadow)] md:hidden"
+          className="absolute inset-x-0 top-full flex flex-col gap-1 border-b border-[var(--stroke)] bg-[var(--surface-strong)] p-2 shadow-[var(--shadow)] md:hidden"
         >
           <p className="px-3 py-1 text-xs text-[var(--gray-text)]">Welcome, {username}</p>
           {renderLinks("w-full text-left")}

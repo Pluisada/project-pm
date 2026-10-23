@@ -193,7 +193,7 @@ export const ProtectedRoute = () => {
   }
 
   return (
-    <div className="flex h-screen flex-col">
+    <div className="legacy-shell flex h-screen flex-col">
       <AppNav
         view={view}
         role={role}

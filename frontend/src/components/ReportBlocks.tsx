@@ -5,7 +5,7 @@ import clsx from "clsx";
 import { annualLabels, annualLines, formatTotals, type AnnualMeasure } from "@/lib/format";
 
 export const selectClass =
-  "rounded-lg border border-[var(--stroke)] bg-white px-3 py-2 text-sm text-[var(--navy-dark)] outline-none focus:border-[var(--primary-blue)]";
+  "rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] px-3 py-2 text-sm text-[var(--navy-dark)] outline-none focus:border-[var(--primary-blue)]";
 export const thClass =
   "px-3 py-2 text-left text-xs font-semibold uppercase tracking-[0.15em] text-[var(--gray-text)]";
 export const tdClass = "px-3 py-2 align-top text-sm text-[var(--navy-dark)]";
@@ -21,7 +21,7 @@ export const Totals = ({ totals }: { totals: Record<string, number> }) => (
 
 /** A headline number. `note` adds a small caption (comparison, caveat). */
 export const StatTile = ({ label, lines, note }: { label: string; lines: string[]; note?: string }) => (
-  <div className="rounded-2xl border border-[var(--stroke)] bg-white px-5 py-4">
+  <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--surface-strong)] px-5 py-4">
     <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]">{label}</p>
     {lines.map((line, i) => (
       <p
@@ -72,7 +72,7 @@ export const AnnualLegend = ({ years }: { years?: number[] }) => {
 };
 
 export const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
-  <section className="rounded-3xl border border-[var(--stroke)] bg-white p-6 shadow-[var(--shadow)]">
+  <section className="rounded-3xl border border-[var(--stroke)] bg-[var(--surface-strong)] p-6 shadow-[var(--shadow)]">
     <h2 className="font-display text-lg font-semibold text-[var(--navy-dark)]">{title}</h2>
     <div className="mt-4">{children}</div>
   </section>

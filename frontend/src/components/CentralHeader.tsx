@@ -31,13 +31,13 @@ interface CentralHeaderProps {
 export const CentralHeader = ({ company, email, canSwitch, onSwitch, theme, onThemeChange, onSignOut, nav, boardTools }: CentralHeaderProps) => {
   const brand = brandFor(company.slug);
   const button =
-    "rounded-md border border-[var(--nav-line)] px-3 py-1.5 text-sm font-semibold text-[var(--nav-ink)] transition hover:border-[var(--nav-brand)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--nav-brand)]";
+    "shrink-0 whitespace-nowrap rounded-md border border-[var(--nav-line)] px-2.5 py-1.5 text-sm max-md:px-2 max-md:text-xs font-semibold text-[var(--nav-ink)] transition hover:border-[var(--nav-brand)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--nav-brand)]";
   return (
     <header
       data-testid="central-header"
-      className="relative z-40 border-b border-[var(--nav-line)] bg-[var(--nav-bg)] shadow-[inset_0_3px_0_var(--nav-top)]"
+      className="sticky top-0 z-40 shrink-0 border-b max-md:max-h-[38dvh] max-md:overflow-y-auto border-[var(--nav-line)] bg-[var(--nav-bg)] shadow-[inset_0_3px_0_var(--nav-top)]"
     >
-      <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-4 gap-y-2 px-6 py-3">
+      <div className="mx-auto flex max-w-[96rem] flex-wrap items-center gap-x-2 gap-y-2 px-4 py-2.5">
         {brand ? (
           // The logo sits on a --logo-bg chip so a dark-on-light logo stays legible on a dark header.
           <span className="inline-flex shrink-0 items-center rounded-md bg-[var(--logo-bg)] px-1.5 py-1">
@@ -53,18 +53,18 @@ export const CentralHeader = ({ company, email, canSwitch, onSwitch, theme, onTh
           </button>
         )}
         {nav && nav.items.length > 1 && (
-          <nav aria-label="Sections" className="flex flex-wrap items-center gap-2">
+          <nav aria-label="Sections" className="flex items-center gap-2 max-md:order-2 max-md:w-full max-md:overflow-x-auto max-md:py-1 md:flex-wrap">
             {nav.items.map((item) => (
               <button key={item.id} type="button" onClick={() => nav.onSelect(item.id)}
                 aria-current={nav.current === item.id ? "page" : undefined}
-                className={`${button} ${nav.current === item.id ? "border-[var(--nav-brand)] bg-[var(--nav-line)]" : ""}`}>
+                className={`${button} ${nav.current === item.id ? "border-[var(--nav-brand)] bg-[var(--nav-line)] shadow-[inset_0_-2px_0_var(--nav-brand)]" : ""}`}>
                 {item.label}
               </button>
             ))}
           </nav>
         )}
         {boardTools && (
-          <div className="flex flex-wrap items-center gap-2" data-testid="board-tools">
+          <div className="flex items-center gap-2 max-md:order-3 max-md:w-full max-md:overflow-x-auto max-md:py-1 md:flex-wrap" data-testid="board-tools">
             <NavSlot id="central-undo-slot" />
             <NavSlot id="central-boards-slot" />
             {boardTools.ai && (
@@ -75,10 +75,10 @@ export const CentralHeader = ({ company, email, canSwitch, onSwitch, theme, onTh
             )}
           </div>
         )}
-        <div className="ml-auto flex flex-wrap items-center gap-3">
+        <div className="ml-auto flex flex-wrap items-center gap-2 max-md:order-1 max-md:flex-nowrap">
           <ThemeToggle value={theme} onChange={onThemeChange} />
-          <span className="max-w-[14rem] truncate text-sm text-[var(--nav-muted)]" title={email}>{email}</span>
-          <button type="button" onClick={onSignOut} className={button}>
+          <span className="max-w-[14rem] truncate text-sm text-[var(--nav-muted)] max-md:hidden" title={email}>{email}</span>
+          <button type="button" onClick={onSignOut} title={`Signed in as ${email}`} className={button}>
             Sign out
           </button>
         </div>

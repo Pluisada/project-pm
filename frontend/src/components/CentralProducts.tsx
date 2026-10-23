@@ -172,7 +172,7 @@ export const CentralProducts = ({ companySlug, companyName }: { companySlug: str
                           {confirmDelete?.id === product.id ? (
                             <>
                               <button type="button" disabled={busy} onClick={() => void remove(product)} aria-label={`Confirm delete ${product.name}`}
-                                className="rounded-lg bg-red-700 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60">Confirm delete</button>
+                                className="rounded-lg bg-[var(--danger-solid)] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60">Confirm delete</button>
                               <button type="button" disabled={busy} onClick={() => setConfirmDelete(null)} className={secondaryButton}>Cancel</button>
                             </>
                           ) : (

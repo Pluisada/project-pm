@@ -33,7 +33,7 @@ const secondaryButton =
 
 // The toggle sits in the dark top navigation: same look as the other navigation buttons.
 const navButton =
-  "rounded-md border border-[var(--nav-line)] px-3 py-1.5 text-sm font-semibold text-[var(--nav-ink)] transition hover:border-[var(--nav-brand)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--nav-brand)]";
+  "shrink-0 whitespace-nowrap rounded-md border border-[var(--nav-line)] px-3 py-1.5 text-sm font-semibold text-[var(--nav-ink)] transition hover:border-[var(--nav-brand)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--nav-brand)]";
 
 type Notice = { kind: "ok" | "error" | "uncertain"; text: string };
 
@@ -426,7 +426,7 @@ export const CentralBoardAdmin = ({
                               </p>
                             </div>
                             <button type="button" disabled={busy} onClick={() => void removeColumn(confirmDelete)}
-                              className="rounded-lg bg-red-700 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60">
+                              className="rounded-lg bg-[var(--danger-solid)] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60">
                               {busy ? "Deleting..." : "Confirm delete"}
                             </button>
                             <button type="button" ref={cancelRef} disabled={busy}

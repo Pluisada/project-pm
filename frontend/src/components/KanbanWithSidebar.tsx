@@ -37,8 +37,8 @@ export const KanbanWithSidebar = ({ boardId, role }: { boardId: number; role: Us
   }, [drawerOpen]);
 
   return (
-    <div className="relative flex h-full overflow-hidden bg-white">
-      <div className="flex-1 overflow-auto bg-white">
+    <div className="relative flex h-full overflow-hidden bg-[var(--surface-strong)]">
+      <div className="flex-1 overflow-auto bg-[var(--surface-strong)]">
         <KanbanBoardAPI key={refreshKey} boardId={boardId} role={role} />
       </div>
 
@@ -69,7 +69,7 @@ export const KanbanWithSidebar = ({ boardId, role }: { boardId: number; role: Us
       <aside
         id="ai-sidebar"
         aria-label="AI Assistant"
-        className={`border-l border-[var(--stroke)] bg-white max-lg:fixed max-lg:inset-y-0 max-lg:right-0 max-lg:z-40 max-lg:w-[min(20rem,100vw)] max-lg:shadow-[var(--shadow)] lg:w-80 lg:flex-shrink-0 ${
+        className={`border-l border-[var(--stroke)] bg-[var(--surface-strong)] max-lg:fixed max-lg:inset-y-0 max-lg:right-0 max-lg:z-40 max-lg:w-[min(20rem,100vw)] max-lg:shadow-[var(--shadow)] lg:w-80 lg:flex-shrink-0 ${
           drawerOpen ? "" : "max-lg:invisible lg:hidden"
         }`}
       >

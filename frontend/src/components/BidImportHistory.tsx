@@ -64,7 +64,7 @@ const BatchDetail = ({ batchId, refreshKey, onClose }: { batchId: number; refres
   }, [batchId, refreshKey]);
 
   return (
-    <div className="rounded-2xl border border-[var(--stroke)] bg-white p-5" aria-label="Import details">
+    <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--surface-strong)] p-5" aria-label="Import details">
       <div className="mb-3 flex items-center justify-between">
         <h3 className="font-display text-lg font-semibold text-[var(--navy-dark)]">Import #{batchId}</h3>
         <button type="button" onClick={onClose} className="text-xs font-semibold text-[var(--gray-text)]">

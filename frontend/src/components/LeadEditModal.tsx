@@ -61,7 +61,7 @@ const dealYearLabels = (dealYear: number | undefined) => {
 };
 
 const inputClass =
-  "mt-1 w-full rounded-lg border border-[var(--stroke)] bg-white px-3 py-2 text-sm text-[var(--navy-dark)] outline-none transition focus:border-[var(--primary-blue)] focus:ring-2 focus:ring-[var(--primary-blue)]/20";
+  "mt-1 w-full rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] px-3 py-2 text-sm text-[var(--navy-dark)] outline-none transition focus:border-[var(--primary-blue)] focus:ring-2 focus:ring-[var(--primary-blue)]/20";
 const labelClass = "block text-xs font-semibold uppercase tracking-[0.15em] text-[var(--gray-text)]";
 
 export const LeadEditModal = ({ card, options, onSave, onClose }: LeadEditModalProps) => {
@@ -127,7 +127,7 @@ export const LeadEditModal = ({ card, options, onSave, onClose }: LeadEditModalP
       <form
         onSubmit={handleSubmit}
         onClick={(event) => event.stopPropagation()}
-        className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-[24px] border border-[var(--stroke)] bg-white shadow-[var(--shadow)]"
+        className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-[24px] border border-[var(--stroke)] bg-[var(--surface-strong)] shadow-[var(--shadow)]"
         role="dialog"
         aria-modal="true"
         aria-label={`Edit lead ${card.title}`}

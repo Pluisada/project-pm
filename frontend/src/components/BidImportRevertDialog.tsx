@@ -348,7 +348,7 @@ export const BidImportRevertDialog = ({ batchId, filename, onClose, onChanged }:
         aria-modal="true"
         aria-labelledby="revert-title"
         aria-busy={loading || submitting}
-        className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-[24px] border border-[var(--stroke)] bg-white shadow-[var(--shadow)] outline-none"
+        className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-[24px] border border-[var(--stroke)] bg-[var(--surface-strong)] shadow-[var(--shadow)] outline-none"
       >
         <div className="flex items-start justify-between gap-4 border-b border-[var(--stroke)] px-6 py-4">
           <div>
@@ -461,7 +461,7 @@ export const BidImportRevertDialog = ({ batchId, filename, onClose, onChanged }:
                 type="button"
                 onClick={confirm}
                 disabled={!canConfirm}
-                className="rounded-lg bg-red-700 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-white disabled:opacity-50"
+                className="rounded-lg bg-[var(--danger-solid)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-white disabled:opacity-50"
               >
                 {submitting ? "Reverting..." : "Revert import"}
               </button>

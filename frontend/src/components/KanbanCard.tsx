@@ -100,7 +100,7 @@ export const KanbanCard = ({
       ref={setNodeRef}
       style={style}
       className={clsx(
-        "rounded-xl border border-[rgba(3,33,71,0.1)] bg-white px-3 py-2.5 shadow-[0_1px_2px_rgba(3,33,71,0.06)]",
+        "rounded-xl border border-[rgba(3,33,71,0.1)] bg-[var(--surface-strong)] px-3 py-2.5 shadow-[0_1px_2px_rgba(3,33,71,0.06)]",
         "transition-all duration-150",
         isDragging && "opacity-60 shadow-[0_8px_16px_rgba(3,33,71,0.12)]"
       )}

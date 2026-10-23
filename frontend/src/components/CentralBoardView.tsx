@@ -11,6 +11,7 @@ import {
   useDroppable,
   useSensor,
   useSensors,
+  type AutoScrollOptions,
   type CollisionDetection,
   type DragEndEvent,
   type DragStartEvent,
@@ -65,6 +66,10 @@ function describeFailure(err: Partial<ApiError>): { text: string; retryable: boo
 
 // The pointer decides when it is over something; otherwise the nearest center (a card dragged into the gap
 // between columns still lands somewhere sensible).
+// Edge auto-scroll, tuned for phones. dnd-kit's defaults (20% of the width, 10px every 5ms) start scrolling as soon as a
+// card picked up on a 360px screen is near the right edge and then race across the board under the finger.
+const AUTO_SCROLL: AutoScrollOptions = { threshold: { x: 0.12, y: 0.2 }, acceleration: 6, interval: 10 };
+
 const pointerFirst: CollisionDetection = (args) => {
   const underPointer = pointerWithin(args);
   return underPointer.length > 0 ? underPointer : closestCenter(args);
@@ -108,7 +113,7 @@ const CentralCard = ({ card, onOpen, movable, overlay, reviews, onOpenReview }: 
       {movable && !overlay && (
         <button type="button" ref={setActivatorNodeRef} {...attributes} {...listeners}
           aria-label={`Move ${card.title}`} data-testid={`central-handle-${card.id}`}
-          className="absolute right-1.5 top-1.5 cursor-grab touch-none rounded p-1 text-[var(--gray-text)] hover:text-[var(--navy-dark)] focus-visible:outline focus-visible:outline-2">
+          className="absolute right-1 top-1 cursor-grab touch-none rounded p-1.5 text-[var(--gray-text)] hover:text-[var(--navy-dark)] focus-visible:outline focus-visible:outline-2">
           <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
             <circle cx="3" cy="2" r="1" /><circle cx="9" cy="2" r="1" /><circle cx="3" cy="6" r="1" /><circle cx="9" cy="6" r="1" />
             <circle cx="3" cy="10" r="1" /><circle cx="9" cy="10" r="1" />
@@ -536,7 +541,7 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
         <InNavSlot id="central-undo-slot">
           <button type="button" onClick={() => void undoLast()} disabled={undoing || moving || deleting} data-testid="undo-button"
             title={undoStatus?.description ?? undefined}
-            className="rounded-md border border-[var(--nav-line)] px-3 py-1.5 text-sm font-semibold text-[var(--nav-ink)] transition hover:border-[var(--nav-brand)] disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--nav-brand)]">
+            className="shrink-0 whitespace-nowrap rounded-md border border-[var(--nav-line)] px-3 py-1.5 text-sm font-semibold text-[var(--nav-ink)] transition hover:border-[var(--nav-brand)] disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--nav-brand)]">
             {undoing ? "Undoing..." : "Undo"}
           </button>
         </InNavSlot>
@@ -558,7 +563,7 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
           className="mt-2 flex flex-wrap items-center gap-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2">
           <p id="delete-confirm-title" className="text-sm text-red-900">Delete the card &quot;{pendingDelete.title}&quot;?</p>
           <button type="button" disabled={deleting} onClick={() => void deleteCard(pendingDelete.id, pendingDelete.title, pendingDelete.version)}
-            className="rounded-lg bg-red-700 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60">
+            className="rounded-lg bg-[var(--danger-solid)] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60">
             {deleting ? "Deleting..." : "Confirm delete"}
           </button>
           <button type="button" disabled={deleting} onClick={() => setConfirmDelete(null)}
@@ -595,7 +600,7 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
             className="w-full rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] px-3 py-2 text-sm text-[var(--navy-dark)]" />
           {lossPrompt.error && <p role="alert" data-testid="loss-error" className="text-sm font-medium text-red-800">{lossPrompt.error}</p>}
           <div className="flex gap-2">
-            <button type="submit" disabled={moving} className="rounded-lg bg-red-700 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60">
+            <button type="submit" disabled={moving} className="rounded-lg bg-[var(--danger-solid)] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60">
               {moving ? "Moving..." : "Move to lost"}
             </button>
             <button type="button" disabled={moving} onClick={() => setLossPrompt(null)}
@@ -606,12 +611,16 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
         </form>
       )}
       {moveError && <p role="alert" data-testid="move-error" className="mt-2 text-sm font-medium text-red-800">{moveError}</p>}
-      <DndContext sensors={sensors} collisionDetection={pointerFirst} onDragStart={handleDragStart}
+      <DndContext sensors={sensors} collisionDetection={pointerFirst} autoScroll={AUTO_SCROLL} onDragStart={handleDragStart}
         onDragEnd={handleDragEnd} onDragCancel={() => setActiveCardId(null)}>
       {/* The scroll area is the whole width of the window (it bleeds through the page gutter, -mx-6 / px-6), so the first and
           last columns rest 24px from the edge and every column scrolls into reach; the small top padding and the
           scrollbar space keep borders, rings and the scrollbar from being cut by the overflow. */}
-      <div className="-mx-6 mt-4 flex gap-4 overflow-x-auto px-6 pb-3 pt-1 [scrollbar-width:thin]" aria-busy={moving} data-testid="central-columns">
+      {/* The scroll area is one viewport-limited box and the columns sit in a row inside it, as tall as the tallest one:
+          every panel then contains its whole card list and the panels stay level (a capped flex container would stretch
+          them only to the cap and let the cards run out below their borders). */}
+      <div className="-mx-6 mt-4 overflow-x-auto md:max-h-[max(24rem,calc(100dvh-17rem))] md:overflow-auto lg:max-h-[max(24rem,calc(100dvh-14rem))] px-6 pb-3 pt-1 [scrollbar-width:thin]" aria-busy={moving} data-testid="central-columns">
+        <div className="flex w-max min-w-full gap-4">
         {columns.map((column) => {
           const tone = stageTone(column.stage_kind, openIndex.get(column.id) ?? 0);
           const cards = sortByDealValue(column.cards);
@@ -636,6 +645,7 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
             </section>
           );
         })}
+        </div>
       </div>
       <DragOverlay>{activeCard ? <CentralCard card={activeCard} overlay /> : null}</DragOverlay>
       </DndContext>

@@ -475,16 +475,17 @@ export const CentralApp = () => {
   const canAi = company.role !== "visitor" && boardId !== null;
   const aiOpen = canAi && aiFor === company.slug;
 
+  // Fixed-height shell: the header stays put and only the page area below it scrolls (the AI panel has its own scroll).
   return (
-    <>
+    <div className="flex h-dvh flex-col">
     <CentralHeader company={company} email={me.email} canSwitch={me.companies.length > 1} onSwitch={leaveCompany}
       theme={theme} onThemeChange={setTheme} onSignOut={signOut}
       nav={{ current: view, items: navItems, onSelect: (next) => setViewFor({ slug: company.slug, view: next }) }}
       boardTools={view === "board"
         ? { ai: canAi ? { open: aiOpen, onToggle: () => setAiFor((cur) => (cur === company.slug ? null : company.slug)) } : undefined }
         : undefined} />
-    <div className="flex items-start">
-    <div className="min-w-0 flex-1 px-6 py-10">
+    <div className="flex min-h-0 flex-1">
+    <div className="min-w-0 flex-1 overflow-y-auto px-6 py-6" data-testid="central-scroll">
       <div className={page}>
       <WriteOutcomeNotices companies={me.companies} />
       {accountNotice && <p role="status" className="mt-4 text-sm font-medium text-amber-900">{accountNotice}</p>}
@@ -595,13 +596,13 @@ export const CentralApp = () => {
       <>
         <div data-testid="ai-sidebar-backdrop" onClick={() => setAiFor(null)} className="fixed inset-0 z-30 bg-black/40 lg:hidden" />
         <aside id="central-ai-panel" aria-label="AI Assistant"
-          className="border-l border-[var(--stroke)] bg-[var(--surface-strong)] max-lg:fixed max-lg:inset-y-0 max-lg:right-0 max-lg:z-40 max-lg:w-[min(20rem,100vw)] max-lg:shadow-[var(--shadow)] lg:sticky lg:top-0 lg:h-[calc(100vh-3.7rem)] lg:w-80 lg:shrink-0">
+          className="border-l border-[var(--stroke)] bg-[var(--surface-strong)] max-lg:fixed max-lg:inset-y-0 max-lg:right-0 max-lg:z-40 max-lg:w-[min(20rem,100vw)] max-lg:shadow-[var(--shadow)] lg:h-full lg:w-80 lg:shrink-0">
           <AIChatSidebar key={company.slug} scopeKey={company.slug} themed boardId={boardId} send={(message, history) => sendCompanyAIMessage(company.slug, boardId, message, history)}
             onClose={() => setAiFor(null)} onBoardChange={() => setStructureTick((n) => n + 1)} />
         </aside>
       </>
     )}
     </div>
-    </>
+    </div>
   );
 };

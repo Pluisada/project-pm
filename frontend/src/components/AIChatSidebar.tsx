@@ -37,7 +37,7 @@ const EXAMPLE_PROMPTS = [
 ];
 
 export const AIChatSidebar = ({ boardId, onBoardChange, onClose, closeRef, send, themed, scopeKey }: AIChatSidebarProps) => {
-  const white = themed ? "bg-[var(--surface)] text-[var(--navy-dark)]" : "bg-white";
+  const white = themed ? "bg-[var(--surface)] text-[var(--navy-dark)]" : "bg-[var(--surface-strong)]";
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);

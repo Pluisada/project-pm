@@ -453,7 +453,7 @@ export const DashboardPage = ({ boardId, companySlug }: DashboardPageProps) => {
             {stock.aging.opportunities.length === 0 ? (
               <p className="text-sm text-[var(--gray-text)]">No open opportunities.</p>
             ) : (
-              <div className="max-h-[420px] overflow-auto">
+              <div className="max-h-[420px] overflow-auto" tabIndex={0} role="region" aria-label="Aging of open opportunities, scrollable">
                 <table className="w-full" data-testid="aging">
                   <thead>
                     <tr className="border-b border-[var(--stroke)]">

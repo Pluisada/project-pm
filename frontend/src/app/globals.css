@@ -60,6 +60,14 @@
   --conf-high-ink: #14532d;
   --conf-high-line: #9bd9b0;
   --conf-high-dot: #16a34a;
+  /* Solid destructive button: stays dark enough for white text in both themes (the red-700 text color is lightened in dark). */
+  --danger-solid: #b91c1c;
+}
+
+/* The single-database app has no company identity. Its brand blue (#209dd7) is 2.9:1 on white as text, so the signed-in
+   screens use a darker step of it (5.5:1 or better). The sign-in screens, which sit outside .legacy-shell, keep the original. */
+.legacy-shell {
+  --primary-blue: #086699;
 }
 
 /* Company identities. Brand colors observed on the companies' public sites are
@@ -171,6 +179,20 @@
   --color-gray-100: #26272a;
   --color-gray-700: #d1d5db;
   --color-slate-700: #cbd5e1;
+  /* Remaining status shades the components use; each pair (surface / text) keeps at least 4.5:1. */
+  --color-red-900: #fecaca;
+  --color-green-200: #2f6b45;
+  --color-green-700: #86efac;
+  --color-amber-100: #3a2c0e;
+  --color-amber-200: #5a4313;
+  --color-amber-300: #7a5a1c;
+  --color-amber-400: #9a7324;
+  --color-amber-800: #fcd34d;
+  --color-amber-950: #fef3c7;
+  --color-yellow-100: #2e2410;
+  --color-blue-100: #14263a;
+  --color-blue-800: #bfdbfe;
+  --color-slate-100: #1c2128;
 }
 
 :root[data-company="salcomp"][data-theme="dark"] {

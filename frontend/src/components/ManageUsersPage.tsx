@@ -74,7 +74,7 @@ export const ManageUsersPage = () => {
               placeholder="name@company.com"
               disabled={submitting}
               required
-              className="mt-2 w-full rounded-lg border border-[var(--stroke)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--primary-blue)] focus:ring-2 focus:ring-[var(--primary-blue)]/20 disabled:opacity-50"
+              className="mt-2 w-full rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] px-4 py-3 text-sm outline-none transition focus:border-[var(--primary-blue)] focus:ring-2 focus:ring-[var(--primary-blue)]/20 disabled:opacity-50"
             />
           </div>
           <button
