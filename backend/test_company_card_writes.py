@@ -471,3 +471,61 @@ def test_user_without_membership_and_member_of_another_company_cannot_create(rig
     rig.opened.clear()
     r = rig.call("post", "/cards", token, json={"column_id": 1, "title": "t", "salesperson_id": seller})
     assert r.status_code == 403 and rig.opened == [] and rig.digest("lity") == before
+
+
+# ---- Next Action Date and Next Action Description (card_bid_details.next_step_due / next_step) ----
+
+def test_next_action_is_stored_returned_and_cleared_through_the_company_route(rig):
+    r = rig.call("put", "/cards/1", admin(rig), json={"next_step": "  Call the buyer ", "next_step_due": "2026-11-02"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["bid_details"]["next_step"] == "Call the buyer"  # trimmed
+    assert body["bid_details"]["next_step_due"] == "2026-11-02"
+    assert rig.sql("SELECT next_step, next_step_due FROM card_bid_details WHERE card_id = 1") == [("Call the buyer", "2026-11-02")]
+    board = rig.call("get", "", admin(rig)).json()
+    shown = next(c for col in board["columns"] for c in col["cards"] if c["id"] == 1)
+    assert shown["bid_details"]["next_step"] == "Call the buyer"
+
+    cleared = rig.call("put", "/cards/1", admin(rig), json={"next_step": "   ", "next_step_due": None})
+    assert cleared.status_code == 200
+    assert cleared.json()["bid_details"]["next_step"] is None and cleared.json()["bid_details"]["next_step_due"] is None
+    assert rig.sql("SELECT next_step, next_step_due FROM card_bid_details WHERE card_id = 1") == [(None, None)]
+
+
+def test_next_action_description_is_limited_to_100_characters_and_the_date_must_be_a_date(rig):
+    assert rig.call("put", "/cards/1", admin(rig), json={"next_step": "x" * 101}).status_code == 422
+    assert rig.call("put", "/cards/1", admin(rig), json={"next_step_due": "not a date"}).status_code == 422
+    assert rig.sql("SELECT COUNT(*) FROM card_bid_details") == [(0,)]  # nothing was written
+    assert rig.call("put", "/cards/1", admin(rig), json={"next_step": "x" * 100}).status_code == 200
+
+
+def test_a_card_without_a_next_action_reads_as_null_and_stays_editable(rig):
+    board = rig.call("get", "", admin(rig)).json()
+    card = next(c for col in board["columns"] for c in col["cards"] if c["id"] == 2)
+    assert card["bid_details"] is None  # no details row until a value is first set
+    assert rig.sql("SELECT COUNT(*) FROM card_bid_details") == [(0,)]
+    assert rig.call("put", "/cards/2", admin(rig), json={"title": "renamed"}).status_code == 200
+    assert rig.sql("SELECT COUNT(*) FROM card_bid_details") == [(0,)]  # editing something else creates no row
+
+
+def test_next_action_edit_by_a_member_follows_the_ownership_rules_and_is_logged(rig):
+    uid, token = member(rig)
+    rig.assign(1, uid)
+    assert rig.call("put", "/cards/1", token, json={"next_step": "Visit"}).status_code == 200
+    changes = json.loads(rig.sql("SELECT changes FROM card_edit_history WHERE card_id = 1")[0][0])
+    assert changes["next_step"]["new"] == "Visit"
+    assert rig.call("put", "/cards/2", token, json={"next_step": "No"}).status_code == 403  # not theirs
+
+
+def test_a_stale_version_refuses_a_next_action_edit(rig):
+    assert rig.call("put", "/cards/1", admin(rig), json={"next_step": "one"}).status_code == 200
+    stale = rig.call("put", "/cards/1", admin(rig), json={"next_step": "two", "expected_version": 0})
+    assert stale.status_code == 409
+    assert rig.sql("SELECT next_step FROM card_bid_details WHERE card_id = 1") == [("one",)]
+
+
+def test_the_closing_date_stays_stored_readable_and_untouched_by_other_edits(rig):
+    rig.sql("UPDATE cards SET expected_close_date = '2026-12-31' WHERE id = 1")
+    r = rig.call("put", "/cards/1", admin(rig), json={"next_step": "Call"})
+    assert r.status_code == 200 and r.json()["expected_close_date"] == "2026-12-31"
+    assert rig.sql("SELECT expected_close_date FROM cards WHERE id = 1") == [("2026-12-31",)]

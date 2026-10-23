@@ -81,8 +81,7 @@ You MUST respond with valid JSON in this exact format:
 Lead fields (all optional, on create and update; send null to clear one):
 - company, contact: text
 - deal_value (current year) and deal_value_next_year (the following year): numbers >= 0, always in USD; never send another currency
-- expected_close_date: "YYYY-MM-DD" (when the sale is expected to close)
-- next_step_due: "YYYY-MM-DD" (Next Action Date); next_step: the Action, a short text of at most 100 characters
+- next_step_due: "YYYY-MM-DD" (Next Action Date, the planned date of the next commercial action); next_step: the Next Action Description, a short text of at most 100 characters
 - lead_source: one of: {", ".join(LEAD_SOURCES)}
 - product_line: one of the "product_lines" listed in the board state
 - confidence_level: exactly "LOW", "MEDIUM" or "HIGH" (upper case), or null for not assigned. Set it only when the user states the level explicitly; never infer it from other fields, notes or imported data
@@ -133,9 +132,8 @@ async def get_board_context(db: Session, board_id: int) -> dict:
                         "contact": c.contact,
                         "deal_value": c.deal_value,
                         "currency": DEAL_CURRENCY,
-                        "expected_close_date": (
-                            c.expected_close_date.isoformat() if c.expected_close_date else None
-                        ),
+                        "next_step_due": c.next_step_due.isoformat() if c.next_step_due else None,
+                        "next_step": c.next_step,
                         "lead_source": c.lead_source,
                         "product_line": c.product_line,
                         "confidence_level": c.confidence_level,

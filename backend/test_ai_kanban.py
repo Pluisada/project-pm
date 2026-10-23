@@ -247,3 +247,27 @@ async def test_unknown_action_type_is_not_logged_verbatim(db, monkeypatch, caplo
         await apply_board_actions(db, board.id, [{"type": "move", "card_id": card.id, "column_id": columns[1].id}], _admin(db))
 
     assert "action_type=other" in caplog.text and "action_type=move" not in caplog.text
+
+
+# ---- the Closing Date is gone from the assistant; the next action is not ----
+
+def test_assistant_prompt_and_context_drop_the_closing_date_and_describe_the_next_action(db):
+    import asyncio
+    from datetime import date
+
+    from ai_kanban import SYSTEM_PROMPT, get_board_context
+
+    assert "expected_close_date" not in SYSTEM_PROMPT
+    assert "next_step_due" in SYSTEM_PROMPT and "at most 100 characters" in SYSTEM_PROMPT
+    board = db.query(Board).first()
+    column = db.query(Column).filter(Column.board_id == board.id).first()
+    card = Card(column_id=column.id, title="c", position=0, expected_close_date=date(2027, 1, 1))
+    db.add(card)
+    db.commit()
+    card.next_step = "Call"
+    card.next_step_due = date(2026, 11, 2)
+    db.commit()
+    state = asyncio.run(get_board_context(db, board.id))
+    shown = next(c for col in state["columns"] for c in col["cards"])
+    assert "expected_close_date" not in shown
+    assert (shown["next_step"], shown["next_step_due"]) == ("Call", "2026-11-02")
