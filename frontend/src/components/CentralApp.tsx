@@ -37,6 +37,9 @@ import {
 } from "@/components/CentralLinkScreens";
 import { CentralLanding } from "@/components/CentralLanding";
 import { CentralMembers } from "@/components/CentralMembers";
+import { CentralProducts } from "@/components/CentralProducts";
+import { DashboardPage } from "@/components/DashboardPage";
+import { ReportsPage } from "@/components/ReportsPage";
 import { ExcelDownloadButtons } from "@/components/ExcelDownloadButtons";
 import { LoadingScreen } from "@/components/LoadingScreen";
 import { setActiveCompany } from "@/lib/activeCompany";
@@ -453,11 +456,17 @@ export const CentralApp = () => {
   // and a stale choice falls back to the board.
   const canUsers = company.role === ROLE_SUPER_ADMIN;
   const canDatabase = company.role === ROLE_SUPER_ADMIN || company.role === ROLE_COMPANY_ADMIN;
+  // Products: the catalog is changed by the Super Admin only (the backend refuses everyone else); the button leads to it.
+  const canProducts = company.role === ROLE_SUPER_ADMIN;
   const requested: CentralView = viewFor.slug === company.slug ? viewFor.view : "board";
-  const view: CentralView = requested === "users" && canUsers ? "users" : requested === "database" && canDatabase ? "database" : "board";
+  // Reports and KPIs are reads the backend offers every role of the company; they need a board to report on.
+  const canInsights = boardId !== null;
+  const view: CentralView = (requested === "reports" || requested === "kpis") && canInsights ? requested : requested === "users" && canUsers ? "users" : requested === "products" && canProducts ? "products" : requested === "database" && canDatabase ? "database" : "board";
   const navItems: { id: CentralView; label: string }[] = [
     { id: "board", label: "Board" },
+    ...(canInsights ? [{ id: "reports" as const, label: "Reports" }, { id: "kpis" as const, label: "KPIs" }] : []),
     ...(canUsers ? [{ id: "users" as const, label: "Users" }] : []),
+    ...(canProducts ? [{ id: "products" as const, label: "Products" }] : []),
     ...(canDatabase ? [{ id: "database" as const, label: "Database" }] : []),
   ];
   const page = "mx-auto max-w-7xl";
@@ -488,9 +497,20 @@ export const CentralApp = () => {
         </button>
       )}
       </div>
+      {view === "reports" && company && boardId !== null && (
+        <ReportsPage key={`${company.slug}:${boardId}`} boardId={boardId} companySlug={company.slug} />
+      )}
+      {view === "kpis" && company && boardId !== null && (
+        <DashboardPage key={`${company.slug}:${boardId}`} boardId={boardId} companySlug={company.slug} />
+      )}
       {view === "users" && company && loaded && loaded.slug === company.slug && (
         <section className={`${page} mt-8`}>
           <CentralMembers key={company.slug} companySlug={company.slug} companyName={company.name} />
+        </section>
+      )}
+      {view === "products" && company && (
+        <section className={`${page} mt-8`}>
+          <CentralProducts key={company.slug} companySlug={company.slug} companyName={company.name} />
         </section>
       )}
       {view === "database" && company && (

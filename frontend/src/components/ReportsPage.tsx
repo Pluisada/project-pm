@@ -5,6 +5,7 @@ import clsx from "clsx";
 import {
   CONFIDENCE_LEVELS,
   getBoardReport,
+  getCompanyLeadOptions,
   getErrorMessage,
   getLeadOptions,
   type BoardReport,
@@ -12,11 +13,13 @@ import {
   type LeadOptions,
   type ReportGroup,
 } from "@/lib/api";
-import { DEAL_CURRENCY, annualLines, formatDate, formatMoney, formatTotals, type AnnualMeasure } from "@/lib/format";
+import { annualLines, formatTotals, type AnnualMeasure } from "@/lib/format";
 import { AnnualLegend, AnnualTotals, Section, StageBars, StatTile, selectClass, tdClass, thClass } from "@/components/ReportBlocks";
 
 type ReportsPageProps = {
   boardId: number;
+  /** Central mode: read the report of this company; absent: the legacy single-database app. */
+  companySlug?: string;
 };
 
 const GroupTable = ({ label, groups, years }: { label: string; groups: ReportGroup[]; years?: number[] }) =>
@@ -59,25 +62,7 @@ const tileNote = (measure: AnnualMeasure, years?: number[]) => {
   return lines.length ? lines.map((line) => line.detail).join("\n") : undefined;
 };
 
-// A lead's value: both years added, with each year beneath when next year has an amount.
-const leadValue = (lead: BoardReport["closing_soon"][number]) => {
-  if (lead.deal_value_total == null) return "-";
-  const year = lead.deal_year;
-  const next = lead.deal_value_next_year ?? 0;
-  return (
-    <>
-      <div className="font-semibold">{formatMoney(lead.deal_value_total, DEAL_CURRENCY)}</div>
-      {next > 0 && (
-        <div className="text-xs text-[var(--gray-text)]">
-          {year ?? "Current"} {lead.deal_value != null ? formatMoney(lead.deal_value, DEAL_CURRENCY) : "-"} ·{" "}
-          {year != null ? year + 1 : "Next"} {formatMoney(next, DEAL_CURRENCY)}
-        </div>
-      )}
-    </>
-  );
-};
-
-export const ReportsPage = ({ boardId }: ReportsPageProps) => {
+export const ReportsPage = ({ boardId, companySlug }: ReportsPageProps) => {
   const [options, setOptions] = useState<LeadOptions | null>(null);
   const [report, setReport] = useState<BoardReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -86,23 +71,23 @@ export const ReportsPage = ({ boardId }: ReportsPageProps) => {
   const [confidence, setConfidence] = useState<ConfidenceFilter | "">("");
 
   useEffect(() => {
-    getLeadOptions()
+    (companySlug ? getCompanyLeadOptions(companySlug) : getLeadOptions())
       .then(setOptions)
       .catch((err: unknown) => setError(getErrorMessage(err, "Failed to load filters")));
-  }, []);
+  }, [companySlug]);
 
   useEffect(() => {
     getBoardReport(boardId, {
       salespersonId: salespersonId ? Number(salespersonId) : undefined,
       productLine: productLine || undefined,
       confidenceLevel: confidence || undefined,
-    })
+    }, companySlug)
       .then((data) => {
         setReport(data);
         setError(null);
       })
       .catch((err: unknown) => setError(getErrorMessage(err, "Failed to load report")));
-  }, [boardId, salespersonId, productLine, confidence]);
+  }, [boardId, companySlug, salespersonId, productLine, confidence]);
 
   const kpis = report?.kpis;
 
@@ -165,7 +150,7 @@ export const ReportsPage = ({ boardId }: ReportsPageProps) => {
       </div>
 
       {error && (
-        <div className="rounded-2xl border border-red-200 bg-red-50 px-5 py-3 text-sm font-medium text-red-700">
+        <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 px-5 py-3 text-sm font-medium text-red-700">
           {error}
         </div>
       )}
@@ -197,45 +182,6 @@ export const ReportsPage = ({ boardId }: ReportsPageProps) => {
 
           <Section title="Leads by stage">
             <StageBars stages={report.stages} years={report.deal_years} />
-          </Section>
-
-          <Section title="Closing in the next 30 days or overdue">
-            {report.closing_soon.length === 0 ? (
-              <p className="text-sm text-[var(--gray-text)]">No open leads closing soon.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-[var(--stroke)]">
-                      <th className={thClass}>Close date</th>
-                      <th className={thClass}>Lead</th>
-                      <th className={thClass}>Stage</th>
-                      <th className={thClass}>Salesperson</th>
-                      <th className={thClass}>Value</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {report.closing_soon.map((lead) => (
-                      <tr key={lead.card_id} className="border-b border-[var(--stroke)] last:border-0">
-                        <td className={clsx(tdClass, lead.overdue && "font-semibold text-red-700")}>
-                          {formatDate(lead.expected_close_date)}
-                          {lead.overdue && " (overdue)"}
-                        </td>
-                        <td className={tdClass}>
-                          <div className="font-semibold">{lead.title}</div>
-                          {lead.company && <div className="text-xs text-[var(--gray-text)]">{lead.company}</div>}
-                        </td>
-                        <td className={tdClass}>{lead.stage}</td>
-                        <td className={tdClass}>{lead.salesperson_name ?? "Unassigned"}</td>
-                        <td className={tdClass}>
-                          {leadValue(lead)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
           </Section>
 
           <Section title="By salesperson">

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SESSION_EXPIRED_EVENT, centralLogin, centralLogout, getAuthMode, getAuthState } from "@/lib/auth";
 import {
-  createCompanyBoard, createCompanyColumn, deleteCompanyColumn, downloadCompanyExcel, getCentralMe, isAbortError,
+  createCompanyBoard, createCompanyColumn, getBoardReport, getKpiAging, getKpiSummary, getCompanyLeadOptions, deleteCompanyColumn, downloadCompanyExcel, getCentralMe, isAbortError,
   safeExcelFilename, updateCompanyColumn,
 } from "@/lib/api";
 
@@ -236,5 +236,27 @@ describe("company board and column administration client", () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("down"); }));
     await expect(deleteCompanyColumn("acme", 1, 2)).rejects.toMatchObject({ status_code: 0 });
     await expect(createCompanyBoard("acme", { title: "x" })).rejects.toMatchObject({ status_code: 0 });
+  });
+});
+
+describe("report and KPI calls", () => {
+  beforeEach(() => localStorage.clear());
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("go to the company's endpoints when a company is given, and to the legacy ones otherwise", async () => {
+    const fetchMock = vi.fn(async () => json(200, {}));
+    vi.stubGlobal("fetch", fetchMock);
+    await getBoardReport(4, { productLine: "Chargers" }, "lity");
+    await getKpiSummary(4, { period: "last_30_days" }, true, "lity");
+    await getKpiAging(4, "lity");
+    await getBoardReport(4);
+    await getKpiAging(4);
+    const urls = fetchMock.mock.calls.map((c) => String((c as unknown[])[0]));
+    expect(urls[0]).toContain("/api/companies/lity/boards/4/report?product_line=Chargers");
+    expect(urls[1]).toContain("/api/companies/lity/boards/4/kpis/summary?period=last_30_days&compare=true");
+    expect(urls[2]).toContain("/api/companies/lity/boards/4/kpis/aging");
+    expect(urls[3]).toMatch(/\/api\/boards\/4\/report$/);
+    expect(urls[4]).toMatch(/\/api\/boards\/4\/kpis\/aging$/);
+    void getCompanyLeadOptions;
   });
 });

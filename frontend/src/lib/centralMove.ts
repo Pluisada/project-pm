@@ -1,4 +1,5 @@
 import type { CardResponse, ColumnResponse } from "@/lib/api";
+import { sortByDealValue } from "@/lib/cardOrder";
 
 /** dnd-kit ids carry a prefix: a card and a column may share a numeric id and dnd-kit keeps one id-keyed map. */
 export const cardDndId = (id: number) => `card-${id}`;
@@ -6,7 +7,8 @@ export const columnDndId = (id: number) => `col-${id}`;
 
 export type MoveTarget = { columnId: number; index: number };
 
-const byPosition = (cards: CardResponse[] | undefined) => [...(cards ?? [])].sort((a, b) => a.position - b.position);
+// A column is listed by Deal Value, highest first (lib/cardOrder.ts), so drop indexes match what is on screen.
+const byPosition = (cards: CardResponse[] | undefined) => sortByDealValue(cards);
 
 /**
  * Where a drop lands: the target column and the index among that column's other cards (the moved card

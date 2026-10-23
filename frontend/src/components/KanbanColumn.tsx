@@ -4,18 +4,8 @@ import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import type { Card, Column } from "@/lib/kanban";
 import { KanbanCard } from "@/components/KanbanCard";
+import { stageTone, stageToneStyle } from "@/lib/stageTone";
 import { NewCardForm, type NewCardDeal } from "@/components/NewCardForm";
-
-const OPEN_TONES = ["blue", "cyan", "turquoise", "lime"] as const;
-
-// Won/lost come from the stage's kind; open stages are tinted by their order
-// in the pipeline, never by title (stages can be renamed).
-const stageTone = (column: Column, stageIndex?: number) => {
-  if (column.stageKind === "won") return "green";
-  if (column.stageKind === "lost") return "red";
-  if (stageIndex === undefined) return null;
-  return OPEN_TONES[Math.min(stageIndex, OPEN_TONES.length - 1)];
-};
 
 type KanbanColumnProps = {
   column: Column;
@@ -63,7 +53,7 @@ export const KanbanColumn = ({
     setDraft(null);
   };
 
-  const tone = stageTone(column, stageIndex);
+  const tone = stageIndex === undefined && column.stageKind === "open" ? null : stageTone(column.stageKind ?? "open", stageIndex ?? 0);
 
   return (
     <section
@@ -73,15 +63,7 @@ export const KanbanColumn = ({
         !tone && "bg-[var(--surface-strong)]",
         isOver && "ring-2 ring-[var(--accent-yellow)]"
       )}
-      style={
-        tone
-          ? {
-              backgroundColor: `var(--stage-${tone}-bg)`,
-              borderColor: `color-mix(in srgb, var(--stage-${tone}-accent) 40%, white)`,
-              borderTopColor: `var(--stage-${tone}-accent)`,
-            }
-          : undefined
-      }
+      style={tone ? stageToneStyle(tone) : undefined}
       data-testid={`column-${column.id}`}
     >
       <div className="flex items-start justify-between gap-3">

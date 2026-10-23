@@ -14,13 +14,10 @@ export type LeadSummary = {
   company: string | null;
   contact: string | null;
   dealValue: number | null;
-  expectedCloseDate: string | null; // YYYY-MM-DD
   productLine: string | null;
   confidenceLevel?: ConfidenceLevel | null;
   salespersonName: string | null;
-  // Close date has passed while the lead is still open (not won/lost)
-  overdue: boolean;
-  // Bid next action (read-only, imported); distinct from the expected close date.
+  // The card's next commercial action: description (at most 100 characters) and planned date.
   nextStep: string | null;
   nextStepDue: string | null; // YYYY-MM-DD, only when a valid date
   nextStepOverdue: boolean;

@@ -82,9 +82,9 @@ export const KanbanCard = ({
           <ConfidenceBadge level={lead.confidenceLevel} />
         </span>
       )}
-      {(deadlineOverdue || (!lead?.nextStep && lead?.overdue)) && (
+      {deadlineOverdue && (
         <span className="mt-1.5 inline-block rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-red-700">
-          {deadlineOverdue ? "Next action overdue" : "Close date overdue"}
+          Next action overdue
         </span>
       )}
       {lead?.sourceCode && (

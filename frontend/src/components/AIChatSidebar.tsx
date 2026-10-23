@@ -24,7 +24,7 @@ interface AIChatSidebarProps {
 const TYPING_DOT_DELAYS = ["0s", "0.2s", "0.4s"];
 
 const EXAMPLE_PROMPTS = [
-  "Show leads closing this month",
+  "Which next actions are due this week?",
   "Which leads are overdue?",
   "Move the Acme lead to Proposal",
 ];

@@ -36,6 +36,8 @@ import { AnnualLegend, AnnualTotals, Section, StageBars, StatTile, Totals, selec
 
 type DashboardPageProps = {
   boardId: number;
+  /** Central mode: read the KPIs of this company; absent: the legacy single-database app. */
+  companySlug?: string;
 };
 
 const PRESETS: { value: KpiPeriodPreset; label: string }[] = [
@@ -145,7 +147,7 @@ const OutcomeRow = ({
   </tr>
 );
 
-export const DashboardPage = ({ boardId }: DashboardPageProps) => {
+export const DashboardPage = ({ boardId, companySlug }: DashboardPageProps) => {
   const [preset, setPreset] = useState<KpiPeriodPreset>("last_30_days");
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
@@ -158,10 +160,10 @@ export const DashboardPage = ({ boardId }: DashboardPageProps) => {
   const filterKey = JSON.stringify([preset, start, end, compare]);
 
   useEffect(() => {
-    Promise.all([getKpiAging(boardId), getKpiPipeline(boardId)])
+    Promise.all([getKpiAging(boardId, companySlug), getKpiPipeline(boardId, companySlug)])
       .then(([aging, pipeline]) => setStock({ aging, pipeline }))
       .catch((err: unknown) => setError(getErrorMessage(err, "Failed to load the pipeline")));
-  }, [boardId]);
+  }, [boardId, companySlug]);
 
   useEffect(() => {
     if (customIncomplete) return;
@@ -169,9 +171,9 @@ export const DashboardPage = ({ boardId }: DashboardPageProps) => {
     let current = true;
     const query: KpiPeriodQuery = preset === "custom" ? { period: preset, start, end } : { period: preset };
     Promise.all([
-      getKpiSummary(boardId, query, compare),
-      getKpiConversion(boardId, query),
-      getKpiStageTime(boardId, query),
+      getKpiSummary(boardId, query, compare, companySlug),
+      getKpiConversion(boardId, query, companySlug),
+      getKpiStageTime(boardId, query, companySlug),
     ])
       .then(([summary, conversion, stageTime]) => {
         if (!current) return;
@@ -186,7 +188,7 @@ export const DashboardPage = ({ boardId }: DashboardPageProps) => {
     return () => {
       current = false;
     };
-  }, [boardId, preset, start, end, compare, customIncomplete, filterKey]);
+  }, [boardId, companySlug, preset, start, end, compare, customIncomplete, filterKey]);
 
   // Only data fetched for the current filters - nothing while a custom range
   // is incomplete or a new period is loading.

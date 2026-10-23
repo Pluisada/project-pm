@@ -110,26 +110,12 @@ describe("CentralBoardView undo", () => {
     await dropOn(1, "col-31");
     await waitFor(() => expect(ids(31)).toEqual(["Lead 4", "Lead 1"]));
     await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
-    expect(await screen.findByTestId("undo-notice")).toHaveTextContent('Undone: Move "Lead 1" back.');
+    await waitFor(() => expect(ids(30)).toEqual(["Lead 1", "Lead 2", "Lead 3"]));
+    expect(screen.queryByTestId("undo-notice")).not.toBeInTheDocument(); // a successful undo shows no banner
     expect(ids(30)).toEqual(["Lead 1", "Lead 2", "Lead 3"]); // dense positions come from the server read
     expect(ids(31)).toEqual(["Lead 4"]);
     expect(posts(calls)).toHaveLength(1);
     await waitFor(() => expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument());
-  });
-
-  it("undoes a reorder inside a column", async () => {
-    let serverBoard = boardOf(initial);
-    setup({
-      board: () => serverBoard,
-      put: () => { serverBoard = boardOf({ 30: [2, 3, 1], 31: [4] }); return json(200, { ...card(1, 30, 2) }); },
-      post: () => { serverBoard = boardOf(initial); return json(200, { available: false, description: null, undone: "Reorder" }); },
-    });
-    await screen.findByText("Lead 1");
-    await dropOn(1, "card-3");
-    await waitFor(() => expect(ids(30)).toEqual(["Lead 2", "Lead 3", "Lead 1"]));
-    await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
-    await screen.findByText(/Undone: Reorder/);
-    expect(ids(30)).toEqual(["Lead 1", "Lead 2", "Lead 3"]);
   });
 
   it("blocks a second Undo while one is in flight and shows a loading state", async () => {
@@ -141,7 +127,8 @@ describe("CentralBoardView undo", () => {
     expect(await screen.findByRole("button", { name: "Undoing..." })).toBeDisabled();
     expect(posts(calls)).toHaveLength(1);
     release();
-    await screen.findByTestId("undo-notice");
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Undoing..." })).not.toBeInTheDocument());
+    expect(screen.queryByTestId("undo-notice")).not.toBeInTheDocument();
     expect(posts(calls)).toHaveLength(1);
   });
 
@@ -152,7 +139,8 @@ describe("CentralBoardView undo", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
     expect(screen.queryByTestId("undo-notice")).not.toBeInTheDocument();
     release();
-    expect(await screen.findByTestId("undo-notice")).toHaveTextContent("Undone");
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Undoing..." })).not.toBeInTheDocument());
+    expect(screen.queryByTestId("undo-notice")).not.toBeInTheDocument();
   });
 
   const failures: [string, () => Response | Promise<Response>, RegExp, "error" | "uncertain"][] = [
@@ -170,6 +158,16 @@ describe("CentralBoardView undo", () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(posts(calls)).toHaveLength(1);
     expect(screen.getByText("Lead 1")).toBeInTheDocument();
+  });
+
+  it("still tells the person when the undo worked but the board could not be re-read", async () => {
+    let undone = false;
+    setup({
+      board: () => (undone ? json(500, { detail: "boom" }) : boardOf(initial)),
+      post: () => { undone = true; return json(200, { available: false, description: null, undone: "Move" }); },
+    });
+    await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    expect(await screen.findByTestId("undo-notice")).toHaveTextContent(/could not be reloaded/);
   });
 
   it("re-reads the board after an uncertain result so the real state is shown", async () => {
@@ -233,7 +231,7 @@ describe("CentralBoardView undo", () => {
   it("never touches a legacy endpoint", async () => {
     const { calls } = setup();
     await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
-    await screen.findByTestId("undo-notice");
+    await waitFor(() => expect(posts(calls)).toHaveLength(1));
     for (const c of calls) expect(c.url).toContain("/api/companies/acme/");
     expect(calls.some((c) => /\/api\/boards\//.test(c.url))).toBe(false);
   });

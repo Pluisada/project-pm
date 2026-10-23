@@ -6,7 +6,7 @@ import type { ThemePreference } from "@/lib/theme";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { NavSlot } from "@/components/NavSlot";
 
-export type CentralView = "board" | "users" | "database";
+export type CentralView = "board" | "reports" | "kpis" | "users" | "products" | "database";
 
 interface CentralHeaderProps {
   company: CentralCompany;
@@ -26,7 +26,7 @@ interface CentralHeaderProps {
 
 /**
  * The bar above a company's pages: its identity, an explicit way to change company, the sections the person may open
- * (Board, Users, Database; only those offered by the caller), the theme, who is signed in and sign-out.
+ * (Board, Reports, KPIs, Users, Products, Database; only those offered by the caller), the theme, who is signed in and sign-out.
  */
 export const CentralHeader = ({ company, email, canSwitch, onSwitch, theme, onThemeChange, onSignOut, nav, boardTools }: CentralHeaderProps) => {
   const brand = brandFor(company.slug);

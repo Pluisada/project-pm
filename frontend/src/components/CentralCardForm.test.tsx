@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cardAction, openCardDetails } from "@/test/cardActions";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CentralBoardView } from "@/components/CentralBoardView";
+import { buildCardUpdates } from "@/components/CentralCardForm";
 import { SESSION_EXPIRED_EVENT } from "@/lib/auth";
 
 const json = (status: number, body: unknown = {}) => new Response(JSON.stringify(body), { status });
@@ -149,7 +151,7 @@ describe("central card create/edit", () => {
     const own = card(100, 30, "Mine", 7, { company: "ACME", contact: "Bob", deal_value: 10 });
     const calls = backend({ cards: [own], write: (c) => json(200, { ...own, ...(c.body as object), title: "Mine 2", contact: null }) });
     render(<CentralBoardView companySlug="acme" boardId={3} />);
-    await userEvent.click(await screen.findByRole("button", { name: "Edit Mine" }));
+    await cardAction("Mine", "Edit");
     expect(screen.getByLabelText("Title")).toHaveValue("Mine");
     expect(screen.getByLabelText("Customer")).toHaveValue("ACME");
     expect(screen.getByLabelText("Lead source")).toHaveValue(""); // null stays unset, not a value
@@ -164,27 +166,62 @@ describe("central card create/edit", () => {
     expect(put.body).toEqual({ title: "Mine 2", contact: null });
   });
 
-  it("offers Edit only on own cards for a member, on every card for canEditAnyCard, and nothing when read-only", async () => {
+  it("edits the contact email and telephone: prefilled, only changes sent, a cleared one as null", async () => {
+    const own = card(100, 30, "Mine", 7, { contact_email: "ana@example.com", contact_phone: "+55 11 91234-5678" } as never);
+    const calls = backend({ cards: [own], write: (c) => json(200, { ...own, ...(c.body as object) }) });
+    render(<CentralBoardView companySlug="acme" boardId={3} />);
+    await cardAction("Mine", "Edit");
+    expect(screen.getByLabelText("Contact email")).toHaveValue("ana@example.com");
+    expect(screen.getByLabelText("Contact telephone")).toHaveValue("+55 11 91234-5678");
+    await userEvent.clear(screen.getByLabelText("Contact email"));
+    await userEvent.clear(screen.getByLabelText("Contact telephone"));
+    await userEvent.type(screen.getByLabelText("Contact telephone"), "+358 40 123 4567");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(writes(calls)).toHaveLength(1));
+    expect(writes(calls)[0].body).toMatchObject({ contact_email: null, contact_phone: "+358 40 123 4567" });
+  });
+
+  it("shows the backend's refusal of an invalid contact email and keeps what was typed", async () => {
+    const own = card(100, 30, "Mine", 7);
+    backend({ cards: [own], write: () => json(422, { detail: "Enter a valid email address" }) });
+    render(<CentralBoardView companySlug="acme" boardId={3} />);
+    await cardAction("Mine", "Edit");
+    await userEvent.type(screen.getByLabelText("Contact email"), "a@b.co");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText(/valid email/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Contact email")).toHaveValue("a@b.co");
+  });
+
+  it("offers Edit in the details only on own cards for a member, on every card for canEditAnyCard, and nothing when read-only", async () => {
     const cards = [card(1, 30, "Mine", 7), card(2, 30, "Theirs", 8), card(3, 30, "Unassigned", null)];
     backend({ cards });
     const { unmount } = render(<CentralBoardView companySlug="acme" boardId={3} />);
     await screen.findByText("Theirs");
-    expect(screen.getByRole("button", { name: "Edit Mine" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Edit Theirs" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Edit Unassigned" })).not.toBeInTheDocument();
+    const editIn = async (title: string) => {
+      const dialog = await openCardDetails(title);
+      const found = within(dialog).queryByRole("button", { name: "Edit" });
+      await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+      return found !== null;
+    };
+    expect(await editIn("Mine")).toBe(true);
+    expect(await editIn("Theirs")).toBe(false);
+    expect(await editIn("Unassigned")).toBe(false);
     unmount();
 
     backend({ cards, me: meOf("acme", { canEditAnyCard: true }) });
     const admin = render(<CentralBoardView companySlug="acme" boardId={3} />);
     await screen.findByText("Theirs");
-    expect(screen.getAllByRole("button", { name: /^Edit / })).toHaveLength(3);
+    expect([await editIn("Mine"), await editIn("Theirs"), await editIn("Unassigned")]).toEqual([true, true, true]);
     admin.unmount();
 
     backend({ cards, me: meOf("acme", { readOnly: true, canEditOwnCards: false }) });
     render(<CentralBoardView companySlug="acme" boardId={3} />);
     await screen.findByText("Theirs");
-    // Read-only: no write control at all; the read-only History button is the only one.
-    expect(screen.getAllByRole("button").every((b) => /^History of /.test(b.getAttribute("aria-label") ?? ""))).toBe(true);
+    // Read-only: no Edit anywhere; History stays available in the details.
+    expect([await editIn("Mine"), await editIn("Theirs")]).toEqual([false, false]);
+    const dialog = await openCardDetails("Mine");
+    expect(within(dialog).getByRole("button", { name: "History" })).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Delete" })).toBeNull();
   });
 
   it.each([
@@ -351,7 +388,7 @@ describe("central card create/edit", () => {
     it("keeps editing unblocked after an uncertain failure: the guard is for create only", async () => {
       const calls = backend({ cards: [card(5, 30, "Mine", 7)], write: () => json(500, {}) });
       render(<CentralBoardView companySlug="acme" boardId={3} />);
-      await userEvent.click(await screen.findByRole("button", { name: "Edit Mine" }));
+      await cardAction("Mine", "Edit");
       await userEvent.clear(screen.getByLabelText("Title"));
       await userEvent.type(screen.getByLabelText("Title"), "Renamed");
       await userEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -361,5 +398,30 @@ describe("central card create/edit", () => {
       await userEvent.click(screen.getByRole("button", { name: "Save" }));
       await waitFor(() => expect(calls.filter((c) => c.method === "PUT")).toHaveLength(2));
     });
+  });
+});
+
+describe("buildCardUpdates next action", () => {
+  const base = card(1, 30, "A", 7) as unknown as Parameters<typeof buildCardUpdates>[0];
+  const values = (over: Record<string, string>) => ({
+    title: "A", details: "", company: "ACME", contact: "", contactEmail: "", contactPhone: "", dealValue: "", dealValueNextYear: "", nextStepDue: "", nextStep: "",
+    leadSource: "", productLine: "", confidenceLevel: "", salespersonId: "", lossReason: "", ...over,
+  });
+
+  it("sends nothing for a card without a next action and an empty form (null and empty are the same)", () => {
+    expect(buildCardUpdates(base, values({}))).toEqual({});
+  });
+
+  it("sends only what changed and null for what was cleared", () => {
+    const withAction = { ...base, bid_details: { next_step: "Call", next_step_due: "2026-11-02" } } as unknown as typeof base;
+    expect(buildCardUpdates(withAction, values({ nextStep: "Call", nextStepDue: "2026-11-02" }))).toEqual({});
+    expect(buildCardUpdates(withAction, values({ nextStep: "  Visit  ", nextStepDue: "2026-11-02" }))).toEqual({ next_step: "Visit" });
+    expect(buildCardUpdates(withAction, values({}))).toEqual({ next_step: null, next_step_due: null });
+    expect(buildCardUpdates(base, values({ nextStepDue: "2027-01-05" }))).toEqual({ next_step_due: "2027-01-05" });
+  });
+
+  it("never sends the closing date", () => {
+    const old = { ...base, expected_close_date: "2026-12-31" } as unknown as typeof base;
+    expect(buildCardUpdates(old, values({}))).not.toHaveProperty("expected_close_date");
   });
 });

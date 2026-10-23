@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cardAction, openCardDetails } from "@/test/cardActions";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CentralBoardView } from "@/components/CentralBoardView";
@@ -41,7 +42,7 @@ function setup(opts: {
 }
 const deletes = (calls: Call[]) => calls.filter((c) => c.method === "DELETE");
 const askDelete = async (n: number) => {
-  await userEvent.click(await screen.findByRole("button", { name: `Delete Lead ${n}` }));
+  await cardAction(`Lead ${n}`, "Delete");
 };
 
 describe("CentralBoardView delete", () => {
@@ -50,14 +51,24 @@ describe("CentralBoardView delete", () => {
 
   it("offers Delete only with the canDeleteCards capability", async () => {
     setup({ caps: { canDeleteCards: false } });
-    await screen.findByText("Lead 1");
-    expect(screen.queryByRole("button", { name: /^Delete / })).toBeNull();
+    const dialog = await openCardDetails("Lead 1");
+    expect(within(dialog).queryByRole("button", { name: "Delete" })).toBeNull();
   });
 
   it("offers no Delete to a read-only user", async () => {
     setup({ caps: { readOnly: true } });
+    const dialog = await openCardDetails("Lead 1");
+    expect(within(dialog).queryByRole("button", { name: "Delete" })).toBeNull();
+  });
+
+  it("shows no Delete on the compact card, only inside its details", async () => {
+    setup();
     await screen.findByText("Lead 1");
-    expect(screen.queryByRole("button", { name: /^Delete / })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Delete/ })).toBeNull();
+    const dialog = await openCardDetails("Lead 1");
+    expect(within(dialog).getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    // Opening the details deletes nothing and asks for nothing yet.
+    expect(screen.queryByTestId("delete-confirm")).toBeNull();
   });
 
   it("cancelling the confirmation deletes nothing", async () => {
@@ -124,7 +135,8 @@ describe("CentralBoardView delete", () => {
     await userEvent.dblClick(confirm);
     expect(deletes(calls)).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Deleting..." })).toBeDisabled();
-    expect(screen.queryByRole("button", { name: /^Delete Lead/ })).toBeNull(); // no second delete can start meanwhile
+    // no second delete can start meanwhile: the details offer none
+    expect(within(await openCardDetails("Lead 2")).queryByRole("button", { name: "Delete" })).toBeNull();
     release(new Response(null, { status: 204 }));
     await screen.findByText('Deleted "Lead 1".');
   });

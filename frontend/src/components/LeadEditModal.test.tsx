@@ -124,11 +124,11 @@ describe("LeadEditModal annual Deal Value", () => {
 
 describe("LeadEditModal Next Action Date and Action", () => {
   const save = () => userEvent.click(screen.getByRole("button", { name: "Save lead" }));
-  const action = () => screen.getByLabelText("Action") as HTMLInputElement;
+  const action = () => screen.getByLabelText("Next Action Description") as HTMLInputElement;
 
   it("labels the dates distinctly and caps the Action at 100 characters", () => {
     open("");
-    expect(screen.getByLabelText("Expected Close Date")).toBeTruthy();
+    expect(screen.queryByLabelText("Expected Close Date")).toBeNull();
     expect(screen.getByLabelText("Next Action Date")).toBeTruthy();
     expect(action().maxLength).toBe(100);
   });

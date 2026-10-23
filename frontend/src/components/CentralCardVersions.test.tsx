@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cardAction } from "@/test/cardActions";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { DragEndEvent } from "@dnd-kit/core";
@@ -70,14 +71,14 @@ describe("central card versions (optimistic concurrency in the UI)", () => {
     it("sends the version the form was opened on, and the next edit uses the version the server returned", async () => {
       const calls = backend({ write: (c) => json(200, card(1, 30, 0, c.body && (c.body as { title?: string }).title === "First" ? 3 : 4, (c.body as { title: string }).title)) });
       render(<CentralBoardView companySlug="acme" boardId={3} />);
-      await userEvent.click(await screen.findByRole("button", { name: "Edit Lead 1" }));
+      await cardAction("Lead 1", "Edit");
       const title = screen.getByLabelText("Title");
       await userEvent.clear(title);
       await userEvent.type(title, "First");
       await userEvent.click(screen.getByRole("button", { name: "Save" }));
       await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
       expect(writes(calls)[0].body).toMatchObject({ title: "First", expected_version: 2 });
-      await userEvent.click(screen.getByRole("button", { name: "Edit First" }));
+      await cardAction("First", "Edit");
       const again = screen.getByLabelText("Title");
       await userEvent.clear(again);
       await userEvent.type(again, "Second");
@@ -90,7 +91,7 @@ describe("central card versions (optimistic concurrency in the UI)", () => {
       let versions: Record<number, number> = { 1: 2, 2: 0, 4: 0 };
       const calls = backend({ versions: () => versions, write: () => conflict(1, 2, 9) });
       const { rerender } = render(<CentralBoardView companySlug="acme" boardId={3} refreshToken={0} />);
-      await userEvent.click(await screen.findByRole("button", { name: "Edit Lead 1" }));
+      await cardAction("Lead 1", "Edit");
       versions = { 1: 9, 2: 0, 4: 0 }; // someone else saved; the board is re-read in place under the open form
       rerender(<CentralBoardView companySlug="acme" boardId={3} refreshToken={1} />);
       await waitFor(() => expect(boardReads(calls)).toBeGreaterThan(1));
@@ -103,7 +104,7 @@ describe("central card versions (optimistic concurrency in the UI)", () => {
     it("explains a conflict, keeps what was typed, turns Save off and never retries", async () => {
       const calls = backend({ write: () => conflict(1, 2, 3) });
       render(<CentralBoardView companySlug="acme" boardId={3} />);
-      await userEvent.click(await screen.findByRole("button", { name: "Edit Lead 1" }));
+      await cardAction("Lead 1", "Edit");
       await userEvent.type(screen.getByLabelText("Title"), " mine");
       await userEvent.click(screen.getByRole("button", { name: "Save" }));
       const alert = await screen.findByRole("alert");
@@ -122,7 +123,7 @@ describe("central card versions (optimistic concurrency in the UI)", () => {
     it("treats an unrelated 409 as before (not a version conflict)", async () => {
       backend({ write: () => json(409, { detail: "Something else" }) });
       render(<CentralBoardView companySlug="acme" boardId={3} />);
-      await userEvent.click(await screen.findByRole("button", { name: "Edit Lead 1" }));
+      await cardAction("Lead 1", "Edit");
       await userEvent.type(screen.getByLabelText("Title"), "!");
       await userEvent.click(screen.getByRole("button", { name: "Save" }));
       expect(await screen.findByRole("alert")).toHaveTextContent("Something else");
@@ -181,7 +182,7 @@ describe("central card versions (optimistic concurrency in the UI)", () => {
     it("sends the version the card had when Delete was chosen", async () => {
       const calls = backend({ write: () => new Response(null, { status: 204 }) });
       render(<CentralBoardView companySlug="acme" boardId={3} />);
-      await userEvent.click(await screen.findByRole("button", { name: "Delete Lead 1" }));
+      await cardAction("Lead 1", "Delete");
       await userEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
       await waitFor(() => expect(writes(calls, "DELETE")).toHaveLength(1));
       expect(writes(calls, "DELETE")[0].url).toMatch(/\/cards\/1\?expected_version=2$/);
@@ -190,7 +191,7 @@ describe("central card versions (optimistic concurrency in the UI)", () => {
     it("keeps the card, explains the conflict, re-reads the board and does not retry", async () => {
       const calls = backend({ write: () => conflict(1, 2, 3) });
       render(<CentralBoardView companySlug="acme" boardId={3} />);
-      await userEvent.click(await screen.findByRole("button", { name: "Delete Lead 1" }));
+      await cardAction("Lead 1", "Delete");
       await userEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
       const notice = await screen.findByText(/changed by someone else/);
       expect(notice).toHaveTextContent("was not deleted");

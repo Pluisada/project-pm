@@ -51,9 +51,9 @@ describe("ReportsPage annual Deal Value", () => {
     // Counts are unchanged by the money split.
     expect(within(tiles).getByText("Open leads").nextElementSibling).toHaveTextContent("3");
     expect(screen.getByTestId("annual-legend")).toHaveTextContent("2026+2027");
-    // Lead row: both years added, each year beneath.
-    expect(screen.getByText("Lead A").closest("tr")).toHaveTextContent("$260");
-    expect(screen.getByText("Lead A").closest("tr")).toHaveTextContent("2026 $200 · 2027 $60");
+    // The date-driven "closing soon" list is gone with the Closing Date field.
+    expect(screen.queryByText("Lead A")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Closing in the next 30 days/)).not.toBeInTheDocument();
   });
 
   it("shows the salesperson breakdown with the same three measures", async () => {
@@ -82,7 +82,7 @@ describe("ReportsPage annual Deal Value", () => {
     await screen.findByTestId("report-kpis");
     await userEvent.selectOptions(screen.getByLabelText("Filter by salesperson"), "1");
     await waitFor(() =>
-      expect(getBoardReport).toHaveBeenLastCalledWith(1, { salespersonId: 1, productLine: undefined })
+      expect(getBoardReport).toHaveBeenLastCalledWith(1, { salespersonId: 1, productLine: undefined }, undefined)
     );
   });
 });
@@ -122,7 +122,7 @@ describe("ReportsPage probability level", () => {
       await userEvent.selectOptions(screen.getByLabelText("Filter by salesperson"), "1");
       await userEvent.selectOptions(screen.getByLabelText("Filter by probability level"), option);
       await waitFor(() =>
-        expect(getBoardReport).toHaveBeenLastCalledWith(1, { salespersonId: 1, productLine: undefined, confidenceLevel: token })
+        expect(getBoardReport).toHaveBeenLastCalledWith(1, { salespersonId: 1, productLine: undefined, confidenceLevel: token }, undefined)
       );
     });
 

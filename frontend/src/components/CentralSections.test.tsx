@@ -25,6 +25,7 @@ function backend(companies: { slug: string; name: string; role: string }[], boar
     if (m && m[3]) return json(200, { ...board, id: Number(m[3]), columns: [] });
     if (m) return json(200, boards);
     if (/\/api\/central\/companies\/[^/]+\/(members|invitations)$/.test(url)) return json(200, []);
+    if (/\/api\/companies\/[^/]+\/products$/.test(url)) return json(200, { initialized: true, products: [{ id: 1, name: "Chargers", card_count: 2 }] });
     return json(404);
   }));
   return calls;
@@ -64,6 +65,28 @@ describe("CentralApp sections", () => {
     expect(screen.queryByText(/Users of/)).not.toBeInTheDocument();
   });
 
+  it("opens Products from the top navigation for the Super Admin, shows the catalog and returns to the board", async () => {
+    backend([{ slug: "lity", name: "Lity", role: "super_admin" }]);
+    render(<CentralApp />);
+    await screen.findByTestId("central-board");
+    await userEvent.click(within(nav()!).getByRole("button", { name: "Products" }));
+    const screenEl = await screen.findByTestId("central-products-screen");
+    expect(await within(screenEl).findByText("Chargers")).toBeInTheDocument();
+    expect(within(screenEl).getByRole("button", { name: "Add product" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Products" })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByTestId("central-board")).not.toBeInTheDocument();
+    await userEvent.click(within(nav()!).getByRole("button", { name: "Board" }));
+    expect(await screen.findByTestId("central-board")).toBeInTheDocument();
+  });
+
+  it("offers a company Admin no Products section and never requests the catalog", async () => {
+    const calls = backend([{ slug: "lity", name: "Lity", role: "admin" }]);
+    render(<CentralApp />);
+    await screen.findByTestId("central-board");
+    expect(within(nav()!).queryByRole("button", { name: "Products" })).not.toBeInTheDocument();
+    expect(calls.some((u) => u.endsWith("/products"))).toBe(false);
+  });
+
   it("opens Database from the top navigation with both existing actions, and not the board", async () => {
     backend([{ slug: "lity", name: "Lity", role: "super_admin" }]);
     render(<CentralApp />);
@@ -84,12 +107,13 @@ describe("CentralApp sections", () => {
     expect(await screen.findByRole("button", { name: "Export Current Database" })).toBeInTheDocument();
   });
 
-  it.each(["sales_member", "visitor"])("offers a %s no Users or Database section at all", async (role) => {
+  it.each(["sales_member", "visitor"])("offers a %s no Users, Products or Database section at all", async (role) => {
     const calls = backend([{ slug: "lity", name: "Lity", role }]);
     render(<CentralApp />);
     await screen.findByTestId("central-board");
-    expect(nav()).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^(Users|Database)$/ })).not.toBeInTheDocument();
+    // Board, Reports and KPIs are reads every role has; the management sections are not offered.
+    expect(within(nav()!).getAllByRole("button").map((b) => b.textContent)).toEqual(["Board", "Reports", "KPIs"]);
+    expect(screen.queryByRole("button", { name: /^(Users|Products|Database)$/ })).not.toBeInTheDocument();
     expect(calls.some((u) => /members|invitations|excel/.test(u))).toBe(false);
   });
 
@@ -102,7 +126,7 @@ describe("CentralApp sections", () => {
     await userEvent.click(screen.getByRole("button", { name: "Switch company" }));
     await enter("Valor Log");
     expect(await screen.findByTestId("central-board")).toBeInTheDocument();
-    expect(nav()).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Users" })).not.toBeInTheDocument();
     expect(screen.queryByText(/Users of/)).not.toBeInTheDocument();
   });
 

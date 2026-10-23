@@ -37,9 +37,12 @@ type Values = {
   details: string;
   company: string;
   contact: string;
+  contactEmail: string;
+  contactPhone: string;
   dealValue: string;
   dealValueNextYear: string;
-  expectedCloseDate: string;
+  nextStepDue: string;
+  nextStep: string;
   leadSource: string;
   productLine: string;
   confidenceLevel: string;
@@ -50,8 +53,8 @@ type Values = {
 const num = (v: number | null | undefined) => (v == null ? "" : String(v));
 
 function initialValues(target: CardFormTarget): Values {
-  const empty: Values = { title: "", details: "", company: "", contact: "", dealValue: "", dealValueNextYear: "",
-    expectedCloseDate: "", leadSource: "", productLine: "", confidenceLevel: "", salespersonId: "", lossReason: "" };
+  const empty: Values = { title: "", details: "", company: "", contact: "", contactEmail: "", contactPhone: "", dealValue: "", dealValueNextYear: "",
+    nextStepDue: "", nextStep: "", leadSource: "", productLine: "", confidenceLevel: "", salespersonId: "", lossReason: "" };
   if (target.mode === "create") return empty;
   const c = target.card;
   return {
@@ -59,10 +62,13 @@ function initialValues(target: CardFormTarget): Values {
     details: c.details ?? "",
     company: c.company ?? "",
     contact: c.contact ?? "",
+    contactEmail: c.contact_email ?? "",
+    contactPhone: c.contact_phone ?? "",
     dealValue: num(c.deal_value),
     // A zero next-year amount is the column's "nothing entered", shown empty.
     dealValueNextYear: c.deal_value_next_year ? String(c.deal_value_next_year) : "",
-    expectedCloseDate: c.expected_close_date ?? "",
+    nextStepDue: c.bid_details?.next_step_due ?? "",
+    nextStep: c.bid_details?.next_step ?? "",
     leadSource: c.lead_source ?? "",
     productLine: c.product_line ?? "",
     confidenceLevel: c.confidence_level ?? "",
@@ -80,14 +86,18 @@ export function buildCardUpdates(card: CardResponse, v: Values): CardUpdatePaylo
   const title = v.title.trim();
   if (title !== card.title) out.title = title;
   if (v.details !== (card.details ?? "")) out.details = v.details;
-  const text: [keyof Values, "company" | "contact" | "lead_source" | "product_line" | "expected_close_date"][] = [
-    ["company", "company"], ["contact", "contact"], ["leadSource", "lead_source"], ["productLine", "product_line"],
-    ["expectedCloseDate", "expected_close_date"],
+  const text: [keyof Values, "company" | "contact" | "contact_email" | "contact_phone" | "lead_source" | "product_line"][] = [
+    ["company", "company"], ["contact", "contact"], ["contactEmail", "contact_email"], ["contactPhone", "contact_phone"], ["leadSource", "lead_source"], ["productLine", "product_line"],
   ];
   for (const [field, key] of text) {
     const next = textOrNull(v[field]);
     if (next !== (card[key] ?? null)) (out as Record<string, unknown>)[key] = next;
   }
+  // The next commercial action lives in the card's Bid details row; only a changed value is sent, an empty one clears it.
+  const dueNext = textOrNull(v.nextStepDue);
+  if (dueNext !== (card.bid_details?.next_step_due ?? null)) out.next_step_due = dueNext;
+  const actionNext = textOrNull(v.nextStep);
+  if (actionNext !== (card.bid_details?.next_step ?? null)) out.next_step = actionNext;
   const level = (v.confidenceLevel || null) as CardResponse["confidence_level"];
   if (level !== (card.confidence_level ?? null)) out.confidence_level = level;
   const deal = v.dealValue === "" ? null : Number(v.dealValue);
@@ -96,6 +106,9 @@ export function buildCardUpdates(card: CardResponse, v: Values): CardUpdatePaylo
   if (nextYear !== (card.deal_value_next_year ?? 0)) out.deal_value_next_year = nextYear;
   return out;
 }
+
+/** Maximum length of the Next Action Description; the backend enforces the same limit (schemas.NEXT_STEP_MAX_LENGTH). */
+export const NEXT_ACTION_MAX_LENGTH = 100;
 
 const inputClass =
   "mt-1 w-full rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] px-3 py-2 text-sm text-[var(--navy-dark)] outline-none focus:border-[var(--primary-blue)] disabled:opacity-50";
@@ -179,6 +192,12 @@ export const CentralCardForm = ({ companySlug, boardId, target, canAssign = fals
     if (needsLossReason && !values.lossReason.trim()) return setFieldError("Enter the reason this opportunity was lost.");
     if (needsLossReason && values.lossReason.trim().length > 1000) return setFieldError("The loss reason can have at most 1000 characters.");
     if (needsSalesperson && !values.salespersonId) return setFieldError("Choose the salesperson for this card.");
+    if (values.nextStep.trim().length > NEXT_ACTION_MAX_LENGTH) {
+      return setFieldError(`The next action description can have at most ${NEXT_ACTION_MAX_LENGTH} characters.`);
+    }
+    if (values.nextStepDue && !/^\d{4}-\d{2}-\d{2}$/.test(values.nextStepDue)) {
+      return setFieldError("The next action date must be a valid date.");
+    }
     if (invalidNumber(values.dealValue) || invalidNumber(values.dealValueNextYear)) {
       return setFieldError("Deal values must be numbers of zero or more.");
     }
@@ -309,8 +328,16 @@ export const CentralCardForm = ({ companySlug, boardId, target, canAssign = fals
               </label>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <label className={labelClass}>Expected close date
-                <input type="date" value={values.expectedCloseDate} onChange={set("expectedCloseDate")} disabled={saving} className={inputClass} />
+              <label className={labelClass}>Contact email
+                <input type="email" value={values.contactEmail} onChange={set("contactEmail")} maxLength={254} disabled={saving} autoComplete="off" className={inputClass} />
+              </label>
+              <label className={labelClass}>Contact telephone
+                <input type="tel" value={values.contactPhone} onChange={set("contactPhone")} maxLength={40} disabled={saving} autoComplete="off" className={inputClass} />
+              </label>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <label className={labelClass}>Next Action Date
+                <input type="date" value={values.nextStepDue} onChange={set("nextStepDue")} disabled={saving} className={inputClass} />
               </label>
               <label className={labelClass}>Probability level
                 <select value={values.confidenceLevel} onChange={set("confidenceLevel")} disabled={saving} className={inputClass}>
@@ -318,6 +345,13 @@ export const CentralCardForm = ({ companySlug, boardId, target, canAssign = fals
                   {CONFIDENCE_LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
                 </select>
               </label>
+            </div>
+            <div>
+              <label className={labelClass}>Next Action Description
+                <input value={values.nextStep} onChange={set("nextStep")} maxLength={NEXT_ACTION_MAX_LENGTH} disabled={saving}
+                  aria-describedby="next-action-count" placeholder="e.g. Call the buyer about the quote" className={inputClass} />
+              </label>
+              <span id="next-action-count" className="mt-1 block text-right text-[11px] text-[var(--gray-text)]">{values.nextStep.length}/{NEXT_ACTION_MAX_LENGTH}</span>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <label className={labelClass}>Lead source

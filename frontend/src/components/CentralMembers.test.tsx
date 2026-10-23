@@ -62,6 +62,28 @@ describe("CentralMembers", () => {
     await waitFor(() => expect(calls.some((c) => c.url.endsWith("/members/2/deactivate"))).toBe(true));
   });
 
+  it("promotes a joined member to Admin after a confirmation, and does nothing if it is declined", async () => {
+    const calls = rig();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    render(<CentralMembers companySlug="lity" companyName="Lity" />);
+    const select = await screen.findByRole("combobox", { name: "Role of ana@example.com" });
+    expect(Array.from(select.querySelectorAll("option")).map((o) => o.value)).toEqual(["sales_member", "visitor", "admin"]);
+    await userEvent.selectOptions(select, "admin");
+    expect(calls.some((c) => c.method === "PUT")).toBe(false); // declined
+    await userEvent.selectOptions(select, "admin");
+    await waitFor(() => expect(calls.find((c) => c.method === "PUT")?.body).toEqual({ role: "admin" }));
+    expect(confirm).toHaveBeenCalledTimes(2);
+    confirm.mockRestore();
+  });
+
+  it("still never offers Admin on the invitation form (an invitation cannot carry it)", async () => {
+    rig();
+    render(<CentralMembers companySlug="lity" companyName="Lity" />);
+    await screen.findByText("ana@example.com");
+    const options = Array.from(screen.getByLabelText("Role").querySelectorAll("option")).map((o) => o.value);
+    expect(options).toEqual(["sales_member", "visitor"]);
+  });
+
   it("shows the refusal when the backend says 403", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json(403, { detail: "Access denied" })));
     render(<CentralMembers companySlug="lity" companyName="Lity" />);

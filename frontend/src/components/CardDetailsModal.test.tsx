@@ -38,14 +38,28 @@ describe("CardDetailsModal", () => {
     expect(within(dialog).queryByText("10%")).not.toBeInTheDocument();
     expect(within(dialog).queryByText("LOW (10%)")).not.toBeInTheDocument();
     expect(within(dialog).getByText("OPP-1")).toBeInTheDocument();
-    // Next action due, expected close and production start are three separate dates.
+    // Next Action Date and production start are separate dates; the Closing Date no longer exists.
+    expect(within(dialog).getByText("Next Action Date")).toBeInTheDocument();
     expect(within(dialog).getByText("Jan 1, 2020")).toBeInTheDocument();
-    expect(within(dialog).getByText("Jan 31, 2099")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Jan 31, 2099")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/Close Date/i)).not.toBeInTheDocument();
     expect(within(dialog).getByText("Mar 15, 2027")).toBeInTheDocument();
     // Null fields: no row, no zero.
     expect(within(dialog).queryByText(/Revenue/)).not.toBeInTheDocument();
     expect(within(dialog).queryByText("Volume, current year")).not.toBeInTheDocument();
     expect(within(dialog).queryByText("CPM (source)")).not.toBeInTheDocument();
+  });
+
+  it("shows the contact email and telephone only when present", () => {
+    const filled = open(card({ contact: "Ana", contact_email: "ana@example.com", contact_phone: "+55 11 91234-5678" }));
+    expect(within(filled.dialog).getByText("ana@example.com")).toBeInTheDocument();
+    expect(within(filled.dialog).getByText("+55 11 91234-5678")).toBeInTheDocument();
+  });
+
+  it("omits the contact rows for a card without them (an existing record)", () => {
+    const { dialog } = open(card());
+    expect(within(dialog).queryByText("Contact email")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Contact telephone")).not.toBeInTheDocument();
   });
 
   it("lists the two annual deal values by year and no Bid revenue", () => {
@@ -98,5 +112,27 @@ describe("CardDetailsModal", () => {
   it("shows Not assigned when there is no level", () => {
     const { dialog } = open(card());
     expect(within(dialog).getByTestId("confidence-badge")).toHaveTextContent("Not assigned");
+  });
+});
+
+describe("CardDetailsModal next action and actions", () => {
+  it("shows an empty next action as nothing at all, not as a placeholder", () => {
+    const { dialog } = open(card());
+    expect(within(dialog).queryByText("Next Action Date")).toBeNull();
+    expect(within(dialog).queryByText("Next Action Description")).toBeNull();
+  });
+
+  it("shows History and Delete only when the caller offers them, and each calls its own handler once", async () => {
+    const onEdit = vi.fn();
+    const onHistory = vi.fn();
+    const onDelete = vi.fn();
+    const { rerender } = render(<CardDetailsModal card={card()} stageTitle="RFI" stageKind="open" canEdit onEdit={onEdit} onClose={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "History" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    rerender(<CardDetailsModal card={card()} stageTitle="RFI" stageKind="open" canEdit onEdit={onEdit} onHistory={onHistory} onDelete={onDelete} onClose={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "History" }));
+    expect([onEdit, onHistory, onDelete].map((f) => f.mock.calls.length)).toEqual([0, 1, 0]);
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect([onEdit, onHistory, onDelete].map((f) => f.mock.calls.length)).toEqual([0, 1, 1]);
   });
 });

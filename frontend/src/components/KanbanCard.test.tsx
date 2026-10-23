@@ -40,7 +40,7 @@ describe("KanbanCard details", () => {
 describe("KanbanCard Deal Value", () => {
   const lead = (current: number | null, nextYear: number): Card["lead"] => ({
     company: null, contact: null, dealValue: dealValueTotal(current, nextYear),
-    expectedCloseDate: null, productLine: null, salespersonName: null, overdue: false,
+    productLine: null, salespersonName: null,
     nextStep: null, nextStepDue: null, nextStepOverdue: false, sourceCode: null,
   });
 
@@ -68,8 +68,8 @@ describe("KanbanCard Deal Value", () => {
 
 describe("KanbanCard Next Action", () => {
   const lead = (nextStep: string | null, nextStepDue: string | null): Card["lead"] => ({
-    company: null, contact: null, dealValue: null, expectedCloseDate: null, productLine: null,
-    salespersonName: null, overdue: false, nextStep, nextStepDue, nextStepOverdue: false, sourceCode: null,
+    company: null, contact: null, dealValue: null, productLine: null,
+    salespersonName: null, nextStep, nextStepDue, nextStepOverdue: false, sourceCode: null,
   });
 
   it("shows the Action and Next Action Date, truncating only the display", () => {
@@ -92,8 +92,8 @@ describe("KanbanCard Next Action", () => {
 
 describe("KanbanCard probability level", () => {
   const lead = (confidenceLevel: "LOW" | "MEDIUM" | "HIGH" | null): Card["lead"] => ({
-    company: null, contact: null, dealValue: null, expectedCloseDate: null, productLine: null,
-    confidenceLevel, salespersonName: null, overdue: false, nextStep: null, nextStepDue: null,
+    company: null, contact: null, dealValue: null, productLine: null,
+    confidenceLevel, salespersonName: null, nextStep: null, nextStepDue: null,
     nextStepOverdue: false, sourceCode: null,
   });
 

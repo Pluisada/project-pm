@@ -175,7 +175,9 @@ describe("CentralBoardView kanban layout", () => {
     expect(within(full).getByText("Next year 2027")).toBeInTheDocument();
     expect(within(full).getByText(/500/)).toBeInTheDocument();
     expect(within(full).getByTestId("confidence-badge")).toHaveAttribute("data-level", "HIGH");
-    expect(within(full).getByText(/Close:/)).toBeInTheDocument();
+    // The closing date is no longer part of the application: never shown on the compact card.
+    expect(within(full).queryByText(/Close:/)).not.toBeInTheDocument();
+    expect(full.textContent).not.toMatch(/Edit|History|Delete/);
     expect(within(columns[2]).getByText("0 cards")).toBeInTheDocument();
   });
 
@@ -183,7 +185,7 @@ describe("CentralBoardView kanban layout", () => {
     stub();
     render(<CentralBoardView companySlug="acme" boardId={3} />);
     const bare = await screen.findByTestId("central-card-1");
-    expect(bare.textContent).toBe("Bare leadHistory"); // the read-only History action follows the title
+    expect(bare.textContent).toBe("Bare lead"); // the title only: every action lives in the details
     expect(within(bare).queryByTestId("confidence-badge")).not.toBeInTheDocument();
   });
 

@@ -235,13 +235,15 @@ describe("CentralApp", () => {
       expect(screen.getByRole("button", { name: "Dark" })).toHaveAttribute("aria-pressed", "true");
     });
 
-    it("offers no navigation to pages that do not exist in central mode yet", async () => {
+    it("offers Reports and KPIs, and no navigation to legacy-only pages", async () => {
       signedIn();
       render(<CentralApp />);
       await pickCompany("Lity");
       await screen.findByTestId("central-board");
       expect(screen.queryAllByRole("link")).toEqual([]);
-      for (const name of [/Reports/, /Dashboard/, /Products/, /Import Bids/]) {
+      expect(screen.getByRole("button", { name: "Reports" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "KPIs" })).toBeInTheDocument();
+      for (const name of [/Dashboard/, /Import Bids/]) {
         expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
         expect(screen.queryByRole("link", { name })).not.toBeInTheDocument();
       }

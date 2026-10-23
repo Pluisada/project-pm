@@ -17,13 +17,16 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { CardDetailsModal } from "@/components/CardDetailsModal";
 import { CentralCardForm, type CardFormTarget } from "@/components/CentralCardForm";
 import { CentralCardHistory } from "@/components/CentralCardHistory";
 import { CentralReviewDialog, reviewLabel, useCompanyReviews } from "@/components/CentralReviews";
 import { InNavSlot } from "@/components/NavSlot";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
+import { stageTone, stageToneStyle } from "@/lib/stageTone";
+import { sortByDealValue } from "@/lib/cardOrder";
 import { applyMove, cardDndId, columnDndId, currentIndex, planMove } from "@/lib/centralMove";
-import { DEAL_CURRENCY, formatDate, formatMoney } from "@/lib/format";
+import { DEAL_CURRENCY, formatMoney } from "@/lib/format";
 import {
   getCompanyBoard,
   getCompanyMe,
@@ -60,15 +63,6 @@ function describeFailure(err: Partial<ApiError>): { text: string; retryable: boo
   }
 }
 
-const OPEN_TONES = ["blue", "cyan", "turquoise", "lime"] as const;
-
-/** Same tinting as the legacy board: won/lost from the stage kind, open stages by their order, never by title. */
-function stageTone(column: ColumnResponse, openIndex: number): string {
-  if (column.stage_kind === "won") return "green";
-  if (column.stage_kind === "lost") return "red";
-  return OPEN_TONES[Math.min(openIndex, OPEN_TONES.length - 1)];
-}
-
 // The pointer decides when it is over something; otherwise the nearest center (a card dragged into the gap
 // between columns still lands somewhere sensible).
 const pointerFirst: CollisionDetection = (args) => {
@@ -76,11 +70,37 @@ const pointerFirst: CollisionDetection = (args) => {
   return underPointer.length > 0 ? underPointer : closestCenter(args);
 };
 
-const CentralCard = ({ card, onEdit, onDelete, onHistory, movable, overlay, reviews, onOpenReview }: { card: CardResponse; onEdit?: () => void; onDelete?: () => void; onHistory?: () => void; movable?: boolean; overlay?: boolean; reviews?: ReviewItem[]; onOpenReview?: (item: ReviewItem) => void }) => {
+const CentralCard = ({ card, onOpen, movable, overlay, reviews, onOpenReview }: { card: CardResponse; onOpen?: () => void; movable?: boolean; overlay?: boolean; reviews?: ReviewItem[]; onOpenReview?: (item: ReviewItem) => void }) => {
   const sortable = useSortable({ id: cardDndId(card.id), disabled: { draggable: !movable || overlay } });
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = sortable;
   const nextYear = card.deal_value_next_year;
   const showNextYear = nextYear != null && nextYear !== 0;
+  // The summary is the compact card; opening it shows the details and, from there, every action (Edit, History, Delete).
+  // Dragging lives only on the handle, so a click on the summary can never pick the card up or move it.
+  const summary = (
+    <>
+      <span className="line-clamp-2 block break-words font-display text-sm font-semibold leading-5 text-[var(--navy-dark)]">{card.title}</span>
+      {card.company && <span className="mt-0.5 block truncate text-xs text-[var(--gray-text)]">{card.company}</span>}
+      {card.salesperson_name && <span className="mt-1 block truncate text-xs text-[var(--gray-text)]">{card.salesperson_name}</span>}
+      {(card.deal_value != null || showNextYear) && (
+        <span className="mt-1.5 block space-y-0.5 text-xs">
+          {card.deal_value != null && (
+            <span className="flex justify-between gap-2">
+              <span className="text-[var(--gray-text)]">Deal value{card.deal_year ? ` ${card.deal_year}` : ""}</span>
+              <span className="font-semibold text-[var(--navy-dark)]">{formatMoney(card.deal_value, DEAL_CURRENCY)}</span>
+            </span>
+          )}
+          {showNextYear && (
+            <span className="flex justify-between gap-2">
+              <span className="text-[var(--gray-text)]">Next year{card.deal_year ? ` ${card.deal_year + 1}` : ""}</span>
+              <span className="font-semibold text-[var(--navy-dark)]">{formatMoney(nextYear, DEAL_CURRENCY)}</span>
+            </span>
+          )}
+        </span>
+      )}
+      {card.confidence_level && <span className="mt-1.5 block"><ConfidenceBadge level={card.confidence_level} /></span>}
+    </>
+  );
   return (
     <li ref={overlay ? undefined : setNodeRef} data-testid={`central-card-${card.id}`} data-title={card.title}
       style={overlay ? undefined : { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 }}
@@ -108,50 +128,13 @@ const CentralCard = ({ card, onEdit, onDelete, onHistory, movable, overlay, revi
           ))}
         </div>
       )}
-      <p className="line-clamp-2 break-words font-display text-sm font-semibold leading-5 text-[var(--navy-dark)]">{card.title}</p>
-      {card.company && <p className="mt-0.5 truncate text-xs text-[var(--gray-text)]">{card.company}</p>}
-      {card.salesperson_name && <p className="mt-1 truncate text-xs text-[var(--gray-text)]">{card.salesperson_name}</p>}
-      {(card.deal_value != null || showNextYear) && (
-        <dl className="mt-1.5 space-y-0.5 text-xs">
-          {card.deal_value != null && (
-            <div className="flex justify-between gap-2">
-              <dt className="text-[var(--gray-text)]">Deal value{card.deal_year ? ` ${card.deal_year}` : ""}</dt>
-              <dd className="font-semibold text-[var(--navy-dark)]">{formatMoney(card.deal_value, DEAL_CURRENCY)}</dd>
-            </div>
-          )}
-          {showNextYear && (
-            <div className="flex justify-between gap-2">
-              <dt className="text-[var(--gray-text)]">Next year{card.deal_year ? ` ${card.deal_year + 1}` : ""}</dt>
-              <dd className="font-semibold text-[var(--navy-dark)]">{formatMoney(nextYear, DEAL_CURRENCY)}</dd>
-            </div>
-          )}
-        </dl>
-      )}
-      {card.confidence_level && <p className="mt-1.5"><ConfidenceBadge level={card.confidence_level} /></p>}
-      {card.expected_close_date && (
-        <p className="mt-1.5 text-xs text-[var(--gray-text)]">Close: {formatDate(card.expected_close_date)}</p>
-      )}
-      {(onEdit || onDelete || onHistory) && (
-        <div className="mt-2 flex gap-3">
-          {onEdit && (
-            <button type="button" onClick={onEdit} aria-label={`Edit ${card.title}`}
-              className="text-xs font-semibold text-[var(--primary-blue)] hover:underline">
-              Edit
-            </button>
-          )}
-          {onHistory && (
-            <button type="button" onClick={onHistory} aria-label={`History of ${card.title}`}
-              className="text-xs font-semibold text-[var(--primary-blue)] hover:underline">
-              History
-            </button>
-          )}
-          {onDelete && (
-            <button type="button" onClick={onDelete} aria-label={`Delete ${card.title}`}
-              className="text-xs font-semibold text-red-800 hover:underline">
-              Delete
-            </button>
-          )}
-        </div>
+      {onOpen && !overlay ? (
+        <button type="button" onClick={onOpen} aria-label={`Open details for ${card.title}`} aria-haspopup="dialog" data-testid={`central-open-${card.id}`}
+          className={`block w-full rounded-lg text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary-blue)] ${movable ? "pr-5" : ""}`}>
+          {summary}
+        </button>
+      ) : (
+        <div className={movable ? "pr-5" : undefined}>{summary}</div>
       )}
     </li>
   );
@@ -194,6 +177,8 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
   const [form, setForm] = useState<{ key: string; target: CardFormTarget } | null>(null);
   // The open history belongs to one company/board/attempt, like the form.
   const [historyOf, setHistoryOf] = useState<{ key: string; cardId: number } | null>(null);
+  // The card whose details are open (one selection, like the form and the history); its content is read from the board.
+  const [detailsOf, setDetailsOf] = useState<{ key: string; cardId: number } | null>(null);
   const [activeCardId, setActiveCardId] = useState<number | null>(null);
   // The reason being collected for a move into the lost stage (one selection, like the form and the history).
   const [lossPrompt, setLossPrompt] = useState<{ key: string; cardId: number; title: string; target: { columnId: number; index: number }; version?: number; reason: string; error: string | null } | null>(null);
@@ -419,14 +404,13 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
     setUndoNoticeFor(null);
     const notice = (kind: "ok" | "error" | "uncertain", text: string) => setUndoNoticeFor({ key: startKey, kind, text });
     try {
-      const done = await undoCompanyChange(companySlug, boardId);
+      await undoCompanyChange(companySlug, boardId);
       if (keyRef.current !== startKey) return;
       // Success is only reported after the server confirmed; the board is re-read rather than patched.
       const reloaded = await reloadBoard();
       if (keyRef.current !== startKey) return;
-      notice(reloaded ? "ok" : "uncertain", reloaded
-        ? `Undone: ${done.undone ?? "last change"}.`
-        : "Undone, but the board could not be reloaded. Reload the board to see the current state.");
+      // A successful undo shows no message (the card's own marker says what changed); only a problem is reported.
+      if (!reloaded) notice("uncertain", "Undone, but the board could not be reloaded. Reload the board to see the current state.");
     } catch (err) {
       if (keyRef.current !== startKey) return;
       const failure = err as Partial<ApiError>;
@@ -506,6 +490,8 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
     const card = cardsById.get(cardId);
     const target = planMove(columns, cardId, String(over.id));
     if (!card || !target || !canMoveCard(card)) return;
+    // A column is ordered by Deal Value, so dropping a card elsewhere in its own column changes nothing.
+    if (target.columnId === card.column_id) return;
     const sourcePosition = columns.find((c) => c.id === card.column_id)?.position ?? 0;
     const targetPosition = columns.find((c) => c.id === target.columnId)?.position ?? 0;
     // The backend repeats this rule; saying it here avoids a request that is certain to be refused.
@@ -627,24 +613,18 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
           scrollbar space keep borders, rings and the scrollbar from being cut by the overflow. */}
       <div className="-mx-6 mt-4 flex gap-4 overflow-x-auto px-6 pb-3 pt-1 [scrollbar-width:thin]" aria-busy={moving} data-testid="central-columns">
         {columns.map((column) => {
-          const tone = stageTone(column, openIndex.get(column.id) ?? 0);
-          const cards = [...(column.cards ?? [])].sort((a, b) => a.position - b.position);
+          const tone = stageTone(column.stage_kind, openIndex.get(column.id) ?? 0);
+          const cards = sortByDealValue(column.cards);
           return (
             <section key={column.id} aria-label={column.title} data-testid={`central-column-${column.id}`}
               className="flex min-h-[200px] w-72 shrink-0 flex-col rounded-[14px] border border-t-[3px] p-4"
-              style={{
-                backgroundColor: `var(--stage-${tone}-bg)`,
-                borderColor: `color-mix(in srgb, var(--stage-${tone}-accent) 40%, white)`,
-                borderTopColor: `var(--stage-${tone}-accent)`,
-              }}>
+              style={stageToneStyle(tone)}>
               <h3 className="truncate font-display text-lg font-semibold text-[var(--navy-dark)]">{column.title}</h3>
               <p className="text-xs font-semibold text-[var(--gray-text)]">{cards.length} {cards.length === 1 ? "card" : "cards"}</p>
               <DroppableList columnId={column.id} cardIds={cards.map((c) => cardDndId(c.id))}>
                 {cards.map((card) => (
                   <CentralCard key={card.id} card={card} reviews={reviewsByCard.get(card.id)} onOpenReview={(item) => { setReviewNotice(null); setReviewOpen({ key, item }); }} movable={canMoveCard(card) && !moving && !undoing && !deleting}
-                    onHistory={() => setHistoryOf({ key, cardId: card.id })}
-                    onDelete={!caps.readOnly && caps.canDeleteCards && !deleting ? () => setConfirmDelete({ key, id: card.id, title: card.title, version: card.version }) : undefined}
-                    onEdit={canEditCard(card) ? () => setForm({ key, target: { mode: "edit", card } }) : undefined} />
+                    onOpen={() => setDetailsOf({ key, cardId: card.id })} />
                 ))}
               </DroppableList>
               {canCreate && (
@@ -659,6 +639,22 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
       </div>
       <DragOverlay>{activeCard ? <CentralCard card={activeCard} overlay /> : null}</DragOverlay>
       </DndContext>
+      {detailsOf && detailsOf.key === key && cardsById.get(detailsOf.cardId) && (() => {
+        const card = cardsById.get(detailsOf.cardId)!;
+        const column = columns.find((c) => c.id === card.column_id);
+        // Every action closes the details first: the edit form, history and delete confirmation are the existing flows,
+        // and each takes the card as it is on the board right now (its version included).
+        return (
+          <CardDetailsModal key={`${key}:${card.id}`} card={card} stageTitle={column?.title ?? ""} stageKind={column?.stage_kind ?? "open"}
+            hideBidNote canEdit={canEditCard(card)}
+            onEdit={() => { setDetailsOf(null); setForm({ key, target: { mode: "edit", card } }); }}
+            onHistory={() => { setDetailsOf(null); setHistoryOf({ key, cardId: card.id }); }}
+            onDelete={!caps.readOnly && caps.canDeleteCards && !deleting && !moving && !undoing
+              ? () => { setDetailsOf(null); setConfirmDelete({ key, id: card.id, title: card.title, version: card.version }); }
+              : undefined}
+            onClose={() => setDetailsOf(null)} />
+        );
+      })()}
       {historyOf && historyOf.key === key && cardsById.get(historyOf.cardId) && (
         <CentralCardHistory key={`${key}:${historyOf.cardId}`} companySlug={companySlug} boardId={boardId}
           cardId={historyOf.cardId} cardTitle={cardsById.get(historyOf.cardId)!.title} onClose={() => setHistoryOf(null)} />

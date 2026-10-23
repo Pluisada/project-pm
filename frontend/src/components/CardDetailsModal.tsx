@@ -12,6 +12,11 @@ type CardDetailsModalProps = {
   // Whether the current user may edit this card; the backend still decides.
   canEdit: boolean;
   onEdit: () => void;
+  // Shown only when given: the caller decides who may see history and who may delete (the backend still decides).
+  onHistory?: () => void;
+  onDelete?: () => void;
+  // Hide the "No Bid report data" note (central boards have no Bid report to explain).
+  hideBidNote?: boolean;
   onClose: () => void;
 };
 
@@ -52,6 +57,9 @@ export const CardDetailsModal = ({
   stageKind,
   canEdit,
   onEdit,
+  onHistory,
+  onDelete,
+  hideBidNote,
   onClose,
 }: CardDetailsModalProps) => {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -112,9 +120,12 @@ export const CardDetailsModal = ({
   const general: Row[] = [
     { label: "Customer", value: card.company },
     { label: "Contact", value: card.contact },
+    { label: "Contact email", value: card.contact_email },
+    { label: "Contact telephone", value: card.contact_phone },
     { label: "Salesperson", value: card.salesperson_name },
     ...dealRows,
-    { label: "Expected Close Date", value: showDate(card.expected_close_date) },
+    { label: "Next Action Date", value: showDate(bid?.next_step_due ?? null) },
+    { label: "Next Action Description", value: bid?.next_step },
     { label: "Stage", value: `${stageTitle}${stageKind === "open" ? "" : ` (${stageKind})`}` },
     { label: "Lead source", value: card.lead_source },
     { label: "Product line", value: card.product_line },
@@ -132,7 +143,7 @@ export const CardDetailsModal = ({
       <div
         ref={dialogRef}
         onClick={(event) => event.stopPropagation()}
-        className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-[24px] border border-[var(--stroke)] bg-white shadow-[var(--shadow)]"
+        className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-[24px] border border-[var(--stroke)] bg-[var(--surface-strong)] shadow-[var(--shadow)]"
         role="dialog"
         aria-modal="true"
         aria-labelledby="card-details-title"
@@ -185,10 +196,8 @@ export const CardDetailsModal = ({
                 ]}
               />
               <Section
-                title="Bid: next action and status"
+                title="Bid: status"
                 rows={[
-                  { label: "Action", value: bid.next_step },
-                  { label: "Next Action Date", value: showDate(bid.next_step_due) },
                   { label: "Status note", value: bid.status_note },
                   { label: "Project lead (source)", value: bid.project_lead },
                   { label: "CPM (source)", value: bid.cpm },
@@ -203,9 +212,11 @@ export const CardDetailsModal = ({
               />
             </>
           ) : (
-            <p className="px-5 py-4 text-sm text-[var(--gray-text)] sm:px-6">
-              No Bid report data for this opportunity.
-            </p>
+            !hideBidNote && (
+              <p className="px-5 py-4 text-sm text-[var(--gray-text)] sm:px-6">
+                No Bid report data for this opportunity.
+              </p>
+            )
           )}
 
           {source && (
@@ -218,15 +229,35 @@ export const CardDetailsModal = ({
           )}
         </div>
 
-        {canEdit && (
-          <div className="flex justify-end border-t border-[var(--stroke)] px-5 py-4 sm:px-6">
-            <button
-              type="button"
-              onClick={onEdit}
-              className="rounded-lg bg-[var(--secondary-purple)] px-5 py-2 text-sm font-semibold text-white transition hover:opacity-90"
-            >
-              Edit
-            </button>
+        {(canEdit || onHistory || onDelete) && (
+          <div className="flex flex-wrap items-center justify-end gap-3 border-t border-[var(--stroke)] px-5 py-4 sm:px-6">
+            {onDelete && (
+              <button
+                type="button"
+                onClick={onDelete}
+                className="mr-auto rounded-lg border border-red-300 px-4 py-2 text-sm font-semibold text-red-800 transition hover:bg-red-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-800"
+              >
+                Delete
+              </button>
+            )}
+            {onHistory && (
+              <button
+                type="button"
+                onClick={onHistory}
+                className="rounded-lg border border-[var(--stroke)] px-4 py-2 text-sm font-semibold text-[var(--primary-blue)] transition hover:border-[var(--primary-blue)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--primary-blue)]"
+              >
+                History
+              </button>
+            )}
+            {canEdit && (
+              <button
+                type="button"
+                onClick={onEdit}
+                className="rounded-lg bg-[var(--secondary-purple)] px-5 py-2 text-sm font-semibold text-white transition hover:opacity-90"
+              >
+                Edit
+              </button>
+            )}
           </div>
         )}
       </div>

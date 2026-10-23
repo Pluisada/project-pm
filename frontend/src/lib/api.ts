@@ -707,6 +707,9 @@ export type ConfidenceFilter = ConfidenceLevel | "UNASSIGNED";
 export interface LeadFields {
   company: string | null;
   contact: string | null;
+  /** The contact's email and telephone; absent on a response from before the migration (treated as empty). */
+  contact_email?: string | null;
+  contact_phone?: string | null;
   deal_value: number | null;
   currency: string | null;
   expected_close_date: string | null; // YYYY-MM-DD
@@ -1012,16 +1015,22 @@ export interface ReportFilters {
   confidenceLevel?: ConfidenceFilter;
 }
 
+/** API root of the legacy single-database app, or of one company in central mode when a slug is given. */
+function apiRoot(companySlug?: string): string {
+  return companySlug ? companyPath(companySlug) : "/api";
+}
+
 export async function getBoardReport(
   boardId: number,
-  filters: ReportFilters = {}
+  filters: ReportFilters = {},
+  companySlug?: string
 ): Promise<BoardReport> {
   const params = new URLSearchParams();
   if (filters.salespersonId !== undefined) params.set("salesperson_id", String(filters.salespersonId));
   if (filters.productLine) params.set("product_line", filters.productLine);
   if (filters.confidenceLevel) params.set("confidence_level", filters.confidenceLevel);
   const query = params.toString();
-  return apiCall<BoardReport>(`/api/boards/${boardId}/report${query ? `?${query}` : ""}`);
+  return apiCall<BoardReport>(`${apiRoot(companySlug)}/boards/${boardId}/report${query ? `?${query}` : ""}`);
 }
 
 // ============================================================================
@@ -1200,24 +1209,24 @@ function kpiQuery(query: KpiPeriodQuery, extra: Record<string, string> = {}): st
   return params.toString();
 }
 
-export async function getKpiSummary(boardId: number, query: KpiPeriodQuery, compare: boolean): Promise<KpiSummary> {
-  return apiCall<KpiSummary>(`/api/boards/${boardId}/kpis/summary?${kpiQuery(query, { compare: String(compare) })}`);
+export async function getKpiSummary(boardId: number, query: KpiPeriodQuery, compare: boolean, companySlug?: string): Promise<KpiSummary> {
+  return apiCall<KpiSummary>(`${apiRoot(companySlug)}/boards/${boardId}/kpis/summary?${kpiQuery(query, { compare: String(compare) })}`);
 }
 
-export async function getKpiConversion(boardId: number, query: KpiPeriodQuery): Promise<KpiConversion> {
-  return apiCall<KpiConversion>(`/api/boards/${boardId}/kpis/conversion?${kpiQuery(query)}`);
+export async function getKpiConversion(boardId: number, query: KpiPeriodQuery, companySlug?: string): Promise<KpiConversion> {
+  return apiCall<KpiConversion>(`${apiRoot(companySlug)}/boards/${boardId}/kpis/conversion?${kpiQuery(query)}`);
 }
 
-export async function getKpiStageTime(boardId: number, query: KpiPeriodQuery): Promise<KpiStageTime> {
-  return apiCall<KpiStageTime>(`/api/boards/${boardId}/kpis/stage-time?${kpiQuery(query)}`);
+export async function getKpiStageTime(boardId: number, query: KpiPeriodQuery, companySlug?: string): Promise<KpiStageTime> {
+  return apiCall<KpiStageTime>(`${apiRoot(companySlug)}/boards/${boardId}/kpis/stage-time?${kpiQuery(query)}`);
 }
 
-export async function getKpiAging(boardId: number): Promise<KpiAging> {
-  return apiCall<KpiAging>(`/api/boards/${boardId}/kpis/aging`);
+export async function getKpiAging(boardId: number, companySlug?: string): Promise<KpiAging> {
+  return apiCall<KpiAging>(`${apiRoot(companySlug)}/boards/${boardId}/kpis/aging`);
 }
 
-export async function getKpiPipeline(boardId: number): Promise<KpiPipeline> {
-  return apiCall<KpiPipeline>(`/api/boards/${boardId}/kpis/pipeline`);
+export async function getKpiPipeline(boardId: number, companySlug?: string): Promise<KpiPipeline> {
+  return apiCall<KpiPipeline>(`${apiRoot(companySlug)}/boards/${boardId}/kpis/pipeline`);
 }
 
 // ============================================================================
@@ -1595,7 +1604,8 @@ export async function centralJoinInvitation(token: string, email: string, passwo
   await publicPost("/api/central/invitations/join", { token, email, password });
 }
 
-/** Roles a Super Admin may invite to. The reserved company Admin role is never offered. */
+/** Roles a Super Admin may invite to. An invitation never carries the company Admin role (the backend refuses it):
+ *  the Super Admin invites, then promotes the member with changeCompanyMemberRole. */
 export type InviteRole = "sales_member" | "visitor";
 
 export interface CompanyMember {
@@ -1630,7 +1640,10 @@ export async function listCompanyInvitations(companySlug: string, signal?: Abort
   return apiCall<PendingInvitation[]>(`/api/central/companies/${encodeURIComponent(companySlug)}/invitations`, { signal });
 }
 
-export async function changeCompanyMemberRole(companySlug: string, userId: number, role: InviteRole): Promise<void> {
+/** Roles the Super Admin may set on an existing member: the invitable ones plus the company Admin. */
+export type MemberRole = InviteRole | "admin";
+
+export async function changeCompanyMemberRole(companySlug: string, userId: number, role: MemberRole): Promise<void> {
   await apiCall(`/api/central/companies/${encodeURIComponent(companySlug)}/members/${userId}/role`, {
     method: "PUT",
     body: JSON.stringify({ role }),
@@ -1639,4 +1652,35 @@ export async function changeCompanyMemberRole(companySlug: string, userId: numbe
 
 export async function deactivateCompanyMember(companySlug: string, userId: number): Promise<void> {
   await apiCall(`/api/central/companies/${encodeURIComponent(companySlug)}/members/${userId}/deactivate`, { method: "POST" });
+}
+
+/** One product of a company's catalog. `id` is null for a built-in default of a company whose catalog is not initialized. */
+export interface CompanyProduct {
+  id: number | null;
+  name: string;
+  card_count: number;
+}
+
+export interface ProductCatalog {
+  initialized: boolean;
+  products: CompanyProduct[];
+}
+
+/** The company's product catalog (any member may read it; only the Super Admin may change it). */
+export async function getCompanyProducts(companySlug: string, signal?: AbortSignal): Promise<ProductCatalog> {
+  return apiCall<ProductCatalog>(`${companyPath(companySlug)}/products`, { signal });
+}
+
+export async function createCompanyProduct(companySlug: string, name: string): Promise<CompanyProduct> {
+  return apiCall<CompanyProduct>(`${companyPath(companySlug)}/products`, { method: "POST", body: JSON.stringify({ name }) });
+}
+
+/** Rename a product (409 while an opportunity still uses its current name). */
+export async function renameCompanyProduct(companySlug: string, productId: number, name: string): Promise<CompanyProduct> {
+  return apiCall<CompanyProduct>(`${companyPath(companySlug)}/products/${Number(productId)}`, { method: "PUT", body: JSON.stringify({ name }) });
+}
+
+/** Delete a product (204; 409 while an opportunity still uses it). */
+export async function deleteCompanyProduct(companySlug: string, productId: number): Promise<void> {
+  await apiCall<void>(`${companyPath(companySlug)}/products/${Number(productId)}`, { method: "DELETE" });
 }

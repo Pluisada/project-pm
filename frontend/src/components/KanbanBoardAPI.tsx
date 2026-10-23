@@ -21,6 +21,7 @@ import { CardDetailsModal } from "@/components/CardDetailsModal";
 import { LeadEditModal } from "@/components/LeadEditModal";
 import { LoadingScreen } from "@/components/LoadingScreen";
 import type { NewCardDeal } from "@/components/NewCardForm";
+import { sortByDealValue } from "@/lib/cardOrder";
 import { dealValueTotal, isValidIsoDate, todayIso } from "@/lib/format";
 import { getAuthState, type UserRole } from "@/lib/auth";
 import {
@@ -86,7 +87,6 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
 
   const [undoStatus, setUndoStatus] = useState<UndoStatus | null>(null);
   const [undoing, setUndoing] = useState(false);
-  const [undoNotice, setUndoNotice] = useState<string | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -132,7 +132,6 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
   // Every successful change replaces the user's undo entry on the server, so
   // re-read it after each one. Failures here only leave the button stale.
   const refreshUndo = () => {
-    setUndoNotice(null);
     getUndoStatus(boardId).then(setUndoStatus).catch(() => {});
   };
 
@@ -140,10 +139,9 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
     setUndoing(true);
     setActionError(null);
     try {
-      const result = await undoLastChange(boardId);
-      setUndoNotice(result.undone ? `Undone: ${result.undone}` : "Undone");
+      // No success message: the affected card carries its own marker, and a failure is reported below.
+      await undoLastChange(boardId);
     } catch (err: unknown) {
-      setUndoNotice(null);
       setActionError(getErrorMessage(err, "Failed to undo"));
     } finally {
       // Undo can touch any card (and an AI request several), so reload the
@@ -201,6 +199,8 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
     if (!targetColumn) return;
 
     const sourceColumn = board.columns.find((col) => col.id === card.column_id);
+    // A column is ordered by Deal Value, so a drop inside the card's own column changes nothing.
+    if (targetColumn.id === card.column_id) return;
 
     // Members may only advance cards (move to a column further right, or
     // reorder within the same column) — never move them back to an earlier
@@ -366,15 +366,6 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
       {undoSlot &&
         createPortal(
           <>
-            {undoNotice && (
-              <span
-                className="sr-only text-xs font-medium text-green-700 lg:not-sr-only lg:max-w-[14rem] lg:truncate"
-                role="status"
-                title={undoNotice}
-              >
-                {undoNotice}
-              </span>
-            )}
             <button
               type="button"
               onClick={handleUndo}
@@ -436,7 +427,7 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
                   stageKind: column.stage_kind,
                 }}
                 canRename={isAdminUser}
-                cards={column.cards?.map((c) => ({
+                cards={sortByDealValue(column.cards).map((c) => ({
                   ...c,
                   id: cardDndId(c.id),
                   details: c.details || "",
@@ -445,14 +436,9 @@ export const KanbanBoardAPI = ({ boardId, role }: { boardId: number; role: UserR
                     company: c.company,
                     contact: c.contact,
                     dealValue: dealValueTotal(c.deal_value, c.deal_value_next_year),
-                    expectedCloseDate: c.expected_close_date,
                     productLine: c.product_line,
                     confidenceLevel: c.confidence_level,
                     salespersonName: c.salesperson_name,
-                    overdue:
-                      isValidIsoDate(c.expected_close_date) &&
-                      c.expected_close_date < today &&
-                      column.stage_kind === "open",
                     nextStep: c.bid_details?.next_step ?? null,
                     nextStepDue: isValidIsoDate(c.bid_details?.next_step_due)
                       ? c.bid_details!.next_step_due

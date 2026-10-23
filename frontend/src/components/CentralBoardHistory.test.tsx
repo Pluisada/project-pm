@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cardAction } from "@/test/cardActions";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CentralBoardView } from "@/components/CentralBoardView";
@@ -35,7 +36,7 @@ function setup(history: (url: string) => Response | Promise<Response>, over: { r
   const view = render(<CentralBoardView companySlug="acme" boardId={3} />);
   return { calls, ...view };
 }
-const open = async (n: number) => userEvent.click(await screen.findByRole("button", { name: `History of Lead ${n}` }));
+const open = async (n: number) => cardAction(`Lead ${n}`, "History");
 const hist = (calls: Call[]) => calls.filter((c) => c.url.endsWith("/history"));
 
 describe("CentralBoardView card history", () => {

@@ -15,7 +15,7 @@ type LeadEditModalProps = {
 // Form state keeps every field as a string (what inputs/selects hold);
 // "" means unset and is sent as null.
 type EditField =
-  | Exclude<keyof LeadFields, "currency">
+  | Exclude<keyof LeadFields, "currency" | "expected_close_date" | "contact_email" | "contact_phone">
   | "title"
   | "details"
   | "deal_value_next_year"
@@ -32,7 +32,6 @@ const toForm = (card: CardResponse): FormState => ({
   contact: card.contact ?? "",
   deal_value: card.deal_value != null ? String(card.deal_value) : "",
   deal_value_next_year: String(card.deal_value_next_year ?? 0),
-  expected_close_date: card.expected_close_date ?? "",
   lead_source: card.lead_source ?? "",
   product_line: card.product_line ?? "",
   confidence_level: card.confidence_level ?? "",
@@ -88,6 +87,11 @@ export const LeadEditModal = ({ card, options, onSave, onClose }: LeadEditModalP
 
     if (form.title.trim() === "") {
       setError("The opportunity name cannot be empty");
+      return;
+    }
+
+    if (form.next_step.trim().length > ACTION_MAX_LENGTH) {
+      setError(`The next action description can have at most ${ACTION_MAX_LENGTH} characters`);
       return;
     }
 
@@ -196,15 +200,6 @@ export const LeadEditModal = ({ card, options, onSave, onClose }: LeadEditModalP
           </label>
 
           <label className={labelClass}>
-            Expected Close Date
-            <input
-              type="date"
-              value={form.expected_close_date}
-              onChange={set("expected_close_date")}
-              className={inputClass}
-            />
-          </label>
-          <label className={labelClass}>
             Lead source
             <select value={form.lead_source} onChange={set("lead_source")} className={inputClass}>
               <option value="">Not set</option>
@@ -224,7 +219,7 @@ export const LeadEditModal = ({ card, options, onSave, onClose }: LeadEditModalP
             />
           </label>
           <label className={labelClass}>
-            Action
+            Next Action Description
             <input
               value={form.next_step}
               onChange={set("next_step")}

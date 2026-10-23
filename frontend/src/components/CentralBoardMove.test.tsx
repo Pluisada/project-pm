@@ -39,7 +39,7 @@ const ids = (column: number) => within(screen.getByTestId(`central-column-${colu
 const dropOn = (cardId: number, over: string) => act(async () => { drop({ active: { id: `card-${cardId}` }, over: { id: over } } as unknown as Partial<DragEndEvent>); });
 
 type Handler = (url: string, init?: RequestInit) => Response | Promise<Response>;
-function setup(opts: { caps?: Partial<typeof base>; move?: Handler } = {}) {
+function setup(opts: { caps?: Partial<typeof base>; move?: Handler; board?: () => unknown } = {}) {
   const moves: { url: string; init?: RequestInit }[] = [];
   const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
     const u = url(input);
@@ -47,7 +47,7 @@ function setup(opts: { caps?: Partial<typeof base>; move?: Handler } = {}) {
       moves.push({ url: u, init });
       return (opts.move ?? ((): Response => json(200, { ...card(1, 31, 0), column_id: 31 })))(u, init);
     }
-    return u.endsWith("/me") ? json(200, meOf("acme", opts.caps)) : json(200, boardOf());
+    return u.endsWith("/me") ? json(200, meOf("acme", opts.caps)) : json(200, opts.board ? opts.board() : boardOf());
   });
   vi.stubGlobal("fetch", fetchMock);
   const view = render(<CentralBoardView companySlug="acme" boardId={3} />);
@@ -88,26 +88,25 @@ describe("CentralBoardView card moves", () => {
     expect(screen.queryByTestId("move-error")).not.toBeInTheDocument();
   });
 
-  it("reorders inside the same column", async () => {
-    const { moves } = setup({ move: () => json(200, { ...card(1, 30, 1) }) });
-    await screen.findByText("Lead 1");
-    await dropOn(1, "card-2");
-    await waitFor(() => expect(moves).toHaveLength(1));
-    expect(JSON.parse(String(moves[0].init?.body))).toEqual({ column_id: 30, position: 1 });
-    expect(ids(30)).toEqual(["Lead 2", "Lead 1", "Lead 9"]);
-  });
-
-  it("does nothing for a drop outside, on itself, or at the same place", async () => {
+  it("sends nothing for a drop inside the card's own column: the column is ordered by Deal Value", async () => {
     const { moves } = setup();
     await screen.findByText("Lead 1");
     await act(async () => { drop({ active: { id: "card-1" }, over: null } as unknown as Partial<DragEndEvent>); });
     await dropOn(1, "card-1");
-    await dropOn(2, "card-9"); // would land after 9: a real change, so exclude it here
-    await dropOn(1, "card-2"); // 1 -> after 2 is index 1: a change too
-    expect(moves.length).toBe(2);
-    moves.length = 0;
-    await dropOn(9, "card-9");
+    await dropOn(1, "card-2");
+    await dropOn(2, "card-9");
+    await dropOn(9, "col-30");
     expect(moves).toHaveLength(0);
+    expect(ids(30)).toEqual(["Lead 1", "Lead 2", "Lead 9"]);
+  });
+
+  it("lists a column by Deal Value, highest first, with unvalued cards last and ties in stored order", async () => {
+    const valued = (id: number, position: number, deal_value: number | null, next = 0) => ({ ...card(id, 30, position), deal_value, deal_value_next_year: next });
+    const withValues = boardOf();
+    withValues.columns[0].cards = [valued(1, 0, null), valued(2, 1, 900), valued(3, 2, 85000), valued(9, 3, 900), valued(5, 4, 0)];
+    setup({ board: () => withValues });
+    await screen.findByText("Lead 3");
+    expect(ids(30)).toEqual(["Lead 3", "Lead 2", "Lead 9", "Lead 5", "Lead 1"]);
   });
 
   it("cancelling a drag changes nothing", async () => {

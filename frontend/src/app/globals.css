@@ -37,10 +37,12 @@
   --stage-blue-accent: #5b9bd5;
   --stage-cyan-bg: #e4f5fa;
   --stage-cyan-accent: #3fb5d3;
-  --stage-turquoise-bg: #e3f6f2;
-  --stage-turquoise-accent: #36b5a0;
-  --stage-lime-bg: #f0f7dc;
-  --stage-lime-accent: #9bc53d;
+  --stage-violet-bg: #eeeafa;
+  --stage-violet-accent: #7b6fd0;
+  --stage-amber-bg: #fdf3dc;
+  --stage-amber-accent: #e0a526;
+  --stage-slate-bg: #eceff3;
+  --stage-slate-accent: #7d8896;
   --stage-green-bg: #e1f4e5;
   --stage-green-accent: #3fa75a;
   --stage-red-bg: #fbe6e6;
@@ -131,8 +133,9 @@
   color-scheme: dark;
   --stage-blue-bg: #14263a;
   --stage-cyan-bg: #10292f;
-  --stage-turquoise-bg: #102b27;
-  --stage-lime-bg: #232b10;
+  --stage-violet-bg: #1d1a33;
+  --stage-amber-bg: #302510;
+  --stage-slate-bg: #1c2128;
   --stage-green-bg: #11291a;
   --stage-red-bg: #3a1618;
   --conf-low-bg: #3a1618;
