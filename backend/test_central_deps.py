@@ -343,7 +343,7 @@ def test_member_management_and_admin_grant_policies():
 
     roles = ("super_admin", "sales_member", "visitor", "admin")
     assert [can_manage_members(r) for r in roles] == [True, False, False, False]
-    assert [can_grant_admin(r) for r in roles] == [False, False, False, False]  # not even the Super Admin yet
+    assert [can_grant_admin(r) for r in roles] == [True, False, False, False]  # only the Super Admin may issue an Admin invitation
 
 
 @pytest.mark.parametrize("role", [None, "", "ADMIN", "Super_Admin", " super_admin", "owner", 1, ["super_admin"]])
@@ -359,7 +359,7 @@ def test_context_policy_properties_by_role():
         c = cd.CompanyContext(1, flag, "lity", role, role == "visitor")
         return (c.is_super, c.is_admin_level, c.can_review, c.can_manage_members, c.can_grant_admin, c.read_only)
 
-    assert props("super_admin", True) == (True, True, True, True, False, False)
+    assert props("super_admin", True) == (True, True, True, True, True, False)
     assert props("sales_member") == (False, False, False, False, False, False)
     assert props("visitor") == (False, False, False, False, False, True)
     assert props("admin") == (False, False, False, False, False, False)
@@ -392,7 +392,7 @@ def test_inactive_admin_membership_and_invitation_paths_fail_closed(e):
     e.update(IdentityMembership, IdentityMembership.user_id == uid, role="admin", is_active=False)
     with pytest.raises(cd.CompanyAccessDenied):
         ctx(e, "boss@example.com")
-    for role in ("admin", "super_admin", "ADMIN", ""):
+    for role in ("super_admin", "ADMIN", ""):
         with pytest.raises(svc.IdentityServiceError):
             svc.create_invitation(e.session, e.admin, "new@example.com", "lity", role)
 

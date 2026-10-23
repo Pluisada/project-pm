@@ -112,7 +112,7 @@ def test_a_company_member_is_not_an_admin(e):
 
 
 def test_roles_and_companies_are_validated(e):
-    for role in ("admin", "owner", "", "SALES_MEMBER"):
+    for role in ("super_admin", "owner", "", "SALES_MEMBER", "Admin"):
         with pytest.raises(svc.InvalidInput):
             invite(e, role=role)
     with pytest.raises(svc.InvalidInput):
@@ -437,15 +437,39 @@ def _force_admin_invitation(e, issued, role="admin"):
     e.session.commit()
 
 
-def test_super_admin_issues_both_supported_roles_and_no_role_grants_admin(e):
+def test_super_admin_issues_all_three_company_roles_and_super_admin_is_never_invitable(e):
     assert invite(e, "a@example.com", role="sales_member").role == "sales_member"
     assert invite(e, "b@example.com", role="visitor").role == "visitor"
+    assert invite(e, "d@example.com", role="admin").role == "admin"
     for role in (svc.SUPER_ADMIN_ROLE, svc.ADMIN_ROLE, "sales_member", "visitor", ""):
-        assert svc.can_grant_admin(role) is False
-    for role in ("admin", "super_admin", "owner", "Admin"):
+        assert svc.can_grant_admin(role) is (role == svc.SUPER_ADMIN_ROLE)  # only the Super Admin may issue Admin invitations
+    for role in ("super_admin", "global_admin", "owner", "Admin", ""):
         with pytest.raises(svc.InvalidInput):
             invite(e, "c@example.com", role=role)
-    assert e.session.query(IdentityInvitation).count() == 2
+    assert e.session.query(IdentityInvitation).count() == 3
+
+
+def test_a_company_admin_cannot_issue_an_admin_invitation(e):
+    uid = svc.create_user(e.session, "ca@example.com").id
+    e.session.add(IdentityMembership(
+        user_id=uid, company_id=svc.get_company(e.session, "lity").id, role="admin", created_at=svc._now()))
+    e.session.commit()
+    for role in ("admin", "visitor", "sales_member"):
+        with pytest.raises(svc.NotAuthorized):
+            svc.create_invitation(e.session, uid, "x@example.com", "lity", role)
+    assert e.session.query(IdentityInvitation).count() == 0
+
+
+def test_an_admin_invitation_is_accepted_as_admin_and_the_membership_role_is_persisted(e):
+    issued = invite(e, "newadmin@example.com", role="admin")
+    uid = svc.create_user(e.session, "newadmin@example.com").id
+    acceptance = svc.accept_invitation(e.session, issued.token, user_id=uid)
+    assert acceptance.role == "admin"
+    membership = e.session.scalar(select(IdentityMembership).where(IdentityMembership.user_id == uid))
+    assert membership.role == "admin" and membership.is_active
+    access = svc.company_access(e.session, uid, "lity")
+    assert access.role == "admin" and not svc.can_manage_members(access.role) and not svc.can_grant_admin(access.role)
+    assert not svc.is_super(access.role)  # an Admin is not a Super Admin: no member, board, product, import or delete power
 
 
 def test_company_admin_membership_cannot_invite(e):
@@ -479,26 +503,39 @@ def test_acceptance_fails_after_inviter_is_deactivated_and_nothing_is_claimed(e)
     assert e.session.query(IdentityUser).count() == 2  # no user was created for the invitee
 
 
-@pytest.mark.parametrize("role", ["admin"])
-def test_a_planted_admin_invitation_is_never_accepted(e, role):
+def test_an_admin_invitation_planted_under_a_non_super_admin_inviter_is_never_accepted(e):
     issued = invite(e)
-    _force_admin_invitation(e, issued, role)
+    _force_admin_invitation(e, issued, "admin")
+    other = svc.create_user(e.session, "ca@example.com").id
+    e.session.add(IdentityMembership(
+        user_id=other, company_id=svc.get_company(e.session, "lity").id, role="admin", created_at=svc._now()))
+    e.session.execute(text("UPDATE identity_invitations SET invited_by_user_id = :u WHERE id = :i"), {"u": other, "i": issued.invitation_id})
+    e.session.commit()
+    with pytest.raises(svc.InvitationInvalid):
+        svc.accept_invitation(e.session, issued.token)
+    assert e.session.query(IdentityMembership).count() == 1  # only the planting company Admin's own
+
+
+def test_a_super_admin_role_planted_in_an_invitation_is_never_accepted(e):
+    issued = invite(e)
+    e.session.execute(text("PRAGMA ignore_check_constraints = ON"))
+    _force_admin_invitation(e, issued, "super_admin")
+    e.session.execute(text("PRAGMA ignore_check_constraints = OFF"))
     with pytest.raises(svc.InvitationInvalid):
         svc.accept_invitation(e.session, issued.token)
     assert e.session.query(IdentityMembership).count() == 0
 
 
-def test_a_lapsed_admin_membership_is_not_reactivated_by_an_invitation(e):
+def test_a_lapsed_admin_membership_comes_back_only_with_the_role_the_invitation_names(e):
     uid = svc.create_user(e.session, "old@example.com").id
     e.session.add(IdentityMembership(
         user_id=uid, company_id=svc.get_company(e.session, "lity").id, role="admin", is_active=False,
         created_at=svc._now()))
     e.session.commit()
-    issued = invite(e, "old@example.com")
-    with pytest.raises(svc.InvitationInvalid):
-        svc.accept_invitation(e.session, issued.token, user_id=uid)
+    issued = invite(e, "old@example.com")  # an ordinary Sales Member invitation
+    svc.accept_invitation(e.session, issued.token, user_id=uid)
     membership = e.session.scalar(select(IdentityMembership))
-    assert membership.role == "admin" and membership.is_active is False
+    assert membership.role == "sales_member" and membership.is_active  # the old Admin role is not revived
 
 
 def test_company_mismatch_and_dangling_references_fail_closed(e):

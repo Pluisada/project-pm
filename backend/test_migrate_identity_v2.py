@@ -508,10 +508,11 @@ def test_a_v1_database_is_refused_by_the_application_and_left_untouched(v1):
     assert v1.read_bytes() == before
 
 
-def test_company_admin_stays_unassignable_by_the_service():
+def test_company_admin_is_a_schema_role_and_super_admin_never_invitable():
     import identity_models
     import identity_service as svc
     assert "admin" not in identity_models.COMPANY_ROLES and "admin" in identity_models.SCHEMA_ROLES
+    assert "admin" in svc.INVITABLE_ROLES and "super_admin" not in svc.INVITABLE_ROLES
     assert svc.ADMIN_ROLE == "admin" and svc.SUPER_ADMIN_ROLE == "super_admin"
     with pytest.raises(svc.InvalidInput):
-        svc._check_role("admin")
+        svc._check_role("super_admin")

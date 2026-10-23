@@ -811,7 +811,8 @@ def test_round_trip_export_import_updates_in_place_and_never_duplicates(rig):
     created = book([
         row(title="RT one", company="Acme", deal_value_usd=Decimal("1200.50"), deal_value_next_year_usd=Decimal("300"),
             confidence_level="MEDIUM", product_line="Chargers", salesperson_email="ana@example.com", stage="Second",
-            expected_close_date=date(2026, 5, 6), lead_source="Trade show", details="notes", contact="Cara"),
+            next_step_due=date(2026, 5, 6), lead_source="Trade show", details="notes", contact="Cara",
+            contact_email="cara@acme.com", contact_phone="+1 555 0100"),
         row(title="RT two"),
     ])
     assert apply(rig, token, created)[1].status_code == 201
@@ -838,8 +839,7 @@ def test_round_trip_export_import_updates_in_place_and_never_duplicates(rig):
     ws.cell(target, head["title"]).value = "RT one (edited)"
     ws.cell(target, head["deal_value_usd"]).value = 2000.25
     ws.cell(target, head["deal_value_next_year_usd"]).value = None  # blank -> 0
-    ws.cell(target, head["deal_total_usd"]).value = 999999  # ignored, derived
-    ws.cell(target, head["deal_year"]).value = 1999  # ignored
+    assert "deal_total_usd" not in head and "deal_year" not in head and "expected_close_date" not in head
     ws.cell(target, head["stage"]).value = "First"
     out = io.BytesIO()
     wb.save(out)
@@ -853,11 +853,114 @@ def test_round_trip_export_import_updates_in_place_and_never_duplicates(rig):
     assert len(card) == 1
     assert card[0][:8] == ("RT one (edited)", 2000.25, 0.0, 1, uid, "Chargers", "Acme", "MEDIUM")
     assert card[0][8] == snapshot_year(snapshot, rig)
-    # re-exporting shows the computed total, not the ignored one
-    again = load_workbook(io.BytesIO(rig.call("get", "/excel/export", token).content)).worksheets[0]
-    row_values = next(r for r in again.iter_rows(min_row=2, values_only=True) if r[1] == "RT one (edited)")
-    assert row_values[head["deal_total_usd"] - 1] == 2000.25
+    # contact fields and the Next Action Date survived the export and the re-import untouched
+    assert rig.sql("SELECT c.contact, c.contact_email, c.contact_phone, d.next_step_due FROM cards c "
+                   "JOIN card_bid_details d ON d.card_id = c.id WHERE c.title LIKE 'RT one%'") == [
+        ("Cara", "cara@acme.com", "+1 555 0100", "2026-05-06")]
 
 
 def snapshot_year(snapshot, rig):
     return rig.sql("SELECT deal_year FROM cards WHERE id = 1")[0][0]  # every seeded card shares the creation year
+
+
+# --- contact fields and the Next Action Date -------------------------------------------------------
+
+def test_create_and_update_map_contact_fields_and_next_action_date(rig):
+    token = admin(rig)
+    content = book([row(title="Contacts", company="Acme", contact="Cara", contact_email=" Cara@Acme.com ",
+                        contact_phone="+55 (11) 99999-0000", next_step_due=date(2026, 7, 1),
+                        deal_value_usd=Decimal("10"), deal_value_next_year_usd=Decimal("5"))])
+    body, r = apply(rig, token, content)
+    assert r.status_code == 201 and r.json()["created"] == 1
+    # Customer (company), the two contact fields and the date land in their own, independent fields.
+    stored = rig.sql("SELECT c.company, c.contact, c.contact_email, c.contact_phone, c.deal_value, c.deal_value_next_year, "
+                     "d.next_step_due FROM cards c JOIN card_bid_details d ON d.card_id = c.id WHERE c.title = 'Contacts'")
+    assert stored == [("Acme", "Cara", "Cara@Acme.com", "+55 (11) 99999-0000", 10.0, 5.0, "2026-07-01")]
+    new_id = rig.sql("SELECT id FROM cards WHERE title = 'Contacts'")[0][0]
+
+    update = book([row(card_id=new_id, title="Contacts", contact_phone="+55 11 4000-0000", next_step_due=date(2026, 8, 2))])
+    body = preview(rig, token, update).json()
+    assert body["rows"][0]["action"] == "update"
+    assert {d["field"] for d in body["rows"][0]["diffs"]} >= {"contact_phone", "next_step_due"}
+    assert confirm(rig, token, update, body["plan_digest"]).status_code == 201
+    stored = rig.sql("SELECT c.contact_email, c.contact_phone, d.next_step_due FROM cards c "
+                     "JOIN card_bid_details d ON d.card_id = c.id WHERE c.id = ?", (new_id,))
+    assert stored == [(None, "+55 11 4000-0000", "2026-08-02")]  # a present, blank column clears the email
+
+
+def test_invalid_contact_values_block_the_import_and_write_nothing(rig):
+    token = admin(rig)
+    before = counts(rig)
+    headers = ["card_id", "title", "contact_email", "contact_phone", "next_action_date"]
+    for values, code in (([None, "A", "nope", None, None], "invalid_email"),
+                         ([None, "A", None, "call me", None], "invalid_phone"),
+                         ([None, "A", None, None, "31/12/2026"], "invalid_date")):
+        body = preview(rig, token, raw_book(headers, [values])).json()
+        assert body["confirmable"] is False and body["rows"][0]["errors"][0]["code"] == code
+    assert counts(rig) == before
+
+
+def test_old_workbook_with_legacy_columns_still_imports_and_does_not_reinterpret_them(rig):
+    token = admin(rig)
+    headers = ["card_id", "title", "deal_value_usd", "deal_value_next_year_usd", "deal_total_usd", "deal_year",
+               "expected_close_date"]
+    content = raw_book(headers, [[None, "Legacy", 100, 20, 999999, 1999, "2026-03-04"]])
+    body, r = apply(rig, token, content)
+    assert r.status_code == 201
+    stored = rig.sql("SELECT deal_value, deal_value_next_year, deal_year, expected_close_date FROM cards WHERE title = 'Legacy'")
+    assert stored[0][:2] == (100.0, 20.0) and stored[0][2] != 1999  # total and year are derived/ignored
+    assert str(stored[0][3]).startswith("2026-03-04")  # still the close date, never the Next Action Date
+    assert not rig.sql("SELECT 1 FROM card_bid_details d JOIN cards c ON c.id = d.card_id WHERE c.title = 'Legacy' "
+                       "AND d.next_step_due IS NOT NULL")
+    # next_step_due as a header stays refused rather than being read as something else
+    refused = preview(rig, token, raw_book(["card_id", "title", "next_step_due"], [[None, "X", "2026-01-01"]])).json()
+    assert refused.get("confirmable") is not True
+
+
+# --- same-company download -> fill -> preview ------------------------------------------------------
+
+def _filled_from_template(rig, token, fill):
+    """Download the template of this company and board, let `fill(valid)` produce rows from the 'Valid values'
+    sheet, and return the workbook bytes with those rows written under the downloaded headers."""
+    downloaded = rig.call("get", "/excel/template", token).content
+    wb = load_workbook(io.BytesIO(downloaded))
+    assert wb.sheetnames == ["Cards", "Instructions", "Valid values"]
+    sheet = wb["Valid values"]
+    valid = {c.value: [r[i].value for r in sheet.iter_rows(min_row=2) if r[i].value] for i, c in enumerate(sheet[1])}
+    ws = wb["Cards"]
+    head = [c.value for c in ws[1]]
+    for values in fill(valid):
+        ws.append([values.get(h) for h in head])
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue(), valid
+
+
+def test_template_lists_this_companys_valid_values_and_a_workbook_filled_with_them_previews_clean(rig):
+    token = admin(rig)
+    person(rig)
+    content, valid = _filled_from_template(rig, token, lambda v: [
+        {"title": f"Lead {i}", "company": f"Customer {i}", "stage": stage, "product_line": v["product_line"][0],
+         "salesperson_email": v["salesperson_email"][0], "lead_source": v["lead_source"][0],
+         "probability_level": v["probability_level"][0], "deal_value_usd": 100 + i, "deal_value_next_year_usd": 50,
+         "next_action_date": "2026-12-01", "contact_email": f"c{i}@customer.com", "contact_phone": "+55 11 91000-0000"}
+        for i, stage in enumerate(v["stage"][:2])
+    ])
+    assert "ana@example.com" in valid["salesperson_email"] and "Chargers" in valid["product_line"]
+    assert valid["stage"][:2] == ["First", "Second"]  # the board's own stages, in order
+    body = preview(rig, token, content).json()
+    assert body["summary"]["invalid"] == 0 and body["summary"]["creates"] == 2 and body["confirmable"] is True
+    assert confirm(rig, token, content, body["plan_digest"]).status_code == 201
+
+
+def test_invented_references_are_refused_with_a_pointer_to_the_valid_values_and_nothing_is_created(rig):
+    token = admin(rig)
+    before = counts(rig)
+    content, _ = _filled_from_template(rig, token, lambda v: [
+        {"title": "Invented", "stage": "Qualified", "product_line": "Analytics Pro", "salesperson_email": "vendas@empresa.com"}])
+    body = preview(rig, token, content).json()
+    assert body["confirmable"] is False and body["summary"]["invalid"] == 1
+    errors = {e["column"]: e for e in body["rows"][0]["errors"]}
+    assert set(errors) == {"stage", "product_line", "salesperson_email"}
+    assert all("Valid values" in e["message"] for e in errors.values())
+    assert counts(rig) == before  # no stage, product or membership was created to make it pass

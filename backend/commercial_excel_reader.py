@@ -43,6 +43,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet._reader import FORMULA_TAG
 
 import excel_contract as contract
+from schemas import normalize_contact_email, normalize_contact_phone
 from bid_excel_reader import (
     DEFAULT_LIMITS,
     ExcelError,
@@ -78,12 +79,15 @@ class CommercialRecord:
     title: str | None = None
     company: str | None = None
     contact: str | None = None
+    contact_email: str | None = None
+    contact_phone: str | None = None
     details: str | None = None
     deal_value_usd: Decimal | None = None
     deal_value_next_year_usd: Decimal = Decimal("0.00")
     deal_year_hint: int | None = None        # informational, never used to write
     confidence_level: str | None = None
-    expected_close_date: date | None = None
+    expected_close_date: date | None = None  # legacy column, still read
+    next_step_due: date | None = None        # the Next Action Date
     product_line: str | None = None          # syntax only
     lead_source: str | None = None
     salesperson_email: str | None = None     # syntax only, lower-cased
@@ -305,6 +309,22 @@ def parse_email(value, max_length: int) -> str:
     return text.lower()
 
 
+def parse_contact_email(value, max_length: int) -> str:
+    text = parse_text(value, max_length)
+    try:
+        return normalize_contact_email(text)
+    except ValueError:
+        raise _FieldError("invalid_email", "Not a valid e-mail address") from None
+
+
+def parse_contact_phone(value, max_length: int) -> str:
+    text = parse_text(value, max_length)
+    try:
+        return normalize_contact_phone(text)
+    except ValueError:
+        raise _FieldError("invalid_phone", "Not a valid telephone number") from None
+
+
 # --- headers -------------------------------------------------------------------
 
 def _header_text(value) -> str:
@@ -343,6 +363,8 @@ def _map_headers(cells, limits: ReaderLimits):
     for spec in contract.COLUMNS:
         if contract.normalize_header(spec.header) in seen:
             continue
+        if spec.legacy:
+            continue  # an absent legacy column is the normal case
         if spec.required_column:
             errors.append(_issue("missing_column", "Required column is missing", row=1, column=spec.header))
         else:
@@ -399,6 +421,10 @@ def _read_row(row_number, cells, by_index, headers) -> CommercialRow:
                 values[spec.field] = parse_lead_source(value)
             elif kind == contract.KIND_EMAIL:
                 values[spec.field] = parse_email(value, spec.max_length)
+            elif kind == contract.KIND_CONTACT_EMAIL:
+                values[spec.field] = parse_contact_email(value, spec.max_length)
+            elif kind == contract.KIND_CONTACT_PHONE:
+                values[spec.field] = parse_contact_phone(value, spec.max_length)
         except _FieldError as exc:
             errors.append(error(exc.code, str(exc)))
 

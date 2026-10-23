@@ -41,8 +41,8 @@ const countsText = (s: Pick<CardsImportSummary, "created" | "updated" | "unchang
   `${s.created} created, ${s.updated} updated, ${s.unchanged} unchanged`;
 
 const FIELD_LABEL: Record<string, string> = {
-  title: "Title", company: "Company", contact: "Contact", details: "Details", deal_value: "Deal value (USD)",
-  deal_value_next_year: "Next-year value (USD)", confidence_level: "Probability", expected_close_date: "Close date",
+  title: "Title", company: "Customer", contact: "Contact", contact_email: "Contact email", contact_phone: "Contact telephone", details: "Details", deal_value: "Deal value (USD)",
+  deal_value_next_year: "Next-year value (USD)", confidence_level: "Probability", expected_close_date: "Close date", next_step_due: "Next action date",
   product_line: "Product line", lead_source: "Lead source", salesperson_id: "Salesperson", stage: "Stage",
 };
 const SHOWN_MAX = 120;
@@ -290,6 +290,10 @@ export const CentralCardsImport = ({ companySlug, boardId, onImported }: Central
         deleted since the export, or a workbook exported from another board), it offers to create them as new cards with
         their own ids; the old card_ids are never reused. Nothing is saved until you confirm, and a workbook with any
         error is not imported at all.
+      </p>
+      <p className="mt-2 text-sm text-[var(--gray-text)]" data-testid="cards-import-values-hint">
+        Stage, product line and salesperson must already exist in this company: copy them from the &quot;Valid values&quot;
+        sheet of the template downloaded here, or leave the cell empty. Nothing is created for you.
       </p>
 
       <div className="mt-4 flex flex-wrap items-center gap-3">

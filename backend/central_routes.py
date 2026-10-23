@@ -181,6 +181,27 @@ def build_central_router(runtime: CentralIdentityRuntime) -> APIRouter:
             f"Open this link to set your password and join {company_slug}:\n\n{APP_BASE_URL}/?central_invite_token={issued.token}\n")
         return {"message": "Invitation sent."}
 
+    @router.post("/companies/{company_slug}/invitations/{invitation_id}/resend", dependencies=[Depends(require_matching_company_header)])
+    def resend_invitation(company_slug: str, invitation_id: int, user=Depends(current_user),
+                          session: Session = Depends(runtime.get_session)):
+        """Global administrators only. Delivers a new link for a still-open invitation and, only once the mail was
+        handed to the SMTP server, retires the previous link. Answers honestly: no SMTP is 503, a failed send is 502
+        (the previous link is untouched). The link is never returned."""
+        if company_slug not in COMPANY_SLUGS or not user.is_global_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        if not mailer.is_configured():
+            raise HTTPException(status_code=503, detail="Email delivery is not configured; the invitation was not sent")
+        resend = _managed(ca.begin_invitation_resend, session, user.id, company_slug, invitation_id)
+        try:
+            mailer.send_email(
+                resend.email, "You have been invited to the Sales Pipeline",
+                f"Open this link to set your password and join {company_slug}:\n\n{APP_BASE_URL}/?central_invite_token={resend.token}\n")
+        except mailer.EmailDeliveryError:
+            ca.finish_invitation_resend(session, user.id, resend, delivered=False)
+            raise HTTPException(status_code=502, detail="The email could not be sent; try again later") from None
+        ca.finish_invitation_resend(session, user.id, resend, delivered=True)
+        return {"message": "Invitation email sent."}
+
     def _managed(call, *args, **kwargs):
         """Run a membership service call; every refusal is a fixed-message HTTP error."""
         try:

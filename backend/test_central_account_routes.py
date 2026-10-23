@@ -99,10 +99,16 @@ def test_only_global_admin_may_invite_and_slug_must_be_known(s):
     assert s.client.post("/api/central/companies/lity/invitations", headers=bearer(s, "m@example.com"), json=body).status_code == 403
     assert s.client.post("/api/central/companies/lity/invitations", json=body).status_code == 401
     assert s.client.post("/api/central/companies/nope/invitations", headers=bearer(s, "admin@example.com"), json=body).status_code == 403
+    # Admin can be invited, by the global administrator only; Super Admin never, whatever the spelling.
+    assert s.client.post("/api/central/companies/lity/invitations", headers=bearer(s, "m@example.com"),
+                         json={"email": "x@example.com", "role": "admin"}).status_code == 403
+    for bad in ("super_admin", "Admin", "owner", ""):
+        assert s.client.post("/api/central/companies/lity/invitations", headers=bearer(s, "admin@example.com"),
+                             json={"email": "x@example.com", "role": bad}).status_code == 422
     assert s.client.post("/api/central/companies/lity/invitations", headers=bearer(s, "admin@example.com"),
-                         json={"email": "x@example.com", "role": "admin"}).status_code == 422
+                         json={"email": "x@example.com", "role": "admin"}).status_code == 202
     with s.factory() as session:
-        assert session.query(IdentityMembership).count() == 1
+        assert session.query(IdentityMembership).count() == 1  # an invitation creates no membership
 
 
 def test_expired_reset_token_is_rejected(s):
@@ -277,3 +283,109 @@ def test_global_central_endpoints_ignore_the_company_header(s):
     assert s.client.post("/api/central/password/forgot", json={"email": "nobody@example.com"},
                          headers={"X-Company-Slug": "anything"}).status_code == 200
     assert s.client.post("/api/central/logout", headers={**h, "X-Company-Slug": "anything"}).status_code == 204
+
+
+def test_an_admin_invitation_end_to_end_gives_the_company_admin_role_and_never_the_super_admin(s):
+    r = s.client.post("/api/central/companies/lity/invitations", headers=bearer(s, "admin@example.com"),
+                      json={"email": "newadmin@example.com", "role": "admin"})
+    assert r.status_code == 202
+    token = s.sent[-1][2].split("central_invite_token=")[1].split()[0]
+    assert s.client.post("/api/central/invitations/accept", json={"token": token, "password": GOOD}).status_code == 200
+    me = s.client.get("/api/central/me", headers=bearer(s, "newadmin@example.com")).json()
+    assert me["is_global_admin"] is False
+    assert [(c["slug"], c["role"]) for c in me["companies"]] == [("lity", "admin")]
+    # what that Admin may not do: invite or promote (company isolation of company routes is covered by the company route tests)
+    assert s.client.post("/api/central/companies/lity/invitations", headers=bearer(s, "newadmin@example.com"),
+                         json={"email": "y@example.com", "role": "admin"}).status_code == 403
+    assert s.client.get("/api/central/companies/lity/members", headers=bearer(s, "newadmin@example.com")).status_code == 200  # read-only list
+    assert s.client.put("/api/central/companies/lity/members/1/role", headers=bearer(s, "newadmin@example.com"),
+                        json={"role": "admin"}).status_code == 403
+
+
+# --- resending an invitation whose email was not delivered ---------------
+
+def _open_invitation(s, email="r@example.com", role="sales_member"):
+    with s.factory() as session:
+        issued = svc.create_invitation(session, session.query(IdentityUser).filter_by(email="admin@example.com").one().id,
+                                       email, "lity", role)
+    return issued.invitation_id, issued.token
+
+
+def _resend(s, invitation_id, headers=None, slug="lity"):
+    return s.client.post(f"/api/central/companies/{slug}/invitations/{invitation_id}/resend",
+                         headers=headers or bearer(s, "admin@example.com"))
+
+
+def _accept(s, token):
+    return s.client.post("/api/central/invitations/accept", json={"token": token, "password": GOOD}).status_code
+
+
+def test_resend_delivers_new_link_and_retires_the_old_one(s, monkeypatch):
+    monkeypatch.setenv("SMTP_HOST", "smtp.invalid")
+    inv, old = _open_invitation(s)
+    r = _resend(s, inv)
+    assert r.status_code == 200 and "token" not in r.text and "central_invite_token" not in r.text
+    assert len(s.sent) == 1 and s.sent[0][0] == "r@example.com"
+    new = s.sent[0][2].split("central_invite_token=")[1].split()[0]
+    assert new != old
+    assert _accept(s, old) == 400  # old link dead after a successful resend
+    assert _accept(s, new) == 200
+    with s.factory() as session:
+        assert session.query(IdentityInvitation).count() == 1  # no duplicate invitation
+        actions = [a.action for a in session.query(svc.IdentityAuditEvent)]
+        assert "invitation_resent" in actions
+
+
+def test_resend_without_smtp_is_503_and_changes_nothing(s, monkeypatch):
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    inv, old = _open_invitation(s)
+    r = _resend(s, inv)
+    assert r.status_code == 503 and "not sent" in r.json()["detail"] and not s.sent
+    with s.factory() as session:
+        assert session.query(svc.IdentityAuthToken).count() == 1
+    assert _accept(s, old) == 200
+
+
+def test_resend_delivery_failure_is_502_keeps_old_link_and_can_be_retried(s, monkeypatch):
+    monkeypatch.setenv("SMTP_HOST", "smtp.invalid")
+    inv, old = _open_invitation(s)
+
+    def boom(to, subject, body):
+        raise mailer.EmailDeliveryError("Could not send email")
+    monkeypatch.setattr(mailer, "send_email", boom)
+    r = _resend(s, inv)
+    assert r.status_code == 502 and "could not be sent" in r.json()["detail"]
+    with s.factory() as session:
+        tokens = session.query(svc.IdentityAuthToken).all()
+        assert len(tokens) == 2 and sum(t.invalidated_at is None for t in tokens) == 1  # only the original is live
+        assert "invitation_resend_failed" in [a.action for a in session.query(svc.IdentityAuditEvent)]
+    monkeypatch.setattr(mailer, "send_email", lambda to, subject, body: s.sent.append((to, subject, body)))
+    assert _resend(s, inv).status_code == 200  # retry after the failure
+    new = s.sent[-1][2].split("central_invite_token=")[1].split()[0]
+    assert _accept(s, old) == 400 and _accept(s, new) == 200
+
+
+def test_resend_authorization_and_state_checks(s, monkeypatch):
+    monkeypatch.setenv("SMTP_HOST", "smtp.invalid")
+    inv, token = _open_invitation(s)
+    with s.factory() as session:
+        ca.accept_invitation_with_password(session, svc.create_invitation(
+            session, session.query(IdentityUser).filter_by(email="admin@example.com").one().id,
+            "m@example.com", "lity", "sales_member").token, GOOD)
+    assert s.client.post(f"/api/central/companies/lity/invitations/{inv}/resend").status_code == 401
+    assert _resend(s, inv, headers=bearer(s, "m@example.com")).status_code == 403
+    assert _resend(s, inv, slug="nope").status_code == 403
+    assert _resend(s, 9999).status_code == 404
+    assert not s.sent
+    assert _accept(s, token) == 200
+    assert _resend(s, inv).status_code == 409  # accepted: no longer open
+    assert not s.sent
+
+
+def test_resend_refuses_an_expired_invitation(s, monkeypatch):
+    monkeypatch.setenv("SMTP_HOST", "smtp.invalid")
+    inv, _ = _open_invitation(s)
+    with s.factory() as session:
+        session.execute(text("UPDATE identity_invitations SET expires_at = datetime('now', '-1 hour'), created_at = datetime('now', '-2 hour')"))
+        session.commit()
+    assert _resend(s, inv).status_code == 409 and not s.sent

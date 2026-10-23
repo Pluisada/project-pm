@@ -95,7 +95,7 @@ Source of truth: the predicates in `backend/identity_service.py` and `card_rules
 | `sales_member` | Create (assigned to themself, a client-supplied salesperson is ignored); edit and move only cards assigned to them, never unassigned ones; move forward or within a column only | None |
 | `visitor` | Read only, even a card assigned to them | None |
 
-The company Admin role exists in the schema (version 2) and in the permission predicates, but no invitation can carry it (`can_grant_admin` is always false); only the Super Admin's role-change API can set it. No frontend path does.
+The company Admin role exists in the schema (version 2) and in the permission predicates. An invitation may carry it (Correction 1, 2026-10-23): `create_invitation` accepts `admin` only from a current Super Admin (`can_grant_admin(inviter role)` is true for the Super Admin only), acceptance re-checks the inviter's authority at that moment, and the role is stored in the membership. The Super Admin can also set it on a joined member (`change_membership_role`, the Users list). `super_admin` is never invitable: it is the `is_global_admin` flag, created only with `identity_admin_cli.py`. An Admin cannot invite, promote or manage members.
 
 **Card review.** Obligations are stored per card and reviewer role (`card_versions`, `card_review_obligations`). A Sales Member's successful edit creates one obligation for the company Admin and one for the Super Admin, independent of each other. An Admin-level user (Admin or Super Admin) moving a card backward creates one for the Super Admin only. Forward moves and Admin/Super Admin edits create none. Each role sees and clears only its own (`GET .../reviews`, `POST .../cards/{id}/reviews/{role}/clear`, other role 403). Every change to a reviewable field or the column raises the card's version and moves pending obligations to it; clearing needs the version the reviewer saw (409 `review_stale` otherwise), and a cleared obligation is never reopened or inherited. Deleting a card closes its pending rows as `void`. REST, AI and undo go through the same listener. Without the tables, changes needing an obligation are refused with 503.
 
@@ -103,3 +103,6 @@ The company Admin role exists in the schema (version 2) and in the permission pr
 
 Existing company databases need the review and loss tables created by operator scripts: see "Existing company databases: Phase 1-3 schema readiness" in `docs/DEPLOYMENT.md`.
 
+## Resend of an open invitation
+
+`identity_service.begin_invitation_resend` / `finish_invitation_resend` implement the two-phase resend described in `docs/SECURITY.md` (new token first; the old one is retired only after a successful delivery). The HTTP route is `POST /api/central/companies/{slug}/invitations/{id}/resend` (Super Admin only; 503 without SMTP, 502 on a failed send, 409 for an invitation no longer open). The invitation keeps its expiry and its single open row.

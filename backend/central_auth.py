@@ -61,6 +61,8 @@ from identity_service import (
     company_access,
     change_membership_role,
     create_invitation,
+    begin_invitation_resend,
+    finish_invitation_resend,
     deactivate_membership,
     list_members,
     list_pending_invitations,
@@ -325,7 +327,7 @@ __all__ = [
     "AuthenticationFailed", "ResetTokenInvalid", "WeakPassword", "AuthSession",
     "authenticate", "user_for_token", "logout", "accept_invitation_with_password",
     "issue_password_reset", "reset_password", "change_password", "deactivate_user",
-    "list_company_access", "create_invitation", "NotAuthorized", "NotFound", "Conflict", "IdentityServiceError",
+    "list_company_access", "create_invitation", "begin_invitation_resend", "finish_invitation_resend", "NotAuthorized", "NotFound", "Conflict", "IdentityServiceError",
     "list_members", "list_pending_invitations", "deactivate_membership", "change_membership_role",
 ]
 

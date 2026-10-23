@@ -8,6 +8,7 @@ import {
   inviteCompanyMember,
   isAbortError,
   listCompanyInvitations,
+  resendCompanyInvitation,
   listCompanyMembers,
   type ApiError,
   type CompanyMember,
@@ -17,9 +18,10 @@ import {
 } from "@/lib/api";
 
 const ROLE_LABELS: Record<string, string> = { sales_member: "Sales Member", visitor: "Visitor", admin: "Admin" };
-const INVITE_ROLES: InviteRole[] = ["sales_member", "visitor"];
-// An existing member can also be made company Admin; an invitation cannot carry that role (backend rule).
-const MEMBER_ROLES: MemberRole[] = [...INVITE_ROLES, "admin"];
+// The same three roles for an invitation and for an existing member. The Super Admin role is never offered: it is
+// created only with identity_admin_cli.py, and the backend refuses it.
+const INVITE_ROLES: InviteRole[] = ["sales_member", "visitor", "admin"];
+const MEMBER_ROLES: MemberRole[] = INVITE_ROLES;
 
 const fieldClass =
   "mt-1 w-full rounded-lg border border-[var(--stroke)] bg-[var(--surface-strong)] text-[var(--navy-dark)] px-3 py-2 text-sm outline-none focus:border-[var(--primary-blue)] disabled:opacity-50";
@@ -37,15 +39,15 @@ function failure(err: unknown, what: string): string {
   if (code === 401) return "Your session expired.";
   if (code === 403) return `You are not allowed to ${what}.`;
   if (code === 404) return "That member was not found - the list was reloaded.";
-  if (code === 409 || code === 422) return getErrorMessage(err, `Could not ${what}.`);
+  if (code === 409 || code === 422 || code === 502 || code === 503) return getErrorMessage(err, `Could not ${what}.`);
   if (code === 429) return "Too many requests. Wait a moment and try again.";
   return `Could not ${what}.`;
 }
 
 /**
  * Members and invitations of one company, for the Super Admin only (the backend re-checks every request and answers
- * 403 to anyone else). The invitation link is emailed to the invitee and is never shown here. An invitation cannot carry
- * the company Admin role; a joined member is promoted from the list (the backend allows it to the Super Admin only).
+ * 403 to anyone else). The invitation link is emailed to the invitee and is never shown here. An invitation can carry Sales
+ * Member, Visitor or Admin (never the Super Admin role); a joined member can be changed between the same three.
  */
 export const CentralMembers = ({ companySlug, companyName }: { companySlug: string; companyName: string }) => {
   const [members, setMembers] = useState<CompanyMember[] | null>(null);
@@ -98,9 +100,17 @@ export const CentralMembers = ({ companySlug, companyName }: { companySlug: stri
   const invite = async (e: React.FormEvent) => {
     e.preventDefault();
     const target = email.trim();
+    // Inviting an Admin is an escalation like promoting one: ask first. The backend decides regardless.
+    if (role === "admin" && !window.confirm(`Invite ${target} as an Admin of ${companyName}? Admins can edit, assign and move any card.`)) return;
     const ok = await run("send the invitation", () => inviteCompanyMember(companySlug, target, role),
       `Invitation sent to ${target}. The link was emailed and expires in 7 days.`);
     if (ok) setEmail("");
+  };
+
+  const resend = (p: PendingInvitation) => {
+    if (!window.confirm(`Send a new invitation email to ${p.email}? The previous link stops working once the new email is sent.`)) return;
+    void run("resend the invitation", () => resendCompanyInvitation(companySlug, p.invitation_id),
+      `A new invitation email was sent to ${p.email}. The previous link no longer works.`);
   };
 
   return (
@@ -129,7 +139,7 @@ export const CentralMembers = ({ companySlug, companyName }: { companySlug: stri
         <button type="submit" disabled={busy || !email.trim()} className={primaryButton}>Send invitation</button>
       </form>
       <p className="mt-2 text-xs text-[var(--gray-text)]">
-        Sales Members edit and move only their own cards. Visitors are read-only. To create an Admin, invite the person as a Sales Member; once they have joined, change their role to Admin in the list below.
+        Sales Members edit and move only their own cards. Visitors are read-only. Admins edit, assign and move any card but cannot manage users, boards, products or imports.
       </p>
 
       <h3 className={`${labelClass} mt-6`}>Members</h3>
@@ -182,6 +192,8 @@ export const CentralMembers = ({ companySlug, companyName }: { companySlug: stri
                 <span className="min-w-0 flex-1 truncate">{p.email}</span>
                 <span className="text-xs text-[var(--gray-text)]">{ROLE_LABELS[p.role] ?? p.role}</span>
                 <span className="text-xs text-[var(--gray-text)]">expires {new Date(p.expires_at).toLocaleDateString()}</span>
+                <button type="button" disabled={busy} onClick={() => resend(p)} aria-label={`Email a new link to ${p.email}`}
+                  className={secondaryButton}>Resend</button>
               </li>
             ))}
           </ul>

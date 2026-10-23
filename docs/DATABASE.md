@@ -917,6 +917,10 @@ Then start the app as above; the admin cannot log in until the password reset is
 
 ---
 
+## Fresh installation of the central databases (production strategy decided 2026-10-23)
+
+The first production installation creates new databases instead of migrating existing ones. `create_identity_db.py` creates the identity database, `identity_admin_cli.py bootstrap` registers the three companies and the global administrator (no password), and `create_company_db.py --company <slug>` creates each company database with the complete current schema in one run (all commercial tables with `cards.contact_email` and `cards.contact_phone`, the card version and review tables, loss reasons, the Cards-import ledger, the Bid import and revert tables, Undo, audit, the local `users` table and the default products), stamps `user_version` 4 and verifies it. A fresh install therefore needs none of the `init_company_*.py` or `migrate_*.py` scripts. Procedure, the data the import files can and cannot load, and the validation record (temporary databases only): `docs/DEPLOYMENT.md`, "Initial production installation".
+
 ## Migration Strategy
 
 ### SQLite → PostgreSQL
@@ -1034,3 +1038,7 @@ Before proceeding to Part 6 (Backend API), please review:
 - [ ] Security considerations addressed
 
 **Status:** Awaiting user approval to proceed with Part 6
+
+## Cards workbook columns (Correction batch 1, 2026-10-23)
+
+No schema change. The workbook (`excel_contract.py`) maps `company` to `cards.company` (the customer), `contact_email` and `contact_phone` to the card columns of the same names, and `next_action_date` to `card_bid_details.next_step_due` through `card_rules` (a details row is created only when a date is set). `deal_total_usd`, `deal_year` and `expected_close_date` are legacy columns: read from old workbooks, never written to the template or the export. Stage, product line and salesperson must already exist; the "Valid values" sheet lists them for the company and board.

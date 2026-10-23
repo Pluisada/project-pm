@@ -204,7 +204,7 @@ test("the Super Admin promotes a joined member to Admin only after confirming; d
   expect(await memberRole(request, PROMOTE)).toBe("sales_member");
 });
 
-test("the backend refuses role changes and Admin/Super Admin invitations that bypass the UI", async ({ request }) => {
+test("the backend refuses role changes by non-Super Admins and every Super Admin invitation, and issues Admin invitations only for the Super Admin", async ({ request }) => {
   const members = await (await request.get(`${API}/api/central/companies/lity/members`, { headers: await auth(request, ADMIN) })).json();
   const target = members.find((m: { email: string }) => m.email === PROMOTE).user_id;
   const role = `${API}/api/central/companies/lity/members/${target}/role`;
@@ -218,18 +218,41 @@ test("the backend refuses role changes and Admin/Super Admin invitations that by
   const selfRes = await request.put(`${API}/api/central/companies/lity/members/${self}/role`, { headers: await auth(request, MEMBER), data: { role: "admin" } });
   expect(selfRes.status()).toBe(403);
   expect(await memberRole(request, MEMBER)).toBe("sales_member");
-  // Not even the Super Admin can invite as Admin or Super Admin; a non-Super Admin cannot invite at all.
-  for (const bad of ["admin", "super_admin", "global_admin", "owner"]) {
-    const res = await request.post(`${API}/api/central/companies/lity/invitations`, { headers: await auth(request, ADMIN), data: { email: `x-${bad}@example.com`, role: bad } });
+  // The Super Admin role can never be invited, whatever the spelling; a non-Super Admin cannot invite at all (Admin included).
+  for (const bad of ["super_admin", "global_admin", "owner", "Admin", ""]) {
+    const res = await request.post(`${API}/api/central/companies/lity/invitations`, { headers: await auth(request, ADMIN), data: { email: `x-${bad || "blank"}@example.com`, role: bad } });
     expect(res.status(), bad).toBeGreaterThanOrEqual(400);
     expect(res.status(), bad).toBeLessThan(500);
   }
   for (const who of [MEMBER, COMPANY_ADMIN]) {
-    const res = await request.post(`${API}/api/central/companies/lity/invitations`, { headers: await auth(request, who), data: { email: "y@example.com", role: "sales_member" } });
-    expect(res.status(), who).toBe(403);
+    for (const invited of ["sales_member", "admin"]) {
+      const res = await request.post(`${API}/api/central/companies/lity/invitations`, { headers: await auth(request, who), data: { email: "y@example.com", role: invited } });
+      expect(res.status(), `${who} ${invited}`).toBe(403);
+    }
   }
+  // The Super Admin may invite an Admin: pending, with the role recorded, and it is never a Super Admin invitation.
+  const ok = await request.post(`${API}/api/central/companies/lity/invitations`, { headers: await auth(request, ADMIN), data: { email: "b2-invited-admin@example.com", role: "admin" } });
+  expect(ok.status()).toBe(202);
   const pending = await (await request.get(`${API}/api/central/companies/lity/invitations`, { headers: await auth(request, ADMIN) })).json();
-  expect(pending.some((p: { role: string }) => p.role === "admin" || p.role === "super_admin")).toBe(false);
+  expect(pending.find((p: { email: string }) => p.email === "b2-invited-admin@example.com")?.role).toBe("admin");
+  expect(pending.some((p: { role: string }) => p.role === "super_admin")).toBe(false);
+});
+
+test("the Users form can invite an Admin after a confirmation", async ({ page, request }) => {
+  await openBoard(page);
+  await sections(page).getByRole("button", { name: "Users" }).click();
+  await page.getByLabel("Invite by email").fill("b2-form-admin@example.com");
+  await expect(page.getByLabel("Role", { exact: true }).locator("option")).toHaveText(["Sales Member", "Visitor", "Admin"]);
+  await page.getByLabel("Role", { exact: true }).selectOption("admin");
+  page.once("dialog", (d) => d.dismiss());
+  await page.getByRole("button", { name: "Send invitation" }).click();
+  const before = await (await request.get(`${API}/api/central/companies/lity/invitations`, { headers: await auth(request, ADMIN) })).json();
+  expect(before.some((p: { email: string }) => p.email === "b2-form-admin@example.com")).toBe(false); // declined: nothing sent
+  page.once("dialog", (d) => d.accept());
+  await page.getByRole("button", { name: "Send invitation" }).click();
+  await expect(page.getByTestId("members-notice")).toContainText("Invitation sent");
+  const after = await (await request.get(`${API}/api/central/companies/lity/invitations`, { headers: await auth(request, ADMIN) })).json();
+  expect(after.find((p: { email: string }) => p.email === "b2-form-admin@example.com")?.role).toBe("admin");
 });
 
 // --- Stage colours -----------------------------------------------------------------------------------------------

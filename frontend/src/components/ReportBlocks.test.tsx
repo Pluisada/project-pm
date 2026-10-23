@@ -53,4 +53,17 @@ describe("StageBars", () => {
     expect(screen.getByTestId("annual-totals")).toHaveTextContent("2027");
     expect(screen.getByText("2", { selector: "span" })).toBeInTheDocument();
   });
+
+  it("lets a long stage name and large amounts wrap instead of being clipped", () => {
+    const long = { column_id: 2, title: "Request for Information - Customer Qualification Extended", count: 12,
+      totals: { USD: 123456789 }, next_totals: { USD: 987654321 }, sum_totals: { USD: 1111111110 } };
+    render(<StageBars stages={[long]} years={[2026]} />);
+    expect(screen.getByTestId("stage-label").className).toMatch(/break-words/);
+    expect(screen.getByTestId("stage-label").className).toMatch(/min-w-0/);
+    const summary = screen.getByTestId("stage-summary");
+    expect(summary.className).toMatch(/break-words/);
+    expect(summary.className).toMatch(/col-span-2/); // full-width row below the bar on narrow screens
+    expect(summary).toHaveTextContent("2026");
+    expect(summary).toHaveTextContent("2027");
+  });
 });

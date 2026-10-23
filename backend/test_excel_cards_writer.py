@@ -34,6 +34,10 @@ def add_cards(path, cards, columns=()):
                         "VALUES (?, 1, ?, ?, ?, ?, ?)", (cid, title, cid, kind, NOW, NOW))
         for card in cards:
             fields = {"column_id": 1, "position": 10 + card["id"], "created_at": NOW, "updated_at": NOW, **card}
+            due = fields.pop("next_step_due", None)  # lives in card_bid_details, like the card screen's Next Action Date
+            if due is not None:
+                con.execute("INSERT INTO card_bid_details (card_id, next_step_due, revenue_currency, created_at, updated_at) "
+                            "VALUES (?, ?, 'BRL', ?, ?)", (fields["id"], due, NOW, NOW))
             con.execute(f"INSERT INTO cards ({', '.join(fields)}) VALUES ({', '.join('?' * len(fields))})",
                         list(fields.values()))
         con.commit()
@@ -78,7 +82,8 @@ def test_template_equals_workbook_with_zero_cards_and_has_instructions(rig):
     assert sheet(t.content).max_row == 1
     guide = sheet(t.content, INSTRUCTIONS_SHEET)
     text = " ".join(str(c.value) for row in guide.iter_rows() for c in row)
-    for needle in ("card_id", "deal_year", "deal_total_usd", "USD", "HIGH", "Trade show", "stage", "salesperson_email"):
+    assert "deal_total_usd is" not in text and "expected_close_date" not in text
+    for needle in ("card_id", "contact_email", "contact_phone", "next_action_date", "USD", "HIGH", "Trade show", "stage", "salesperson_email"):
         assert needle in text
 
 
@@ -92,6 +97,16 @@ def test_export_headers_in_canonical_order_even_without_cards():
     assert table(build_workbook([])) == [HEADERS]
 
 
+def test_template_headers_are_exactly_the_expected_ones():
+    assert HEADERS == [
+        "card_id", "title", "company", "contact", "contact_email", "contact_phone", "details", "deal_value_usd",
+        "deal_value_next_year_usd", "next_action_date", "probability_level", "product_line", "lead_source",
+        "salesperson_email", "stage",
+    ]
+    for derived_or_obsolete in ("deal_total_usd", "deal_year", "expected_close_date", "next_step_due"):
+        assert derived_or_obsolete not in HEADERS
+
+
 # --- content ----------------------------------------------------------------
 
 def test_export_fields_and_derived_total(rig):
@@ -99,7 +114,7 @@ def test_export_fields_and_derived_total(rig):
     add_cards(path, [
         {"id": 2, "title": "Full", "company": "Acme", "contact": "Jo", "details": "d", "deal_value": 1000.5,
          "deal_value_next_year": 250.25, "deal_year": 2024, "confidence_level": "HIGH",
-         "expected_close_date": "2026-03-04", "product_line": "Chargers", "lead_source": "Referral",
+         "contact_email": "jo@acme.com", "contact_phone": "+1 555 0100", "next_step_due": "2026-03-04", "product_line": "Chargers", "lead_source": "Referral",
          "salesperson_id": rig.e.admin},
         {"id": 3, "title": "Zero", "deal_value": 0, "deal_value_next_year": 0},
         {"id": 4, "title": "Next only", "deal_value": None, "deal_value_next_year": 75},
@@ -112,23 +127,23 @@ def test_export_fields_and_derived_total(rig):
     rows = by_title(admin_export(rig))
     full = rows["Full"]
     assert full["card_id"] == 2 and full["deal_value_usd"] == 1000.5 and full["deal_value_next_year_usd"] == 250.25
-    assert full["deal_total_usd"] == 1250.75 and full["deal_year"] == 2024
+    assert full["contact_email"] == "jo@acme.com" and full["contact_phone"] == "+1 555 0100"
+    assert "deal_total_usd" not in full and "deal_year" not in full and "expected_close_date" not in full
     assert full["probability_level"] == "HIGH" and full["product_line"] == "Chargers"
     assert full["lead_source"] == "Referral" and full["stage"] == "Lead"
     assert full["salesperson_email"] == "admin@example.com"
-    assert full["expected_close_date"].date() == date(2026, 3, 4)
-    assert rows["Zero"]["deal_value_usd"] == 0 and rows["Zero"]["deal_total_usd"] == 0
-    assert rows["Next only"]["deal_value_usd"] is None and rows["Next only"]["deal_total_usd"] == 75
+    assert full["next_action_date"].date() == date(2026, 3, 4)
+    assert rows["Zero"]["deal_value_usd"] == 0
+    assert rows["Next only"]["deal_value_usd"] is None and rows["Next only"]["deal_value_next_year_usd"] == 75
 
 
 def test_null_deal_value_is_empty_and_optional_fields_stay_empty(rig):
     add_cards(company_database_path("lity", rig.e.env), [{"id": 2, "title": "Bare"}])
     bare = by_title(admin_export(rig))["Bare"]
-    for header in ("company", "contact", "details", "deal_value_usd", "deal_total_usd", "probability_level",
-                   "expected_close_date", "product_line", "lead_source", "salesperson_email"):
+    for header in ("company", "contact", "contact_email", "contact_phone", "details", "deal_value_usd",
+                   "probability_level", "next_action_date", "product_line", "lead_source", "salesperson_email"):
         assert bare[header] is None
     assert bare["deal_value_next_year_usd"] == 0  # the stored value is exported as is
-    assert bare["deal_year"] == date.today().year
 
 
 def test_unresolved_salesperson_leaves_email_empty_and_stage_is_real_title(rig):
@@ -139,22 +154,21 @@ def test_unresolved_salesperson_leaves_email_empty_and_stage_is_real_title(rig):
     assert row["salesperson_email"] is None and row["stage"] == "Award"
 
 
-def test_total_and_numbers_are_values_not_formulas(rig):
+def test_numbers_are_values_not_formulas(rig):
     add_cards(company_database_path("lity", rig.e.env), [{"id": 2, "title": "N", "deal_value": 10, "deal_value_next_year": 5}])
     ws = sheet(admin_export(rig))
     col = {c.value: c.column for c in ws[1]}
     row = next(r for r in ws.iter_rows(min_row=2) if r[1].value == "N")
-    for header in ("deal_value_usd", "deal_value_next_year_usd", "deal_total_usd", "deal_year"):
+    for header in ("deal_value_usd", "deal_value_next_year_usd"):
         cell = row[col[header] - 1]
         assert cell.data_type == "n", header
-    assert row[col["deal_total_usd"] - 1].value == 15
 
 
 def test_no_bid_revenue_or_extra_columns(rig):
     data = admin_export(rig)
     assert table(data)[0] == HEADERS
     wb = load_workbook(io.BytesIO(data))
-    assert wb.sheetnames == [contract.SHEET_NAME, INSTRUCTIONS_SHEET]
+    assert wb.sheetnames == [contract.SHEET_NAME, INSTRUCTIONS_SHEET, "Valid values"]  # the lists of this company and board
     assert not any(h.startswith(("revenue_", "bid_")) for h in HEADERS)
 
 

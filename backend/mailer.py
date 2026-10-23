@@ -26,6 +26,11 @@ def mask_recipient(address: str) -> str:
     return f"{local[0]}***@{domain}"
 
 
+def is_configured() -> bool:
+    """Whether outgoing mail is set up at all (SMTP_HOST present)."""
+    return bool(os.getenv("SMTP_HOST"))
+
+
 def send_email(to: str, subject: str, body: str) -> None:
     """Send a plain-text email, or record that it was not sent.
 

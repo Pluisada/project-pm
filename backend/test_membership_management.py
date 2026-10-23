@@ -231,15 +231,18 @@ def test_company_admin_cannot_change_roles_and_cannot_promote(s):
 
 # --- admin invitations, privileges stay disabled ---------------------------
 
-def test_admin_cannot_invite_and_admin_invitations_stay_impossible(s):
+def test_admin_cannot_invite_and_only_the_super_admin_issues_admin_invitations(s):
     a = add(s, "a@example.com", role="admin")
     with pytest.raises(svc.NotAuthorized):
         svc.create_invitation(s.session, a, "n@example.com", "lity", "visitor")
     r = s.client.post("/api/central/companies/lity/invitations", headers=hdr(s, "a@example.com"),
                       json={"email": "n@example.com", "role": "visitor"})
     assert r.status_code == 403
+    with pytest.raises(svc.NotAuthorized):
+        svc.create_invitation(s.session, a, "n@example.com", "lity", "admin")  # a company Admin cannot issue an Admin invitation
+    assert svc.create_invitation(s.session, s.super_id, "n@example.com", "lity", "admin").role == "admin"
     with pytest.raises(svc.InvalidInput):
-        svc.create_invitation(s.session, s.super_id, "n@example.com", "lity", "admin")
+        svc.create_invitation(s.session, s.super_id, "n2@example.com", "lity", "super_admin")
 
 
 def test_admin_membership_grants_no_general_company_privilege(s):

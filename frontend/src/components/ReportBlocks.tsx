@@ -100,7 +100,7 @@ export const StageBars = ({ stages, years }: { stages: StageBar[]; years?: numbe
       {stages.map((stage) => (
         <li
           key={stage.column_id}
-          className="grid grid-cols-[110px_1fr] items-center gap-3 sm:grid-cols-[130px_1fr_minmax(140px,auto)]"
+          className="grid grid-cols-[minmax(96px,130px)_1fr] items-center gap-x-3 gap-y-1 md:grid-cols-[minmax(110px,160px)_minmax(80px,1fr)_minmax(14rem,auto)]"
           title={`${stage.title}: ${stage.count} lead${stage.count === 1 ? "" : "s"}, ${
             stage.sum_totals
               ? annualLines({ current: stage.totals, next: stage.next_totals, sum: stage.sum_totals }, years)
@@ -109,9 +109,9 @@ export const StageBars = ({ stages, years }: { stages: StageBar[]; years?: numbe
               : formatTotals(stage.totals).join(", ")
           }`}
         >
-          <span className="text-sm font-semibold text-[var(--navy-dark)]">{stage.title}</span>
-          <div className="flex items-center gap-2">
-            <div className="h-5 flex-1">
+          <span className="min-w-0 break-words text-sm font-semibold text-[var(--navy-dark)]" data-testid="stage-label">{stage.title}</span>
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="h-5 min-w-0 flex-1">
               {stage.count > 0 && (
                 <div
                   className="h-5 rounded-r bg-[var(--primary-blue)]"
@@ -123,7 +123,7 @@ export const StageBars = ({ stages, years }: { stages: StageBar[]; years?: numbe
               {stage.count}
             </span>
           </div>
-          <div className="col-span-2 text-xs text-[var(--gray-text)] sm:col-span-1">
+          <div className="col-span-2 min-w-0 break-words text-xs text-[var(--gray-text)] md:col-span-1" data-testid="stage-summary">
             {stage.sum_totals ? (
               <AnnualTotals measure={{ current: stage.totals, next: stage.next_totals, sum: stage.sum_totals }} years={years} compact />
             ) : (

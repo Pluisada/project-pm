@@ -90,10 +90,11 @@ def can_manage_members(role: str) -> bool:
 
 
 def can_grant_admin(role: str) -> bool:
-    """May an INVITATION carry the company Admin role. Nobody: ADMIN_ROLE is not in COMPANY_ROLES, so invitations never
-    issue or accept it. This does not cover change_membership_role, where the Super Admin may set ADMIN_ROLE on an
-    existing membership (ASSIGNABLE_ROLES)."""
-    return False
+    """May the person acting with `role` (the inviter's role, as company_access reports it) issue an INVITATION that
+    carries the company Admin role. The Super Admin only, like every other member operation. The Super Admin role
+    itself is never grantable: it is a flag on the identity user, not a membership role, and no invitation can carry it.
+    change_membership_role is the other way to set ADMIN_ROLE, on an existing membership (ASSIGNABLE_ROLES)."""
+    return is_super(role)
 
 
 def can_manage_products(role: str) -> bool:
@@ -222,8 +223,11 @@ def normalize_email(email: str) -> str:
     return value
 
 
+INVITABLE_ROLES = (*COMPANY_ROLES, ADMIN_ROLE)  # what an invitation may carry; never super_admin
+
+
 def _check_role(role: str) -> str:
-    if role not in COMPANY_ROLES:  # the global administrator is never a company role
+    if role not in INVITABLE_ROLES:  # the global administrator is never a company role
         raise InvalidInput("the company role is not valid")
     return role
 
@@ -346,14 +350,26 @@ def require_company_role(session: Session, user_id: int, slug: str, allowed: tup
 
 # --- invitations ---------------------------------------------------------
 
-def _may_invite(session: Session, user_id: int, company_slug: str) -> bool:
-    """Whether the user, read from the central database now, may issue invitations for this company.
+def _inviter_role(session: Session, user_id: int, company_slug: str) -> str | None:
+    """The role the user, read from the central database now, holds for this company if it lets them issue
+    invitations there, else None.
 
     Goes through company_access and can_manage_members, never a stored role string or a token claim. Today
     only the global administrator qualifies (can_manage_members); a company Admin may not invite.
     """
     access = company_access(session, user_id, company_slug)
-    return access is not None and can_manage_members(access.role)
+    return access.role if access is not None and can_manage_members(access.role) else None
+
+
+def _may_invite(session: Session, user_id: int, company_slug: str) -> bool:
+    return _inviter_role(session, user_id, company_slug) is not None
+
+
+def _may_issue(session: Session, user_id: int, company_slug: str, role: str) -> bool:
+    """Whether the user may issue (or still stand behind) an invitation carrying `role`: they must be allowed to
+    invite at all and, for the Admin role, to grant it."""
+    inviter = _inviter_role(session, user_id, company_slug)
+    return inviter is not None and (role != ADMIN_ROLE or can_grant_admin(inviter))
 
 
 def create_invitation(
@@ -369,7 +385,7 @@ def create_invitation(
     now = now or _now()
     with _Transaction(session):
         company = get_company(session, company_slug)
-        if not _may_invite(session, admin_user_id, company_slug):
+        if not _may_issue(session, admin_user_id, company_slug, role):
             raise NotAuthorized("administrator access is required")
         admin = session.get(IdentityUser, admin_user_id)
         if not company.is_active:
@@ -468,6 +484,67 @@ def revoke_invitation(session: Session, admin_user_id: int, invitation_id: int, 
         _audit(session, "invitation_revoked", actor=admin.id, invitation_id=invitation_id)
 
 
+@dataclass(frozen=True)
+class InvitationResend:
+    """A fresh token for a still-open invitation, not yet delivered. `token` is the raw value for the email only."""
+    invitation_id: int
+    email: str
+    token: str
+    token_id: int
+
+
+def begin_invitation_resend(
+    session: Session, actor_id: int, company_slug: str, invitation_id: int, *, now: datetime | None = None
+) -> InvitationResend:
+    """Phase 1 of a resend: add a second token to an open, unexpired invitation. Nothing is invalidated yet.
+
+    The invitation keeps its expiry and its single open row, so no duplicate invitation exists; the new token
+    expires with it. The caller delivers the email and then calls finish_invitation_resend, which drops the old
+    link on success and the new one on failure, so a failed send leaves the previous state intact.
+    """
+    now = now or _now()
+    with _Transaction(session):
+        company = get_company(session, company_slug)
+        invitation = session.get(IdentityInvitation, invitation_id)
+        if invitation is None or invitation.company_id != company.id:
+            raise NotFound("the invitation does not exist")
+        if not _may_issue(session, actor_id, company_slug, invitation.role):
+            raise NotAuthorized("administrator access is required")
+        if invitation.accepted_at is not None or invitation.revoked_at is not None or invitation.expires_at <= now:
+            raise Conflict("the invitation is no longer open")
+        if not company.is_active:
+            raise Conflict("the company is not active")
+        raw = secrets.token_urlsafe(32)
+        token = IdentityAuthToken(
+            token_hash=hash_token(raw), purpose="invitation", invitation_id=invitation.id,
+            created_at=now, expires_at=invitation.expires_at,
+        )
+        session.add(token)
+        session.flush()
+        return InvitationResend(invitation.id, invitation.email, raw, token.id)
+
+
+def finish_invitation_resend(
+    session: Session, actor_id: int, resend: InvitationResend, *, delivered: bool, now: datetime | None = None
+) -> None:
+    """Phase 2: delivered -> every other open token of the invitation is invalidated (only the new link works);
+    not delivered -> the new token is invalidated and the previous link keeps working."""
+    now = now or _now()
+    with _Transaction(session):
+        keep = IdentityAuthToken.id == resend.token_id
+        if delivered:
+            session.execute(update(IdentityAuthToken).where(
+                IdentityAuthToken.invitation_id == resend.invitation_id, ~keep,
+                IdentityAuthToken.consumed_at.is_(None), IdentityAuthToken.invalidated_at.is_(None),
+            ).values(invalidated_at=now))
+        else:
+            session.execute(update(IdentityAuthToken).where(
+                keep, IdentityAuthToken.consumed_at.is_(None), IdentityAuthToken.invalidated_at.is_(None),
+            ).values(invalidated_at=now))
+        _audit(session, "invitation_resent" if delivered else "invitation_resend_failed",
+               actor=actor_id, invitation_id=resend.invitation_id)
+
+
 def revoke_expired_invitations(session: Session, *, now: datetime | None = None) -> int:
     """Close every open invitation past its expiry (housekeeping; acceptance rejects them regardless)."""
     now = now or _now()
@@ -524,12 +601,13 @@ def claim_invitation(session: Session, raw_token: str, *, user_id: int | None, n
     if invitation is None or company is None or company.slug not in COMPANY_SLUGS:
         raise InvitationInvalid()
     # Re-checked now, from the central database: an invitation is only as good as its inviter's current
-    # authority, and it never grants a role outside COMPANY_ROLES (the schema also stores the reserved admin).
+    # authority, and it never grants a role outside INVITABLE_ROLES (never super_admin); an Admin invitation also needs
+    # its inviter to still be allowed to grant Admin.
     if (
         invitation.accepted_at is not None or invitation.revoked_at is not None
         or invitation.expires_at <= now or not company.is_active
-        or invitation.role not in COMPANY_ROLES or can_grant_admin(invitation.role)
-        or not _may_invite(session, invitation.invited_by_user_id, company.slug)
+        or invitation.role not in INVITABLE_ROLES
+        or not _may_issue(session, invitation.invited_by_user_id, company.slug, invitation.role)
     ):
         raise InvitationInvalid()
     if user_id is not None:
@@ -546,8 +624,8 @@ def claim_invitation(session: Session, raw_token: str, *, user_id: int | None, n
         raise InvitationInvalid()
     membership = session.scalar(select(IdentityMembership).where(
         IdentityMembership.user_id == user.id, IdentityMembership.company_id == company.id))
-    if membership is not None and (membership.is_active or membership.role not in COMPANY_ROLES):
-        raise InvitationInvalid()  # no second active membership, no reactivated admin one
+    if membership is not None and membership.is_active:
+        raise InvitationInvalid()  # no second active membership
     closed = session.execute(update(IdentityInvitation).where(
         IdentityInvitation.id == invitation.id,
         IdentityInvitation.accepted_at.is_(None), IdentityInvitation.revoked_at.is_(None),

@@ -166,6 +166,28 @@ describe("central card create/edit", () => {
     expect(put.body).toEqual({ title: "Mine 2", contact: null });
   });
 
+  it("lets an administrator reassign an existing card to a Sales Member, and a member sees no such control", async () => {
+    const people = [{ id: 11, username: "ana@example.com" }, { id: 12, username: "bo@example.com" }];
+    const own = card(100, 30, "Theirs", 11);
+    const calls = backend({ me: meOf("acme", { canAssignSalesperson: true, canEditAnyCard: true }), cards: [own], people,
+      write: (c) => json(200, { ...own, ...(c.body as object) }) });
+    const view = render(<CentralBoardView companySlug="acme" boardId={3} />);
+    await cardAction("Theirs", "Edit");
+    const select = await screen.findByLabelText("Salesperson");
+    await waitFor(() => expect(within(select).getAllByRole("option").length).toBeGreaterThanOrEqual(2));
+    expect(select).toHaveValue("11"); // the current owner is preselected
+    await userEvent.selectOptions(select, "12");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(writes(calls)).toHaveLength(1));
+    expect(writes(calls)[0].body).toEqual({ salesperson_id: 12 });
+    view.unmount();
+
+    backend({ cards: [card(101, 30, "Mine", 7)] });
+    render(<CentralBoardView companySlug="acme" boardId={3} />);
+    await cardAction("Mine", "Edit");
+    expect(screen.queryByLabelText("Salesperson")).toBeNull();
+  });
+
   it("edits the contact email and telephone: prefilled, only changes sent, a cleared one as null", async () => {
     const own = card(100, 30, "Mine", 7, { contact_email: "ana@example.com", contact_phone: "+55 11 91234-5678" } as never);
     const calls = backend({ cards: [own], write: (c) => json(200, { ...own, ...(c.body as object) }) });

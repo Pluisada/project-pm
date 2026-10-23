@@ -209,19 +209,25 @@ def test_member_cannot_assign_or_reassign(rig):
     assert rig.sql("SELECT salesperson_id FROM cards WHERE id = 1") == [(uid,)]
 
 
-def test_admin_assignment_needs_central_eligibility_and_local_row(rig):
+def test_admin_assignment_needs_central_eligibility_and_creates_the_local_row(rig):
     token = admin(rig)
     uid, _ = member(rig)
     other_company, _ = member(rig, "v@example.com", slug="valor-log")
-    # eligible centrally but no local row yet: refused by card_rules, nothing created by this write
-    assert rig.call("put", "/cards/1", token, json={"salesperson_id": uid}).status_code == 422
     # not a member of this company: refused on central eligibility even if a local row exists
     rig.sql("INSERT INTO users (id, username, created_at, updated_at) VALUES (?, 'x', ?, ?)", (other_company, NOW, NOW))
     assert rig.call("put", "/cards/1", token, json={"salesperson_id": other_company}).status_code == 422
-    rig.sql("INSERT INTO users (id, username, created_at, updated_at) VALUES (?, 'mm', ?, ?)", (uid, NOW, NOW))
+    # eligible centrally but never wrote here: the local reference is created, as on card creation
+    assert rig.sql("SELECT COUNT(*) FROM users WHERE id = ?", (uid,)) == [(0,)]
     r = rig.call("put", "/cards/1", token, json={"salesperson_id": uid})
     assert r.status_code == 200 and r.json()["salesperson_id"] == uid
-    assert rig.sql("SELECT action FROM audit_events WHERE card_id = 1") == [("assign",)]
+    assert r.json()["salesperson_name"] == rig.sql("SELECT username FROM users WHERE id = ?", (uid,))[0][0]
+    assert rig.sql("SELECT COUNT(*) FROM users WHERE id = ?", (uid,)) == [(1,)]
+    # reassigning from one person to another answers with the new name, not the previous owner's
+    uid2, _ = member(rig, "m2@example.com")
+    r = rig.call("put", "/cards/1", token, json={"salesperson_id": uid2})
+    assert r.status_code == 200 and r.json()["salesperson_id"] == uid2
+    assert r.json()["salesperson_name"] == rig.sql("SELECT username FROM users WHERE id = ?", (uid2,))[0][0]
+    assert rig.sql("SELECT action FROM audit_events WHERE card_id = 1") == [("assign",), ("assign",)]  # one per reassignment
     assert rig.sql("SELECT COUNT(*) FROM card_edit_history") == [(0,)]  # admin edits are not logged
 
 

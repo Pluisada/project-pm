@@ -17,7 +17,7 @@ from commercial_excel_reader import (
     read_commercial_excel,
 )
 
-HEADERS = list(contract.HEADERS)
+HEADERS = [spec.header for spec in contract.COLUMNS]  # every accepted column, legacy ones included
 
 
 def make(rows, headers=None, sheet="Cards", extra_sheets=(), merge=None):
@@ -57,14 +57,40 @@ def one(result):
 
 # --- contract ---------------------------------------------------------------
 
-def test_contract_is_the_canonical_fifteen_columns_without_forbidden_ones():
+def test_contract_template_headers_are_exactly_the_expected_ones_without_forbidden_ones():
     assert contract.HEADERS == (
-        "card_id", "title", "company", "contact", "details", "deal_value_usd", "deal_value_next_year_usd",
-        "deal_total_usd", "deal_year", "probability_level", "expected_close_date", "product_line", "lead_source",
+        "card_id", "title", "company", "contact", "contact_email", "contact_phone", "details", "deal_value_usd",
+        "deal_value_next_year_usd", "next_action_date", "probability_level", "product_line", "lead_source",
         "salesperson_email", "stage",
     )
-    assert not any(contract.is_forbidden_header(h) for h in contract.HEADERS)
-    assert len(set(contract.HEADERS)) == len(contract.HEADERS)
+    # Derived or obsolete inputs are not in the template, but older workbooks carrying them are still read.
+    for legacy in ("deal_total_usd", "deal_year", "expected_close_date"):
+        assert legacy not in contract.HEADERS and legacy in contract.SPECS_BY_KEY
+    assert not any(contract.is_forbidden_header(h) for h in HEADERS)
+    assert contract.is_forbidden_header("next_step_due")  # the Next Action Date column is next_action_date
+    assert len(set(HEADERS)) == len(HEADERS)
+
+
+def test_template_workbook_without_legacy_columns_reads_cleanly():
+    result = read(make([[None, "Lead"] + [None] * (len(contract.HEADERS) - 2)], headers=list(contract.HEADERS)))
+    assert result.file_errors == () and not any(w.column in ("deal_total_usd", "deal_year", "expected_close_date")
+                                                for w in result.file_warnings)
+
+
+def test_contact_fields_are_separate_and_validated_like_the_card_screen():
+    row = one(read(make([good(contact="Ana", contact_email=" ana@acme.com ", contact_phone="+55 (11) 99999-0000")])))
+    rec = row.record
+    assert (rec.contact, rec.contact_email, rec.contact_phone) == ("Ana", "ana@acme.com", "+55 (11) 99999-0000")
+    assert codes(read(make([good(contact_email="nope")]))) == ["invalid_email"]
+    assert codes(read(make([good(contact_phone="call me")]))) == ["invalid_phone"]
+
+
+def test_next_action_date_is_read_into_the_next_step_due_field():
+    assert one(read(make([good(next_action_date="2026-12-31")]))).record.next_step_due == date(2026, 12, 31)
+    assert one(read(make([good(next_action_date=datetime(2026, 5, 1))]))).record.next_step_due == date(2026, 5, 1)
+    for bad in ("2026-02-30", "31/12/2026", "tomorrow"):
+        assert codes(read(make([good(next_action_date=bad)]))) == ["invalid_date"], bad
+    assert one(read(make([good(expected_close_date="2026-12-31")]))).record.next_step_due is None
 
 
 # --- headers ----------------------------------------------------------------

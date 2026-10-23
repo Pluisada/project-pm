@@ -1604,9 +1604,9 @@ export async function centralJoinInvitation(token: string, email: string, passwo
   await publicPost("/api/central/invitations/join", { token, email, password });
 }
 
-/** Roles a Super Admin may invite to. An invitation never carries the company Admin role (the backend refuses it):
- *  the Super Admin invites, then promotes the member with changeCompanyMemberRole. */
-export type InviteRole = "sales_member" | "visitor";
+/** Roles a Super Admin may invite to. "admin" is the company Admin; the Super Admin role can never be invited (it is
+ *  created only with identity_admin_cli.py) and the backend refuses it. */
+export type InviteRole = "sales_member" | "visitor" | "admin";
 
 export interface CompanyMember {
   user_id: number;
@@ -1632,6 +1632,11 @@ export async function inviteCompanyMember(companySlug: string, email: string, ro
   });
 }
 
+/** Delivers a new link for a still-open invitation. 503: email not configured; 502: the send failed (the old link still works). */
+export async function resendCompanyInvitation(companySlug: string, invitationId: number): Promise<void> {
+  await apiCall(`/api/central/companies/${encodeURIComponent(companySlug)}/invitations/${invitationId}/resend`, { method: "POST" });
+}
+
 export async function listCompanyMembers(companySlug: string, signal?: AbortSignal): Promise<CompanyMember[]> {
   return apiCall<CompanyMember[]>(`/api/central/companies/${encodeURIComponent(companySlug)}/members`, { signal });
 }
@@ -1640,8 +1645,8 @@ export async function listCompanyInvitations(companySlug: string, signal?: Abort
   return apiCall<PendingInvitation[]>(`/api/central/companies/${encodeURIComponent(companySlug)}/invitations`, { signal });
 }
 
-/** Roles the Super Admin may set on an existing member: the invitable ones plus the company Admin. */
-export type MemberRole = InviteRole | "admin";
+/** Roles the Super Admin may set on an existing member: the same three as an invitation. */
+export type MemberRole = InviteRole;
 
 export async function changeCompanyMemberRole(companySlug: string, userId: number, role: MemberRole): Promise<void> {
   await apiCall(`/api/central/companies/${encodeURIComponent(companySlug)}/members/${userId}/role`, {

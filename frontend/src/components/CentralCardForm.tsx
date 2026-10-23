@@ -72,7 +72,7 @@ function initialValues(target: CardFormTarget): Values {
     leadSource: c.lead_source ?? "",
     productLine: c.product_line ?? "",
     confidenceLevel: c.confidence_level ?? "",
-    salespersonId: "",
+    salespersonId: c.salesperson_id != null ? String(c.salesperson_id) : "",
     lossReason: "",
   };
 }
@@ -104,6 +104,8 @@ export function buildCardUpdates(card: CardResponse, v: Values): CardUpdatePaylo
   if (deal !== (card.deal_value ?? null)) out.deal_value = deal;
   const nextYear = v.dealValueNextYear === "" ? 0 : Number(v.dealValueNextYear);
   if (nextYear !== (card.deal_value_next_year ?? 0)) out.deal_value_next_year = nextYear;
+  // Only changed when someone picked another person (the select is shown to the roles that may assign; the backend decides).
+  if (v.salespersonId !== "" && Number(v.salespersonId) !== card.salesperson_id) out.salesperson_id = Number(v.salespersonId);
   return out;
 }
 
@@ -296,11 +298,14 @@ export const CentralCardForm = ({ companySlug, boardId, target, canAssign = fals
         <label className={labelClass}>Details
           <textarea value={values.details} onChange={set("details")} maxLength={5000} rows={3} disabled={saving} className={inputClass} />
         </label>
-        {!edit && canAssign && (
+        {canAssign && (
           <label className={labelClass}>Salesperson
             <select value={values.salespersonId} onChange={set("salespersonId")} disabled={saving} className={inputClass}>
-              <option value="">Choose a salesperson</option>
+              <option value="">{edit ? "Not assigned" : "Choose a salesperson"}</option>
               {(options?.salespeople ?? []).map((p) => <option key={p.id} value={p.id}>{p.username}</option>)}
+              {edit && target.card.salesperson_id != null && !(options?.salespeople ?? []).some((p) => p.id === target.card.salesperson_id) && (
+                <option value={target.card.salesperson_id}>{target.card.salesperson_name ?? `User ${target.card.salesperson_id}`} (current)</option>
+              )}
             </select>
           </label>
         )}

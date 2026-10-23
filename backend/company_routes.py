@@ -75,7 +75,7 @@ from routes import (
 from product_catalog import ProductError, card_count, catalog_names, create_product, delete_product, has_catalog, list_products, rename_product
 from cards_excel_import import ImportRefused, apply_plan, build_plan, issue_dict, plan_body
 from commercial_excel_reader import read_commercial_excel
-from excel_cards_writer import XLSX_MEDIA_TYPE, build_workbook, export_rows
+from excel_cards_writer import XLSX_MEDIA_TYPE, build_workbook, export_rows, valid_values
 from excel_import_ledger import has_ledger, ledger_compatible
 from identity_models import IdentityUser
 from import_routes import (
@@ -410,11 +410,15 @@ def build_company_router(
         db: Session = Depends(get_writer_db),
     ):
         ensure_reviews(db)
-        begin_write(db)  # owner, permissions, history and the undo snapshot are all read under the write lock
-        card = find_card(db, board_id, card_id)
         updates = card_update.model_dump(exclude_unset=True)
         expected_version = updates.pop("expected_version", None)
         new_owner = updates.get("salesperson_id")
+        if context.can_manage_cards and new_owner is not None and new_owner in assignable_user_ids(identity, context.company_slug):
+            # As on create: an eligible person who never wrote in this company has no local reference yet, and card_rules
+            # needs it. Done before the write lock (it commits); an ineligible id is refused below.
+            sync_local_references(lambda: sync_company_user(identity, db, new_owner, context.company_slug))
+        begin_write(db)  # owner, permissions, history and the undo snapshot are all read under the write lock
+        card = find_card(db, board_id, card_id)
         if context.can_manage_cards:
             check_card_version(db, card, expected_version)  # the card-managing roles have no permission check to wait for
         if context.can_manage_cards and new_owner is not None and new_owner != card.salesperson_id:
@@ -432,6 +436,7 @@ def build_company_router(
             raise HTTPException(status_code=422, detail=str(exc))
         record_undo(db, context, board_id, undo_description, [undo_step])
         db.flush()
+        db.expire(card, ["salesperson"])  # a reassignment must not answer with the previous owner's name
         # Built before the commit, from the version this write produced: a later writer cannot slip in between.
         response = card_with_version(card, card_reviews.card_version(db, card.id))
         db.commit()
@@ -692,6 +697,12 @@ def build_company_router(
             headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"},
         )
 
+    def excel_valid_values(db: Session, identity: Session, board_id: int, slug: str) -> dict:
+        """Read only: nothing is synced or created for the listing."""
+        ids = assignable_user_ids(identity, slug)
+        emails = [u.email for u in identity.query(IdentityUser).filter(IdentityUser.id.in_(ids)).all()] if ids else []
+        return valid_values(db, board_id, emails)
+
     @router.get("/boards/{board_id}/excel/export")
     def export_company_cards(
         board_id: int,
@@ -708,12 +719,21 @@ def build_company_router(
         if ids:
             emails = {u.id: u.email for u in identity.query(IdentityUser).filter(IdentityUser.id.in_(ids)).all()}
         filename = f"cards-{context.company_slug}-board-{board_id}-{date.today():%Y%m%d}.xlsx"
-        return excel_response(build_workbook(export_rows(db, board_id, emails)), filename)
+        values = excel_valid_values(db, identity, board_id, context.company_slug)
+        return excel_response(build_workbook(export_rows(db, board_id, emails), values), filename)
 
     @router.get("/boards/{board_id}/excel/template")
-    def download_cards_template(board_id: int, context: CompanyContext = Depends(get_excel_context)):
-        """The empty import template (same workbook, zero cards). Needs no company data, so no database is opened."""
-        return excel_response(build_workbook([]), "cards-import-template.xlsx")
+    def download_cards_template(
+        board_id: int,
+        context: CompanyContext = Depends(get_excel_context),
+        db: Session = Depends(get_company_db),
+        identity: Session = Depends(identity_db),
+    ):
+        """The empty import template (same workbook, zero cards) plus a "Valid values" sheet with the stages of this
+        board, the products of this company and the people it can assign, so the references can be copied, not guessed."""
+        find_board(db, board_id)
+        values = excel_valid_values(db, identity, board_id, context.company_slug)
+        return excel_response(build_workbook([], values), "cards-import-template.xlsx")
 
     @router.get("/boards/{board_id}/report", response_model=BoardReport)
     def get_company_board_report(

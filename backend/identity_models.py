@@ -40,11 +40,11 @@ from sqlalchemy.orm import declarative_base
 
 IdentityBase = declarative_base()
 
-# Roles the service layer may assign today.
+# The ordinary company roles.
 COMPANY_ROLES = ("sales_member", "visitor")
-# Roles the v2 schema stores in memberships and invitations. "admin" is reserved for the future company-scoped
-# Admin: the CHECK constraints accept it, but COMPANY_ROLES (what the service validates) does not, so nothing can
-# create such a membership or invitation yet and it grants no privilege.
+# Roles the v2 schema stores in memberships and invitations. "admin" is the company-scoped Admin: the Super Admin
+# can set it on a membership (identity_service.ASSIGNABLE_ROLES) or invite with it (INVITABLE_ROLES). "super_admin" is
+# never stored here: it is the is_global_admin flag of the user.
 SCHEMA_ROLES = (*COMPANY_ROLES, "admin")
 TOKEN_PURPOSES = ("invitation", "password_reset")
 

@@ -62,17 +62,21 @@ from product_catalog import catalog_names
 
 FINGERPRINT_VERSION = 2  # 2: any import is guarded; informational columns left out; ledger rows of v1 do not match
 CARD_LOOKUP_CHUNK = 500
+VALUES_HINT = ' Copy one from the "Valid values" sheet of the template downloaded from this company and board, or leave the cell empty.'
 
 # (record field, Card attribute); `stage` is handled apart.
 FIELD_MAP = (
     ("title", "title"),
     ("company", "company"),
     ("contact", "contact"),
+    ("contact_email", "contact_email"),
+    ("contact_phone", "contact_phone"),
     ("details", "details"),
     ("deal_value_usd", "deal_value"),
     ("deal_value_next_year_usd", "deal_value_next_year"),
     ("confidence_level", "confidence_level"),
     ("expected_close_date", "expected_close_date"),
+    ("next_step_due", "next_step_due"),
     ("product_line", "product_line"),
     ("lead_source", "lead_source"),
     ("salesperson_email", "salesperson_id"),
@@ -190,9 +194,11 @@ def _canonical_record(record) -> dict:
     return {
         "card_id": record.card_id,
         "title": record.title, "company": record.company, "contact": record.contact, "details": record.details,
+        "contact_email": record.contact_email, "contact_phone": record.contact_phone,
         "deal_value_usd": None if record.deal_value_usd is None else str(record.deal_value_usd),
         "deal_value_next_year_usd": str(record.deal_value_next_year_usd),
         "confidence_level": record.confidence_level,
+        "next_step_due": None if record.next_step_due is None else record.next_step_due.isoformat(),
         "expected_close_date": None if record.expected_close_date is None else record.expected_close_date.isoformat(),
         "product_line": text(record.product_line), "lead_source": record.lead_source,
         "salesperson_email": record.salesperson_email, "stage": text(record.stage),
@@ -284,7 +290,7 @@ def _classify(
                 target = matches[0]
             else:
                 code = "unknown_stage" if not matches else "ambiguous_stage"
-                plan.errors.append(_row_issue(number, "stage", code, "Stage is not a column title of this board" if not matches
+                plan.errors.append(_row_issue(number, "stage", code, "Stage is not a column title of this board." + VALUES_HINT if not matches
                                               else "Several columns of this board have this title"))
         elif card is None and (rec.card_id is None or create_unmatched):
             if columns:
@@ -308,13 +314,13 @@ def _classify(
             if name is None and card is not None and (card.product_line or "").casefold() == rec.product_line.casefold():
                 name = card.product_line  # a legacy product the card already carries stays as it is
             if name is None:
-                plan.errors.append(_row_issue(number, "product_line", "unknown_product_line", "Product line is not in this company's catalog"))
+                plan.errors.append(_row_issue(number, "product_line", "unknown_product_line", "Product line is not in this company's catalog." + VALUES_HINT))
             resolved["product_line"] = name
         if rec.salesperson_email is not None and "salesperson_email" in present:
             user_id = people.get(rec.salesperson_email)
             if user_id is None or user_id not in local_users:
                 plan.errors.append(_row_issue(number, "salesperson_email", "salesperson_unavailable",
-                                              "No salesperson with this e-mail can be assigned in this company"))
+                                              "No salesperson with this e-mail can be assigned in this company." + VALUES_HINT))
             resolved["salesperson_id"] = user_id
 
         if plan.errors:
