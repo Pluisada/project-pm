@@ -112,8 +112,8 @@ test("the details view groups general, Bid and source data and keeps their meani
   await expect(dialog.getByText("$987,654.32")).toHaveCount(0);
   await expect(dialog.getByText(/Revenue/)).toHaveCount(0);
 
-  // Three different dates: expected close, next action due, production start.
-  await expect(dialog.getByText("Jan 31, 2099")).toBeVisible();
+  // Next action date and production start; the stored closing date is no longer shown.
+  await expect(dialog.getByText("Jan 31, 2099")).toHaveCount(0);
   await expect(dialog.getByText("Jan 1, 2020")).toBeVisible();
   await expect(dialog.getByText("Mar 15, 2027")).toBeVisible();
 

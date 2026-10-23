@@ -5,6 +5,12 @@
  */
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
+/** Edit and Delete live in the card's details dialog: open it, then use the action. */
+async function cardAction(page: Page, title: string, action: "Edit" | "Delete") {
+  await page.locator(`[data-testid^="central-card-"][data-title="${title}"]`).getByRole("button", { name: `Open details for ${title}` }).click();
+  await page.getByRole("dialog").getByRole("button", { name: action, exact: true }).click();
+}
+
 const API = process.env.PM_E2E_CENTRAL_API_URL;
 if (!API) throw new Error("PM_E2E_CENTRAL_API_URL is not set - run through playwright.central.config.ts");
 const PASSWORD = "Str0ng!Passw0rd"; // the disposable seed's test password
@@ -126,8 +132,8 @@ test("Undo, Manage boards and columns and the AI Assistant are in the top naviga
   await expect(header.getByRole("button", { name: "AI Assistant" })).toBeVisible();
 
   // An edit made here makes Undo available, and it appears in the navigation, not above the columns.
-  await page.getByRole("button", { name: "Edit E2E Review Back" }).click();
-  await page.getByLabel("Details").fill("edited from the browser");
+  await cardAction(page, "E2E Review Back", "Edit");
+  await page.getByRole("dialog").locator("textarea").first().fill("edited from the browser");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(header.getByTestId("undo-button")).toBeVisible();
   await expect(page.getByTestId("central-board").getByTestId("undo-button")).toHaveCount(0);

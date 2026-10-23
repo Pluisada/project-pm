@@ -5,6 +5,12 @@
  */
 import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 
+/** Edit and Delete live in the card's details dialog: open it, then use the action. */
+async function cardAction(page: Page, title: string, action: "Edit" | "Delete") {
+  await page.locator(`[data-testid^="central-card-"][data-title="${title}"]`).getByRole("button", { name: `Open details for ${title}` }).click();
+  await page.getByRole("dialog").getByRole("button", { name: action, exact: true }).click();
+}
+
 const API = process.env.PM_E2E_CENTRAL_API_URL;
 if (!API) throw new Error("PM_E2E_CENTRAL_API_URL is not set - run through playwright.central.config.ts");
 const PASSWORD = "Str0ng!Passw0rd"; // the disposable seed's test password
@@ -65,7 +71,7 @@ async function dragTo(page: Page, handle: Locator, target: Locator) {
 test("edits a card and saves it with the version it was opened on", async ({ page, request }) => {
   await openBoard(page);
   const before = await cardNamed(request, "E2E Edit");
-  await page.getByRole("button", { name: "Edit E2E Edit" }).click();
+  await cardAction(page, "E2E Edit", "Edit");
   await page.getByLabel("Title").fill("E2E Edit saved");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -80,7 +86,7 @@ test("a stale edit is refused with the conflict message and keeps what was typed
   await expect(cardEl(page, "E2E Stale Edit")).toBeVisible();
   await someoneElseRetitles(request, "E2E Stale Edit", "E2E Stale Edit by someone else");
   const conflict = page.waitForResponse((r) => r.request().method() === "PUT" && r.url().includes("/cards/"));
-  await page.getByRole("button", { name: "Edit E2E Stale Edit" }).click();
+  await cardAction(page, "E2E Stale Edit", "Edit");
   await page.getByLabel("Title").fill("E2E Stale Edit mine");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   const response = await conflict;
@@ -114,7 +120,7 @@ test("a stale delete keeps the card on the board and on the server", async ({ pa
   await expect(cardEl(page, "E2E Stale Delete")).toBeVisible();
   await someoneElseRetitles(request, "E2E Stale Delete", "E2E Stale Delete by someone else");
   const conflict = page.waitForResponse((r) => r.request().method() === "DELETE");
-  await page.getByRole("button", { name: "Delete E2E Stale Delete" }).click();
+  await cardAction(page, "E2E Stale Delete", "Delete");
   await page.getByRole("button", { name: "Confirm delete" }).click();
   expect((await conflict).status()).toBe(409);
   await expect(page.getByTestId("delete-notice")).toContainText("was not deleted");
@@ -124,7 +130,7 @@ test("a stale delete keeps the card on the board and on the server", async ({ pa
 
 test("an Undo conflict is reported and does not claim success", async ({ page, request }) => {
   await openBoard(page);
-  await page.getByRole("button", { name: "Edit E2E Undo Conflict" }).click();
+  await cardAction(page, "E2E Undo Conflict", "Edit");
   await page.getByLabel("Title").fill("E2E Undo Conflict edited");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(cardEl(page, "E2E Undo Conflict edited")).toBeVisible();

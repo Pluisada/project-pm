@@ -22,6 +22,7 @@ PASSWORD = "Str0ng!Passw0rd"  # a test value for this disposable environment onl
 ADMIN_EMAIL = "e2e-admin@example.com"
 OTHER_EMAIL = "e2e-other@example.com"
 MEMBER_EMAIL = "e2e-member@example.com"
+PROMOTE_EMAIL = "e2e-promote@example.com"  # a joined Sales Member that owns nothing: the Admin promotion spec changes only this one
 NOW = "2026-01-01 00:00:00"
 CARDS = ["E2E Edit", "E2E Stale Edit", "E2E Stale Move", "E2E Stale Delete", "E2E Undo Conflict", "E2E Review Card", "E2E Review Back"]
 
@@ -50,6 +51,8 @@ def main(directory: Path) -> None:
     svc.change_membership_role(session, admin_id, "lity", other_id, "admin")  # a second person who may edit any card
     member_token = svc.create_invitation(session, admin_id, MEMBER_EMAIL, "lity", "sales_member").token
     member_id = ca.accept_invitation_with_password(session, member_token, PASSWORD).user_id  # a Sales Member of Lity
+    promote_token = svc.create_invitation(session, admin_id, PROMOTE_EMAIL, "lity", "sales_member").token
+    ca.accept_invitation_with_password(session, promote_token, PASSWORD)
     session.close()
     engine.dispose()
 

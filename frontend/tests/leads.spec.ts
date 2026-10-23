@@ -25,7 +25,7 @@ test("edits a lead's fields and shows them on the card", async ({ page }) => {
   await dialog.getByLabel("Contact").fill("Test Buyer");
   await dialog.getByLabel(/Deal value - current year/).fill("75000");
   await expect(dialog.getByLabel("Currency")).toHaveCount(0);   // Deal Value is always USD
-  await dialog.getByLabel("Expected close date").fill("2027-02-28");
+  await expect(dialog.getByLabel(/close date/i)).toHaveCount(0);   // the Closing Date field no longer exists
   await dialog.getByLabel("Lead source").selectOption("Trade show");
   await dialog.getByLabel("Product line").selectOption("Chargers");
   await dialog.getByLabel("Assigned salesperson").selectOption({ label: "e2e_admin" });
@@ -36,18 +36,21 @@ test("edits a lead's fields and shows them on the card", async ({ page }) => {
   await expect(card.getByText(/75,000/)).toBeVisible();
   await expect(card.getByText("e2e_admin")).toBeVisible();
 
-  // Contact, source, product line and the close date live in the details view.
+  // Contact, source and product line live in the details view.
   await card.getByRole("button", { name: `Open details for ${title}` }).click();
   const details = page.getByRole("dialog");
   await expect(details.getByText("Test Buyer")).toBeVisible();
   await expect(details.getByText("Trade show")).toBeVisible();
   await expect(details.getByText("Chargers")).toBeVisible();
-  await expect(details.getByText("Expected close date")).toBeVisible();
+  await expect(details.getByText(/close date/i)).toHaveCount(0);
 });
 
 test("a deal value needs no currency: there is no currency selector and it saves in USD", async ({ page }) => {
   await page.goto("/");
-  const card = page.locator('[data-testid^="card-"]').first();
+  const first = page.locator('[data-testid^="card-"]').first();
+  // The column is ordered by Deal Value, so the card may move once it has one: follow it by title.
+  const title = (await first.getAttribute("data-title")) ?? "";
+  const card = page.locator(`[data-testid^="card-"][data-title="${title}"]`);
   await card.getByRole("button", { name: /^open details for/i }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Edit", exact: true }).click();
   const dialog = page.getByRole("dialog");
@@ -95,7 +98,33 @@ test("undoes the last move from the top bar", async ({ page }) => {
   await expect(undo).toHaveAttribute("title", `Remove new card "${title}"`);
 
   await undo.click();
-  await expect(page.getByText(`Undone: Remove new card "${title}"`)).toBeVisible();
+  // A successful undo shows no banner under the title; the card simply disappears.
+  await expect(page.getByText(/^Undone/)).toHaveCount(0);
   await expect(card).toHaveCount(0);
   await expect(undo).toBeDisabled();
+});
+
+test("a column lists its cards by Deal Value, highest first, and a card without a value last", async ({ page }) => {
+  await page.goto("/");
+  const firstColumn = page.locator('[data-testid^="column-"]').first();
+  const stamp = Date.now();
+  const titles = { none: `Order none ${stamp}`, small: `Order small ${stamp}`, big: `Order big ${stamp}` };
+  for (const title of [titles.none, titles.small, titles.big]) {
+    await firstColumn.getByRole("button", { name: /add a card/i }).click();
+    await firstColumn.getByPlaceholder("Card title").fill(title);
+    await firstColumn.getByRole("button", { name: /add card/i }).click();
+    await expect(firstColumn.locator(`[data-testid^="card-"][data-title="${title}"]`)).toBeVisible();
+  }
+  for (const [title, value] of [[titles.small, "900"], [titles.big, "85000"]]) {
+    const dialog = await openCardEditor(page, title);
+    await dialog.getByLabel(/Deal value - current year/).fill(value);
+    await dialog.getByRole("button", { name: "Save lead" }).click();
+    await expect(dialog).toBeHidden();
+  }
+  const order = async () => (await firstColumn.locator('[data-testid^="card-"]').evaluateAll((els) => els.map((e) => e.getAttribute("data-title"))))
+    .filter((t) => t?.endsWith(String(stamp)));
+  const expected = [titles.big, titles.small, titles.none];
+  await expect.poll(order).toEqual(expected);
+  await page.reload();
+  await expect.poll(order).toEqual(expected); // persisted values give the same order after a reload
 });

@@ -24,7 +24,7 @@ test("the board page holds only the board for the administrator", async ({ page 
   await expect(page.getByText("Users of Lity")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Export Current Database" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Download Import Template" })).toHaveCount(0);
-  await expect(sections(page).getByRole("button")).toHaveText(["Board", "Users", "Database"]);
+  await expect(sections(page).getByRole("button")).toHaveText(["Board", "Reports", "KPIs", "Users", "Products", "Database"]);
   await expect(page.getByRole("button", { name: "Switch company" })).toBeVisible();
 });
 
@@ -53,10 +53,10 @@ test("Database offers both existing downloads and they still download a workbook
 
 test("a company Admin gets Database but not Users, and a Sales Member gets neither", async ({ page }) => {
   await open(page, "e2e-other@example.com");
-  await expect(sections(page).getByRole("button")).toHaveText(["Board", "Database"]);
+  await expect(sections(page).getByRole("button")).toHaveText(["Board", "Reports", "KPIs", "Database"]);
   await page.getByRole("button", { name: "Sign out" }).click();
   await open(page, "e2e-member@example.com");
-  await expect(sections(page)).toHaveCount(0);
+  await expect(sections(page).getByRole("button")).toHaveText(["Board", "Reports", "KPIs"]); // reads only
   await expect(page.getByRole("button", { name: /^(Users|Database)$/ })).toHaveCount(0);
   await expect(page.getByText("Users of Lity")).toHaveCount(0);
 });

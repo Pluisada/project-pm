@@ -139,7 +139,7 @@ test("an import records no Undo entry and Undo leaves the imported card in place
   // The entry is shown as the Undo button's tooltip (its title), not as page text.
   await expect(undoButton(page)).toHaveAttribute("title", manualEntry);
   await undoButton(page).click();
-  await expect(page.getByText(`Undone: ${manualEntry}`)).toBeVisible();
+  await expect(page.getByText(/^Undone/)).toHaveCount(0); // no banner after a successful undo
   await expect(cardByTitle(page, title)).toHaveCount(0);
   await expect(cardByTitle(page, "E2E Golf")).toBeVisible();
   await expect(undoButton(page)).toBeDisabled();
