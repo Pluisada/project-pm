@@ -245,3 +245,30 @@ def test_response_headers_and_server_chosen_filename(rig):
     t = rig.client.get("/api/companies/lity/boards/1/excel/template?filename=../../evil.xlsx",
                        headers={"Authorization": f"Bearer {token}"})
     assert t.headers["content-disposition"] == 'attachment; filename="cards-import-template.xlsx"'
+
+
+def test_cancelled_owner_is_exported_without_the_internal_placeholder_address(rig):
+    import central_auth as ca
+    from identity_models import is_cancelled_email
+
+    uid = rig.e.member("gone@example.com")
+    path = company_database_path("lity", rig.e.env)
+    add_cards(path, [{"id": 2, "title": "Kept deal", "deal_value": 900, "deal_value_next_year": 0, "salesperson_id": uid},
+                     {"id": 3, "title": "Other deal", "deal_value": 5, "deal_value_next_year": 0}])
+    con = sqlite3.connect(path)
+    con.execute("INSERT INTO users (id, username, created_at, updated_at) VALUES (?, 'gone@example.com', ?, ?)", (uid, NOW, NOW))
+    con.commit()
+    con.close()
+    before = by_title(admin_export(rig))["Kept deal"]
+    assert before["salesperson_email"] == "gone@example.com"
+
+    ca.cancel_user(rig.e.session, rig.e.admin, uid)
+    data = admin_export(rig)
+    rows = by_title(data)
+    assert rows["Kept deal"]["salesperson_email"] is None  # empty cell, not the placeholder
+    assert not any(is_cancelled_email(str(v)) for row in table(data) for v in row if isinstance(v, str))
+    assert rows["Kept deal"]["card_id"] == 2 and rows["Kept deal"]["deal_value_usd"] == 900  # the card is untouched
+    assert "Other deal" in rows
+    con = sqlite3.connect(path)
+    assert con.execute("SELECT salesperson_id FROM cards WHERE id = 2").fetchone() == (uid,)  # attribution unchanged
+    con.close()

@@ -106,3 +106,23 @@ Existing company databases need the review and loss tables created by operator s
 ## Resend of an open invitation
 
 `identity_service.begin_invitation_resend` / `finish_invitation_resend` implement the two-phase resend described in `docs/SECURITY.md` (new token first; the old one is retired only after a successful delivery). The HTTP route is `POST /api/central/companies/{slug}/invitations/{id}/resend` (Super Admin only; 503 without SMTP, 502 on a failed send, 409 for an invitation no longer open). The invitation keeps its expiry and its single open row.
+
+
+## User lifecycle: remove from a company vs. cancel the user (2026-10-24)
+
+Two different operations, both Super Admin only, both in the Members screen of a company:
+
+| | Remove from company | Cancel user |
+|---|---|---|
+| Route | `POST /api/central/companies/{slug}/members/{id}/deactivate` | `POST /api/central/users/{id}/cancel` |
+| Service | `identity_service.deactivate_membership` | `central_auth.cancel_user` |
+| Effect | That one membership becomes inactive. Account, password, sessions and other companies are untouched. The person can be invited again (existing account: "I already have an account" joins with the current password). | The person loses every company, the password, every session, unused reset tokens and open invitations to their address. Irreversible. |
+| Identity row | Kept as is | Kept (same id), made powerless: `is_active=0`, `password_hash=NULL`, `session_version+1`, email replaced by `cancelled-<id>@cancelled.invalid` |
+
+Why the identity row is kept: commercial rows in the company databases point at `identity_users.id` as a plain number (card owner, history, reviews, import batches, audit). Deleting it would orphan or cascade them. `cancel_user` never opens a company database, so cards, deal values, reports and KPIs are unchanged and stay attributed to the cancelled id; the company-local `users` row keeps its display name (the old email) so history stays readable.
+
+Re-inviting the same address: the unique index on `identity_users.email` still protects every live identity, and the placeholder frees the normalized address. Accepting the new invitation creates a new identity (new id, no password, only the invited company and role), through the normal first-password form. It shares no metrics, authorship or credentials with the cancelled one; reassigning old cards to it is a separate, explicit operation (not implemented). A deactivated but not cancelled identity can no longer be invited (it could never accept); cancel it first.
+
+Retention: audit events keep their ids (no email in `details`). The email is removed from the identity row and from the closed invitations that named it. It remains in the company-local `users.username` display name and in any card text, which this change does not rewrite; erasing it there is a separate decision (it would change what reports show).
+
+Rollout: no schema change and no migration (the existing columns and unique index are used). Roll back by reverting the code; a cancelled identity stays cancelled (the former email is not stored, so it cannot be restored automatically). Back up `identity.db` before the first cancellation on a real database. First validation after deployment: cancel a throwaway invited address, confirm it cannot sign in and its old link is refused, invite it again, set a password and check it has only the new company and no history.

@@ -1668,6 +1668,11 @@ export async function deactivateCompanyMember(companySlug: string, userId: numbe
   await apiCall(`/api/central/companies/${encodeURIComponent(companySlug)}/members/${userId}/deactivate`, { method: "POST" });
 }
 
+/** Permanently cancel a person's central identity in every company (irreversible; the commercial history stays). */
+export async function cancelCentralUser(userId: number): Promise<void> {
+  await apiCall(`/api/central/users/${userId}/cancel`, { method: "POST" });
+}
+
 /** One product of a company's catalog. `id` is null for a built-in default of a company whose catalog is not initialized. */
 export interface CompanyProduct {
   id: number | null;

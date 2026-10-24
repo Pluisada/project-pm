@@ -23,6 +23,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 from sqlalchemy.orm import Session, joinedload
 
 import excel_contract as contract
+from identity_models import is_cancelled_email
 from models import Card, Column
 
 INSTRUCTIONS_SHEET = "Instructions"
@@ -101,7 +102,8 @@ def export_rows(db: Session, board_id: int, salesperson_emails: dict[int, str]) 
             "next_step_due": card.next_step_due,
             "product_line": card.product_line,
             "lead_source": card.lead_source,
-            "salesperson_email": salesperson_emails.get(card.salesperson_id),
+            # a cancelled identity's internal placeholder is never exported as a real address
+            "salesperson_email": None if is_cancelled_email(salesperson_emails.get(card.salesperson_id)) else salesperson_emails.get(card.salesperson_id),
             "stage": card.column.title,
         })
     return rows

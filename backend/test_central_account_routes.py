@@ -389,3 +389,71 @@ def test_resend_refuses_an_expired_invitation(s, monkeypatch):
         session.execute(text("UPDATE identity_invitations SET expires_at = datetime('now', '-1 hour'), created_at = datetime('now', '-2 hour')"))
         session.commit()
     assert _resend(s, inv).status_code == 409 and not s.sent
+
+
+def _invite(s, email, role="sales_member", slug="salcomp", headers=None):
+    return s.client.post(f"/api/central/companies/{slug}/invitations",
+                         headers=headers or bearer(s, "admin@example.com"), json={"email": email, "role": role})
+
+
+def _accept_latest(s, password=GOOD):
+    token = s.sent[-1][2].split("central_invite_token=")[1].split()[0]
+    return s.client.post("/api/central/invitations/accept", json={"token": token, "password": password})
+
+
+def _member_of(s, email, slug="salcomp"):
+    members = s.client.get(f"/api/central/companies/{slug}/members", headers=bearer(s, "admin@example.com")).json()
+    return next((m for m in members if m["email"] == email), None)
+
+
+def test_first_password_form_refuses_an_account_that_already_has_a_password_and_the_link_stays_usable(s):
+    """A deactivated member keeps their account and password, so a new invitation must be accepted with
+    /invitations/join. The first-password endpoint refuses (same 400 as any bad link), changes nothing and does
+    not consume the token, so the very same link still works through join."""
+    assert _invite(s, "back@example.com", "visitor").status_code == 202
+    assert _accept_latest(s).status_code == 200
+    member = _member_of(s, "back@example.com")
+    admin_h = bearer(s, "admin@example.com")
+    assert s.client.post(f"/api/central/companies/salcomp/members/{member['user_id']}/deactivate", headers=admin_h).status_code == 204
+    assert _invite(s, "back@example.com", "sales_member").status_code == 202
+    token = s.sent[-1][2].split("central_invite_token=")[1].split()[0]
+    with s.factory() as session:
+        before = session.get(IdentityUser, member["user_id"]).password_hash
+
+    refused = s.client.post("/api/central/invitations/accept", json={"token": token, "password": "Another#Pass9"})
+    assert refused.status_code == 400
+    assert refused.json()["detail"] == "This invitation is invalid or has expired"
+    with s.factory() as session:
+        assert session.get(IdentityUser, member["user_id"]).password_hash == before  # password untouched
+        assert session.query(IdentityInvitation).filter_by(email="back@example.com", accepted_at=None).count() == 1
+    assert _member_of(s, "back@example.com")["is_active"] is False
+
+    joined = s.client.post("/api/central/invitations/join", json={"token": token, "email": "back@example.com", "password": GOOD})
+    assert joined.status_code == 200
+    assert _member_of(s, "back@example.com")["is_active"] is True
+    assert s.client.post("/api/central/invitations/join", json={"token": token, "email": "back@example.com", "password": GOOD}).status_code == 400
+
+
+def test_cancel_route_is_global_admin_only_revokes_access_and_frees_the_address(s):
+    assert _invite(s, "gone@example.com", "sales_member").status_code == 202
+    assert _accept_latest(s).status_code == 200
+    member = _member_of(s, "gone@example.com")
+    member_h = bearer(s, "gone@example.com")
+    uid = member["user_id"]
+    assert s.client.post(f"/api/central/users/{uid}/cancel").status_code == 401
+    assert s.client.post(f"/api/central/users/{uid}/cancel", headers=member_h).status_code == 403
+    assert s.client.post(f"/api/central/users/{uid}/cancel", headers=bearer(s, "admin@example.com")).status_code == 204
+    assert s.client.get("/api/central/me", headers=member_h).status_code == 401  # the old session is gone
+    assert s.login("gone@example.com", GOOD).status_code == 401
+    assert s.client.post(f"/api/central/users/{uid}/cancel", headers=bearer(s, "admin@example.com")).status_code == 409
+    again = _invite(s, "gone@example.com", "visitor")
+    assert again.status_code == 202
+    token = s.sent[-1][2].split("central_invite_token=")[1].split()[0]
+    assert s.client.post("/api/central/invitations/accept", json={"token": token, "password": GOOD}).status_code == 200
+    assert s.login("gone@example.com", GOOD).status_code == 200
+
+
+def test_inviting_the_reserved_cancellation_domain_is_refused_over_http(s):
+    response = _invite(s, "cancelled-1@cancelled.invalid", "visitor")
+    assert response.status_code == 422 and "cancelled" not in response.text.lower().replace("the email address is not valid", "")
+    assert s.sent == []

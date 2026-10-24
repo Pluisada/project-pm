@@ -22,6 +22,7 @@ function rig(initial = [member(2, "ana@example.com")], opts: { pending?: typeof 
     if (path.endsWith("/resend") && method === "POST") return opts.resend ? opts.resend() : json(200, { message: "Invitation email sent." });
     if (path.endsWith("/invitations") && method === "POST") return json(202, { message: "Invitation sent." });
     if (path.endsWith("/deactivate")) { members = members.map((m) => ({ ...m, is_active: false })); return new Response(null, { status: 204 }); }
+    if (path.endsWith("/cancel")) { members = members.map((m) => ({ ...m, is_active: false, user_is_active: false })); return new Response(null, { status: 204 }); }
     if (path.endsWith("/role")) return new Response(null, { status: 204 });
     return json(404);
   }));
@@ -62,8 +63,47 @@ describe("CentralMembers", () => {
     await userEvent.selectOptions(await screen.findByRole("combobox", { name: "Role of ana@example.com" }), "visitor");
     await waitFor(() => expect(calls.some((c) => c.method === "PUT" && c.url.endsWith("/members/2/role"))).toBe(true));
     expect(calls.find((c) => c.method === "PUT")?.body).toEqual({ role: "visitor" });
-    await userEvent.click(screen.getByRole("button", { name: "Deactivate ana@example.com" }));
+    await userEvent.click(screen.getByRole("button", { name: "Remove ana@example.com from Lity" }));
     await waitFor(() => expect(calls.some((c) => c.url.endsWith("/members/2/deactivate"))).toBe(true));
+  });
+
+  it("shows a neutral label instead of the internal placeholder of a cancelled user, and ordinary emails as they are", async () => {
+    const cancelled = { ...member(3, "cancelled-3@cancelled.invalid", "sales_member", false), user_is_active: false };
+    rig([member(2, "ana@example.com"), cancelled]);
+    render(<CentralMembers companySlug="lity" companyName="Lity" />);
+    expect(await screen.findByText("ana@example.com")).toBeInTheDocument();
+    expect(screen.getByText("Cancelled user")).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/cancelled\.invalid/);
+    expect(screen.queryByRole("button", { name: /Cancel user cancelled/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Invite cancelled/ })).toBeNull();
+  });
+
+  it("does not treat lookalike domains as cancelled users", async () => {
+    rig([member(2, "bo@cancelled.com"), member(3, "cy@notcancelled.invalid")]);
+    render(<CentralMembers companySlug="lity" companyName="Lity" />);
+    expect(await screen.findByText("bo@cancelled.com")).toBeInTheDocument();
+    expect(screen.getByText("cy@notcancelled.invalid")).toBeInTheDocument();
+    expect(screen.queryByText("Cancelled user")).toBeNull();
+  });
+
+  it("cancels a user everywhere only after an explicit confirmation that names the consequences", async () => {
+    const calls = rig();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    render(<CentralMembers companySlug="lity" companyName="Lity" />);
+    const button = await screen.findByRole("button", { name: "Cancel user ana@example.com" });
+    await userEvent.click(button);
+    expect(calls.some((c) => c.url.endsWith("/cancel"))).toBe(false);
+    await userEvent.click(button);
+    await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.url.endsWith("/api/central/users/2/cancel"))).toBe(true));
+    const text = String(confirm.mock.calls[0][0]);
+    expect(text).toMatch(/every company/);
+    expect(text).toMatch(/cannot be undone/);
+    expect(text).toMatch(/password and sessions are removed/);
+    expect(text).toMatch(/invitation or password-reset link stops working/);
+    expect(text).toMatch(/automatically reversed/);
+    expect(text).toMatch(/Cards, reports and history stay/);
+    expect(text).toMatch(/Remove from company/);
+    expect(await screen.findByText(/was cancelled in every company/)).toBeInTheDocument();
   });
 
   it("promotes a joined member to Admin after a confirmation, and does nothing if it is declined", async () => {

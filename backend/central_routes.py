@@ -224,6 +224,14 @@ def build_central_router(runtime: CentralIdentityRuntime) -> APIRouter:
                             session: Session = Depends(runtime.get_session)):
         return _managed(ca.list_pending_invitations, session, user.id, company_slug)
 
+    @router.post("/users/{user_id}/cancel", status_code=204)
+    def cancel_user(user_id: int, user=Depends(current_user), session: Session = Depends(runtime.get_session)):
+        """Global administrators only. Permanently cancels a central identity in every company (irreversible); the
+        commercial history stays. Not company-scoped, unlike the per-company deactivation below."""
+        if not user.is_global_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        _managed(ca.cancel_user, session, user.id, user_id)
+
     @router.post("/companies/{company_slug}/members/{user_id}/deactivate", status_code=204, dependencies=[Depends(require_matching_company_header)])
     def deactivate_member(company_slug: str, user_id: int, user=Depends(current_user),
                           session: Session = Depends(runtime.get_session)):

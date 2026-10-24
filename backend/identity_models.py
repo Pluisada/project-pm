@@ -50,6 +50,16 @@ TOKEN_PURPOSES = ("invitation", "password_reset")
 
 _AUTOINCREMENT = {"sqlite_autoincrement": True}
 
+# Reserved (RFC 2606 `.invalid`, never deliverable) domain of the placeholder that replaces a cancelled identity's email.
+# No invitation or account may use it, so a placeholder can never collide with a live identity.
+CANCELLED_EMAIL_DOMAIN = "cancelled.invalid"
+
+
+def is_cancelled_email(email: str | None) -> bool:
+    """Whether `email` is in the reserved cancellation domain (any case, trailing dot or subdomain included)."""
+    domain = (email or "").strip().lower().rpartition("@")[2].rstrip(".")
+    return domain == CANCELLED_EMAIL_DOMAIN or domain.endswith("." + CANCELLED_EMAIL_DOMAIN)
+
 
 def _utcnow() -> datetime:
     """Naive UTC, matching the rest of the application's DateTime columns."""

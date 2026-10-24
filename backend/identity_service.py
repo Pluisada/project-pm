@@ -49,6 +49,7 @@ from sqlalchemy.orm import Session
 from database_targets import COMPANY_SLUGS
 from identity_models import (
     COMPANY_ROLES,
+    is_cancelled_email,
     IdentityAuditEvent,
     IdentityAuthToken,
     IdentityCompany,
@@ -220,6 +221,8 @@ def normalize_email(email: str) -> str:
     local, _, domain = value.partition("@")
     if not local or "." not in domain or "@" in domain or len(value) > 320 or any(c.isspace() for c in value):
         raise InvalidInput("the email address is not valid")
+    if is_cancelled_email(value):
+        raise InvalidInput("the email address is not valid")  # reserved for cancelled identities; same answer as any bad address
     return value
 
 
@@ -394,6 +397,8 @@ def create_invitation(
         if existing_user is not None:
             if existing_user.is_global_admin:
                 raise Conflict("a global administrator needs no company invitation")
+            if not existing_user.is_active:
+                raise Conflict("the account is deactivated and could never accept; cancel the user to invite this address again")
             if session.scalar(select(IdentityMembership.id).where(
                 IdentityMembership.user_id == existing_user.id, IdentityMembership.company_id == company.id,
                 IdentityMembership.is_active.is_(True),

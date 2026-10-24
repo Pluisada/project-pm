@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   changeCompanyMemberRole,
+  cancelCentralUser,
   deactivateCompanyMember,
   getErrorMessage,
   inviteCompanyMember,
@@ -32,6 +33,9 @@ const secondaryButton =
   "rounded-lg border border-[var(--stroke)] px-3 py-1.5 text-xs font-semibold text-[var(--primary-blue)] transition hover:border-[var(--primary-blue)] disabled:cursor-not-allowed disabled:opacity-50";
 
 type Notice = { kind: "ok" | "error"; text: string };
+
+/** A cancelled identity's email is replaced by an internal placeholder in the reserved `.invalid` domain; never show it. */
+const isCancelledEmail = (email: string) => /@(?:[^@]*\.)?cancelled\.invalid\.?$/i.test(email.trim());
 
 function failure(err: unknown, what: string): string {
   const code = (err as Partial<ApiError>).status_code;
@@ -155,7 +159,7 @@ export const CentralMembers = ({ companySlug, companyName }: { companySlug: stri
         <ul className="mt-2 divide-y divide-[var(--stroke)]" data-testid="member-list">
           {members.map((m) => (
             <li key={m.user_id} className="flex flex-wrap items-center gap-3 py-2 text-sm">
-              <span className="min-w-0 flex-1 truncate font-medium text-[var(--navy-dark)]">{m.email}</span>
+              <span className="min-w-0 flex-1 truncate font-medium text-[var(--navy-dark)]">{isCancelledEmail(m.email) ? <span title={`Cancelled user (#${m.user_id})`} className="italic text-[var(--gray-text)]">Cancelled user</span> : m.email}</span>
               {m.is_active && MEMBER_ROLES.includes(m.role as MemberRole) ? (
                 <select aria-label={`Role of ${m.email}`} value={m.role} disabled={busy}
                   onChange={(e) => {
@@ -172,10 +176,22 @@ export const CentralMembers = ({ companySlug, companyName }: { companySlug: stri
               )}
               <span className="text-xs text-[var(--gray-text)]">{m.is_active ? "Active" : "Inactive"}</span>
               {m.is_active && m.role !== "admin" && (
-                <button type="button" disabled={busy} aria-label={`Deactivate ${m.email}`}
-                  onClick={() => run("deactivate the member", () => deactivateCompanyMember(companySlug, m.user_id), `${m.email} no longer has access.`)}
+                <button type="button" disabled={busy} aria-label={`Remove ${m.email} from ${companyName}`}
+                  title={`Removes access to ${companyName} only. The person keeps their account and any other company.`}
+                  onClick={() => run("remove the member from the company", () => deactivateCompanyMember(companySlug, m.user_id), `${m.email} no longer has access to ${companyName}.`)}
                   className={secondaryButton}>
-                  Deactivate
+                  Remove from company
+                </button>
+              )}
+              {m.user_is_active && (
+                <button type="button" disabled={busy} aria-label={`Cancel user ${m.email}`}
+                  title="Permanently cancels this person in every company. Cannot be undone."
+                  onClick={() => {
+                    if (!window.confirm(`Permanently cancel ${m.email}?\n\nThey lose access to every company, their password and sessions are removed, any unused invitation or password-reset link stops working, and this cannot be undone or automatically reversed. Cards, reports and history stay as they are, attributed to the cancelled user. The same address can be invited again later as a new user with no history.\n\nTo remove access to ${companyName} only, use "Remove from company".`)) return;
+                    void run("cancel the user", () => cancelCentralUser(m.user_id), `${m.email} was cancelled in every company.`);
+                  }}
+                  className={`${secondaryButton} text-red-800`}>
+                  Cancel user
                 </button>
               )}
             </li>

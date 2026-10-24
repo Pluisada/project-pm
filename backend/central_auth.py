@@ -43,7 +43,9 @@ from auth import (
     verify_password,
 )
 from database_targets import COMPANY_SLUGS
-from identity_models import IdentityAuthToken, IdentityUser
+from identity_models import (
+    CANCELLED_EMAIL_DOMAIN, IdentityAuthToken, IdentityInvitation, IdentityMembership, IdentityUser, is_cancelled_email,
+)
 from identity_service import (
     Acceptance,
     Conflict,
@@ -54,6 +56,8 @@ from identity_service import (
     NotFound,
     _active_admin,
     _audit,
+    _begin_write,
+    _close_invitation,
     _now,
     _Transaction,
     accept_invitation,
@@ -323,10 +327,59 @@ def deactivate_user(session: Session, admin_user_id: int, target_user_id: int, *
         _audit(session, "user_deactivated", actor=admin.id, target=target_user_id)
 
 
+# The placeholder email domain lives in identity_models; normalize_email refuses it for every new address.
+
+
+def cancel_user(session: Session, admin_user_id: int, target_user_id: int, *, now: datetime | None = None) -> None:
+    """Permanently cancel a person's central identity (global admins only). Irreversible.
+
+    One transaction under the write lock. The identity keeps its id, so every commercial row that points at it (card
+    creator, owner, history, reviews, audit) keeps pointing at the same, now powerless, history. It loses:
+    the password (no login can succeed), every session (session_version), every membership, its unused reset tokens and the
+    open invitations addressed to its email. Its email is replaced by an undeliverable
+    placeholder, on the identity and on the closed invitations that named it, which frees the normalized address
+    while the unique index keeps protecting every live identity. A later invitation to the same address therefore
+    creates a brand-new identity (new id, no password, no memberships) and inherits nothing, including no history.
+    Company databases are never opened: cards, reports and KPIs are untouched. A global administrator cannot be
+    cancelled here, nor can the caller cancel themselves.
+    """
+    now = now or _now()
+    with _Transaction(session):
+        _begin_write(session)
+        admin = _active_admin(session, admin_user_id)
+        if admin.id == target_user_id:
+            raise Conflict("administrators cannot cancel themselves")
+        target = session.get(IdentityUser, target_user_id)
+        if target is None:
+            raise NotFound("the user does not exist")
+        if target.is_global_admin:
+            raise NotAuthorized("a global administrator cannot be cancelled here")
+        old_email = target.email
+        if is_cancelled_email(old_email):
+            raise Conflict("the user is already cancelled")
+        placeholder = f"cancelled-{target.id}@{CANCELLED_EMAIL_DOMAIN}"
+        open_ids = session.scalars(select(IdentityInvitation.id).where(
+            IdentityInvitation.accepted_at.is_(None), IdentityInvitation.revoked_at.is_(None),
+            IdentityInvitation.email == old_email,
+        )).all()
+        for invitation_id in open_ids:
+            _close_invitation(session, session.get(IdentityInvitation, invitation_id), now)
+        session.execute(update(IdentityInvitation).where(IdentityInvitation.email == old_email).values(email=placeholder))
+        memberships = session.execute(update(IdentityMembership).where(
+            IdentityMembership.user_id == target.id, IdentityMembership.is_active.is_(True),
+        ).values(is_active=False)).rowcount
+        session.execute(update(IdentityUser).where(IdentityUser.id == target.id).values(
+            email=placeholder, password_hash=None, is_active=False,
+            deactivated_at=target.deactivated_at or now, session_version=IdentityUser.session_version + 1))
+        _invalidate_tokens(session, target.id, now)
+        _audit(session, "user_cancelled", actor=admin.id, target=target.id,
+               memberships_revoked=memberships, invitations_closed=len(open_ids))
+
+
 __all__ = [
     "AuthenticationFailed", "ResetTokenInvalid", "WeakPassword", "AuthSession",
     "authenticate", "user_for_token", "logout", "accept_invitation_with_password",
-    "issue_password_reset", "reset_password", "change_password", "deactivate_user",
+    "issue_password_reset", "reset_password", "change_password", "deactivate_user", "cancel_user", "CANCELLED_EMAIL_DOMAIN",
     "list_company_access", "create_invitation", "begin_invitation_resend", "finish_invitation_resend", "NotAuthorized", "NotFound", "Conflict", "IdentityServiceError",
     "list_members", "list_pending_invitations", "deactivate_membership", "change_membership_role",
 ]
