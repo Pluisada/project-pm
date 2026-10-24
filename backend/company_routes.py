@@ -475,6 +475,7 @@ def build_company_router(
         source_id = card.column_id
         if loss_reason is not None:
             card_loss.note_loss(db, card, context, loss_reason, card.column, target, "api")
+            card_reviews.note_lost_entry(db, card, context, card.column, target)  # an Admin's move into LOST: Super Admin reviews
         if target.position < card.column.position:
             # Only an Admin-level caller gets here (move_denial): the Super Admin must review every backward move.
             card_reviews.note_backward_move(db, card, context, card.column, target)

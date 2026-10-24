@@ -262,6 +262,23 @@ describe("central card create/edit", () => {
     expect(writes(calls)).toHaveLength(1);
   });
 
+  it("a save refused with 403 (the role changed) keeps the form, is shown as an error and the board reads the permissions again", async () => {
+    let demoted = false;
+    const calls = backend({ write: () => { demoted = true; return json(403, { detail: "Access denied" }); } });
+    const base = globalThis.fetch as unknown as (u: string, i?: RequestInit) => Promise<Response>;
+    vi.stubGlobal("fetch", vi.fn(async (u: string, i?: RequestInit) =>
+      demoted && String(u).endsWith("/me") ? json(200, meOf("acme", { readOnly: true })) : base(u, i)));
+    render(<CentralBoardView companySlug="acme" boardId={3} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Add a card" }));
+    await userEvent.type(screen.getByLabelText("Title"), "Not saved");
+    await userEvent.click(screen.getByRole("button", { name: "Add card" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("not allowed");
+    expect(screen.getByLabelText("Title")).toHaveValue("Not saved"); // nothing was saved, nothing is presented as saved
+    expect(writes(calls)).toHaveLength(1);
+    expect(await screen.findByText("View only")).toBeInTheDocument(); // the permissions were read again
+    expect(screen.queryByRole("button", { name: "Add a card" })).not.toBeInTheDocument();
+  });
+
   it("on a network failure keeps the form, never retries and lets the user reload the board to check", async () => {
     let fail = true;
     const calls = backend({});

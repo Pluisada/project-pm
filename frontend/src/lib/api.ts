@@ -283,7 +283,7 @@ export interface ReviewItem {
   updated_at: string;
   refresh_count: number;
   triggers: {
-    kind: "member_edit" | "backward_move";
+    kind: "member_edit" | "backward_move" | "lost_move";
     version: number;
     at: string;
     changes?: Record<string, { old: unknown; new: unknown }>;

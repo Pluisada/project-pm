@@ -431,6 +431,7 @@ async def apply_board_actions(
                                 if isinstance(exc, card_loss.LossReasonRequired) else exc.message)})
                             continue
                         card_loss.note_loss(db, card, current_user, reason, card.column, column, "ai")
+                        card_reviews.note_lost_entry(db, card, current_user, card.column, column)
                     if column.position < card.column.position:
                         # Only an Admin-level caller passes move_denial for a backward move: the Super Admin reviews it.
                         card_reviews.note_backward_move(db, card, current_user, card.column, column)

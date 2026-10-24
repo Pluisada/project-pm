@@ -27,6 +27,8 @@ type Props = {
   /** The backend's canAssignSalesperson capability: a new card then needs a chosen salesperson (a Sales Member's is automatically their own). */
   canAssign?: boolean;
   onSaved: (card: CardResponse) => void;
+  /** Called after a 403 on save: the person's permissions may have changed, so the board reads them again. */
+  onForbidden?: () => void;
   /** Re-reads the board without closing the form (used after a failure whose outcome is unknown); true when it worked. */
   onReload: () => Promise<boolean>;
   onClose: () => void;
@@ -148,7 +150,7 @@ function describeFailure(err: Partial<ApiError>, action: string): Failure {
  * typed after any failure, and drops the result of a request that was started for another company or board
  * (the parent remounts it on a change, which aborts the request and marks it stale).
  */
-export const CentralCardForm = ({ companySlug, boardId, target, canAssign = false, onSaved, onReload, onClose }: Props) => {
+export const CentralCardForm = ({ companySlug, boardId, target, canAssign = false, onSaved, onReload, onForbidden, onClose }: Props) => {
   const [values, setValues] = useState<Values>(() => initialValues(target));
   const [options, setOptions] = useState<LeadOptions | null>(null);
   const [failure, setFailure] = useState<Failure | null>(null);
@@ -240,6 +242,7 @@ export const CentralCardForm = ({ companySlug, boardId, target, canAssign = fals
       if ((err as Partial<ApiError>).status_code === 401) return;
       const described = describeFailure(err as Partial<ApiError>, edit ? "updated" : "created");
       setFailure(described);
+      if ((err as Partial<ApiError>).status_code === 403) onForbidden?.();
       if (!edit && described.unknownOutcome) { setUncertain(true); setReload("idle"); }
     } finally {
       inFlight.current = false;

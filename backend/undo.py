@@ -286,6 +286,9 @@ def apply_undo(
                     and not card_loss.has_event(db, card.id, target.id):
                 # Undo only restores a LOST state whose loss event (and reason) is already in the history.
                 raise UndoError("Can't undo: this card has no recorded loss reason for the lost stage")
+            if admin is True and card_loss.is_company_session(db) and target.stage_kind == STAGE_LOST \
+                    and card.column_id != target.id:
+                card_reviews.note_lost_entry(db, card, user, card.column, target)  # an Admin's undo into LOST is a move into LOST
             if admin is True and target.position < card.column.position:
                 # An Admin-level undo that sends a card to an earlier column is a backward move like any other.
                 card_reviews.note_backward_move(db, card, user, card.column, target)

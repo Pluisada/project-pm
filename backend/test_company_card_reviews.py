@@ -14,6 +14,7 @@ from test_company_admin_products import company_admin
 from test_company_card_writes import NOW, admin, member
 from test_company_card_writes import ai, fake_ai, rig  # noqa: F401  (fixtures/helpers)
 from test_company_concurrency_integrity import Call, TIMEOUT, auth, warm_up
+from test_company_card_loss import LOST, ai_with, lost_column
 from test_company_undo_import import undo
 
 OB = "SELECT reviewer_role, status, card_version, refresh_count, cleared_by_user_id FROM card_review_obligations WHERE card_id = ? ORDER BY id"
@@ -422,6 +423,107 @@ def test_ai_backward_moves_by_an_admin_and_admin_level_undo_are_flagged_too(worl
     assert move(rig, atoken, 2, 2).status_code == 200 and pending(rig, 2) == []
     assert undo(rig, atoken).status_code == 200
     assert pending(rig, 2) == [("super_admin", version(rig, 2))]
+
+
+# --- D2. an Admin moving a card into LOST is reviewed by the Super Admin (decided 2026-10-24) -------------------------
+
+def move_to_lost(rig, token, card_id=1, reason="Customer chose a competitor"):
+    return rig.call("put", f"/cards/{card_id}/position", token, json={"column_id": LOST, "position": 0, "loss_reason": reason})
+
+
+@pytest.fixture
+def lost_world(world):
+    lost_column(world[0])  # First(1), Second(2), Closed - Lost(3, kind lost)
+    return world
+
+
+def test_an_admin_moving_a_card_into_lost_creates_one_pending_super_admin_obligation_that_can_be_cleared(lost_world):
+    rig, _, _, aid, atoken, stoken = lost_world
+    assert move_to_lost(rig, atoken).status_code == 200
+    assert pending(rig) == [("super_admin", version(rig))]  # one row, for the Super Admin only
+    item = reviews(rig, stoken).json()["items"][0]  # what the Super Admin's board reads to draw the marker on the card
+    assert item["card_id"] == 1 and item["reviewer_role"] == "super_admin" and item["status"] == "pending"
+    trigger = item["triggers"][0]
+    assert trigger["kind"] == "lost_move" and (trigger["from_title"], trigger["to_title"]) == ("First", "Closed - Lost")
+    assert trigger["user_id"] == aid
+    assert reviews(rig, atoken).json()["items"] == []  # nothing for the Admin whose move it was
+    assert clear(rig, atoken, "super_admin").status_code == 403
+    assert clear(rig, stoken, "super_admin").status_code == 200 and pending(rig) == []
+    # the loss rules and the movement history are untouched
+    assert rig.sql("SELECT card_id, to_column_id, reason, user_id, source FROM card_loss_events") == [
+        (1, LOST, "Customer chose a competitor", aid, "api")]
+    assert rig.sql("SELECT event_type, user_id FROM card_stage_events WHERE event_type = 'lost'") == [("lost", aid)]
+
+
+def test_a_super_admin_moving_a_card_into_lost_creates_no_self_review(lost_world):
+    rig, _, _, _, _, stoken = lost_world
+    assert move_to_lost(rig, stoken).status_code == 200
+    assert pending(rig) == [] and reviews(rig, stoken).json()["items"] == []
+
+
+def test_an_admin_forward_move_to_an_ordinary_stage_still_creates_nothing(lost_world):
+    rig, _, _, _, atoken, _ = lost_world
+    assert move(rig, atoken, 1, 2).status_code == 200
+    assert pending(rig) == []
+
+
+def test_a_sales_member_moving_its_own_card_into_lost_creates_no_lost_review(lost_world):
+    rig, _, mtoken, _, _, _ = lost_world
+    assert move_to_lost(rig, mtoken).status_code == 200
+    assert pending(rig) == []
+
+
+def test_a_refused_move_into_lost_leaves_no_obligation(lost_world):
+    rig, _, _, _, atoken, _ = lost_world
+    assert move_to_lost(rig, atoken, reason="").status_code == 422  # the loss reason is still mandatory
+    assert pending(rig) == [] and rig.sql("SELECT COUNT(*) FROM card_review_obligations") == [(0,)]
+
+
+def test_repeated_updates_while_already_lost_never_add_a_lost_review(lost_world):
+    rig, _, _, _, atoken, stoken = lost_world
+    assert move_to_lost(rig, atoken).status_code == 200
+    first = rig.sql("SELECT id, refresh_count FROM card_review_obligations")
+    edit(rig, atoken, title="edited while lost")  # an Admin edit only moves the pending row to the new version
+    assert rig.call("put", "/cards/1/position", atoken, json={"column_id": LOST, "position": 0}).status_code == 200
+    rows = rig.sql("SELECT id, reviewer_role, status FROM card_review_obligations")
+    assert len(rows) == 1 and rows[0][:1] == first[0][:1] and pending(rig) == [("super_admin", version(rig))]
+    assert len(reviews(rig, stoken).json()["items"][0]["triggers"]) == 1  # still the one lost_move trigger
+    assert clear(rig, stoken, "super_admin").status_code == 200
+    edit(rig, atoken, title="again")
+    assert rig.call("put", "/cards/1/position", atoken, json={"column_id": LOST, "position": 0}).status_code == 200
+    assert pending(rig) == []  # a cleared review is not reopened by an update of an already-lost card
+
+
+def test_an_admin_moving_a_lost_card_back_is_the_existing_backward_review(lost_world):
+    rig, _, _, _, atoken, stoken = lost_world
+    assert move_to_lost(rig, atoken).status_code == 200
+    assert clear(rig, stoken, "super_admin").status_code == 200
+    assert move(rig, atoken, 1, 2).status_code == 200  # Lost -> Second: backward
+    triggers = reviews(rig, stoken).json()["items"][0]["triggers"]
+    assert [t["kind"] for t in triggers] == ["backward_move"] and pending(rig) == [("super_admin", version(rig))]
+
+
+def test_an_admin_ai_move_into_lost_is_reviewed_and_a_super_admin_ai_move_is_not(lost_world, monkeypatch):
+    rig, _, _, _, atoken, stoken = lost_world
+    fake_ai(monkeypatch, [{"type": "move", "card_id": 1, "column_id": LOST}])
+    assert ai_with(rig, atoken, loss_reason="Budget cut").status_code == 200
+    assert pending(rig) == [("super_admin", version(rig))]
+    assert reviews(rig, stoken).json()["items"][0]["triggers"][0]["kind"] == "lost_move"
+    rig.sql("DELETE FROM card_review_obligations")
+    rig.sql("UPDATE cards SET column_id = 1 WHERE id = 1")
+    fake_ai(monkeypatch, [{"type": "move", "card_id": 1, "column_id": LOST}])
+    assert ai_with(rig, stoken, loss_reason="Budget cut").status_code == 200
+    assert pending(rig) == []
+
+
+def test_an_admin_undo_back_into_lost_is_reviewed(lost_world):
+    rig, _, _, _, atoken, stoken = lost_world
+    assert move_to_lost(rig, atoken).status_code == 200
+    assert move(rig, atoken, 1, 2).status_code == 200  # out of Lost (backward review, ignored here)
+    rig.sql("DELETE FROM card_review_obligations")
+    assert undo(rig, atoken).status_code == 200  # the undo puts the card back into Lost
+    assert pending(rig) == [("super_admin", version(rig))]
+    assert reviews(rig, stoken).json()["items"][0]["triggers"][-1]["kind"] == "lost_move"
 
 
 # --- E. lifecycle and set-up ---------------------------------------------------------------------------------------------

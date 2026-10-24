@@ -116,6 +116,16 @@ describe("central card reviews: markers on the cards and a dialog per obligation
     expect(screen.getByTestId("review-marker-12")).toBeInTheDocument(); // the other obligation of the same card remains
   });
 
+  it("shows a move into Lost to a Super Admin, with its own label and detail", async () => {
+    const lost = review("super_admin", 2, "Beta", 3, [{ kind: "lost_move", version: 3, user_id: 5, at: "2026-10-24T10:00:00", from_title: "Proposal", to_title: "Lost" }]);
+    backend("super_admin", { canReview: true, canEditAnyCard: true, canDeleteCards: true }, [lost]);
+    render(<CentralBoardView companySlug="acme" boardId={3} />);
+    const marker = await screen.findByTestId("review-marker-22");
+    expect(marker).toHaveAccessibleName(/Super Admin review required \(Move to Lost\)/);
+    await userEvent.click(marker);
+    expect(within(screen.getByRole("dialog")).getByTestId("review-trigger")).toHaveTextContent("Moved to Lost from Proposal");
+  });
+
   it("shows a backward move to a Super Admin and clears via the super_admin action", async () => {
     const moved = review("super_admin", 2, "Beta", 3, [{ kind: "backward_move", version: 3, user_id: 5, at: "2026-10-22T10:00:00", from_title: "RFI", to_title: "1st Contact" }]);
     const { calls } = backend("super_admin", { canReview: true, canEditAnyCard: true, canDeleteCards: true }, [moved]);

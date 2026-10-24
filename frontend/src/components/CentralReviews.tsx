@@ -11,7 +11,7 @@ import {
 } from "@/lib/api";
 
 export const ROLE_LABEL: Record<string, string> = { admin: "Admin", super_admin: "Super Admin" };
-const KIND_LABEL: Record<string, string> = { member_edit: "Sales Member edit", backward_move: "Move to an earlier stage" };
+const KIND_LABEL: Record<string, string> = { member_edit: "Sales Member edit", backward_move: "Move to an earlier stage", lost_move: "Move to Lost" };
 
 const FIELD_LABELS: Record<string, string> = {
   title: "Title", details: "Details", company: "Customer", contact: "Contact", deal_value: "Deal value (current year)",
@@ -161,6 +161,8 @@ export const CentralReviewDialog = ({ companySlug, boardId, item, stillPending, 
                 </p>
                 {t.kind === "backward_move" ? (
                   <p className="mt-1">Moved back from <strong>{t.from_title ?? "?"}</strong> to <strong>{t.to_title ?? "?"}</strong></p>
+                ) : t.kind === "lost_move" ? (
+                  <p className="mt-1">Moved to Lost from <strong>{t.from_title ?? "?"}</strong> (<strong>{t.to_title ?? "?"}</strong>)</p>
                 ) : Object.keys(t.changes ?? {}).length ? (
                   <table className="mt-1 w-full text-left text-xs">
                     <thead><tr className="text-[var(--gray-text)]"><th className="pr-2 font-semibold">Field</th><th className="pr-2 font-semibold">Before</th><th className="font-semibold">After</th></tr></thead>

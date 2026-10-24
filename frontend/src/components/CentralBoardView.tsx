@@ -265,6 +265,16 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
     return () => controller.abort();
   }, [companySlug, boardId, key]);
 
+  /** After a 403 on a write: the person's role may have changed since this board was opened, so read the current
+   *  permissions again. The controls follow them (a demoted person turns read-only) without a reload or a new sign-in.
+   *  The server already refused the write; this only stops the screen from offering what it no longer allows. */
+  const refreshAccess = (): void => {
+    void getCompanyMe(companySlug, new AbortController().signal).then(
+      (fresh) => setResult((cur) => (cur && cur.key === key && "data" in cur ? { key, data: { ...cur.data, me: fresh } } : cur)),
+      () => {} // unknown: the screen stays as it is; the server still decides every write
+    );
+  };
+
   /** Re-reads the board in place (no loading screen, so an open form keeps what was typed). */
   const reloadBoard = (): Promise<boolean> => {
     const seq = ++reloadSeq.current;
@@ -338,6 +348,7 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
         : conflict ? `${CARD_CONFLICT_TEXT} The board was reloaded with the latest version; move it again if you still want to.`
         : getErrorMessage(err, "Could not move the card.") });
       if (failure.status_code === 0 || conflict) void reloadBoard(); // never retry the move: just see what the server has
+      if (failure.status_code === 403) refreshAccess();
       return false;
     } finally {
       if (movingKey.current === startKey) {
@@ -381,6 +392,7 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
         void reloadBoard();
       } else if (code === 403) {
         notice("error", "You are not allowed to delete cards.");
+        refreshAccess();
       } else if (code === 401) {
         notice("error", "Your session expired.");
       } else if (isCardVersionConflict(err)) {
@@ -435,6 +447,7 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
         void reloadBoard();
       } else if (code === 403) {
         notice("error", "You are not allowed to undo changes on this board.");
+        refreshAccess();
       } else if (code === 401) {
         notice("error", "Your session expired.");
       } else {
@@ -672,7 +685,7 @@ export const CentralBoardView = ({ companySlug, boardId, refreshToken = 0 }: { c
       {openForm && (
         <CentralCardForm key={`${key}:${openForm.mode === "edit" ? openForm.card.id : `new-${openForm.columnId}`}`}
           companySlug={companySlug} boardId={boardId} target={openForm} canAssign={me.capabilities.canAssignSalesperson}
-          onSaved={saveCard} onReload={reloadBoard} onClose={() => setForm(null)} />
+          onSaved={saveCard} onReload={reloadBoard} onForbidden={refreshAccess} onClose={() => setForm(null)} />
       )}
     </div>
   );

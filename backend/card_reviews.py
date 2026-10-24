@@ -50,6 +50,7 @@ STATUS_VOID = "void"
 
 KIND_MEMBER_EDIT = "member_edit"
 KIND_BACKWARD_MOVE = "backward_move"
+KIND_LOST_MOVE = "lost_move"
 
 CONTEXT_LIMIT = 20  # triggers kept per pending row; the full history is in card_edit_history / card_stage_events
 # The editable card columns (CardUpdate also names legacy Bid fields that are not columns of `cards`) and the stage.
@@ -259,6 +260,23 @@ def note_backward_move(db, card: Card, user, from_column, to_column) -> None:
     require_reviews(db)
     entry = {
         "kind": KIND_BACKWARD_MOVE, "user_id": user.id, "at": utcnow().isoformat(),
+        "from_column_id": from_column.id, "from_title": from_column.title,
+        "to_column_id": to_column.id, "to_title": to_column.title,
+    }
+    _record_intent(db, card, (ROLE_SUPER_ADMIN,), entry)
+
+
+def note_lost_entry(db, card: Card, user, from_column, to_column) -> None:
+    """A company Admin moved `card` into a LOST stage from another stage: only the Super Admin reviews it.
+
+    The Super Admin's own moves create nothing (no self-review), and neither do a Sales Member's or a Visitor's. The
+    caller has already established that the card is entering LOST, so updating a card that is already LOST never
+    reaches this. The role is the one the company context reports, never a client value."""
+    if not is_company_session(db) or getattr(user, "is_global_admin", True) or not getattr(user, "can_manage_cards", False):
+        return
+    require_reviews(db)
+    entry = {
+        "kind": KIND_LOST_MOVE, "user_id": user.id, "at": utcnow().isoformat(),
         "from_column_id": from_column.id, "from_title": from_column.title,
         "to_column_id": to_column.id, "to_title": to_column.title,
     }

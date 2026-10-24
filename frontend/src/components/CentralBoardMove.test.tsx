@@ -151,6 +151,25 @@ describe("CentralBoardView card moves", () => {
     }
   });
 
+  it("a demoted session: the refused move reverts, is not shown as saved, and the board turns read-only on its own", async () => {
+    // The person was a Sales Member when the board was opened and has since been made a Visitor.
+    const opts: { caps?: Partial<typeof base>; move?: Handler } = { caps: {} };
+    opts.move = () => { opts.caps = { readOnly: true }; return json(403, { detail: "Access denied" }); };
+    const { moves } = setup(opts);
+    await screen.findByText("Lead 1");
+    expect(screen.getByTestId("central-handle-1")).toBeInTheDocument();
+    await dropOn(1, "col-31");
+    expect(await screen.findByTestId("move-error")).toHaveTextContent("Access denied"); // an error, not a success
+    expect(ids(30)).toEqual(["Lead 1", "Lead 2", "Lead 9"]); // back where the server still has it
+    expect(ids(31)).toEqual(["Lead 4"]);
+    // The permissions are read again after the refusal: no handles, "View only", and a further drop sends nothing.
+    expect(await screen.findByText("View only")).toBeInTheDocument();
+    expect(screen.queryByTestId("central-handle-1")).not.toBeInTheDocument();
+    await dropOn(1, "col-31");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(moves).toHaveLength(1);
+  });
+
   it("on a network failure reverts, re-reads the board with a GET and never repeats the PUT", async () => {
     let boardReads = 0;
     const moves: string[] = [];
