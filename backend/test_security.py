@@ -268,7 +268,7 @@ class TestSecretKeyStartup:
         """
         from datetime import datetime, timedelta, timezone
 
-        from jose import jwt
+        import jwt
 
         user = test_db.query(User).filter(User.username == "rep").one()
         claims = {

@@ -8,7 +8,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from jose import jwt
+import jwt
 from sqlalchemy import event, select
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -22,6 +22,11 @@ from identity_database import create_identity_session_factory, open_identity_eng
 from identity_models import (
     IdentityAuditEvent, IdentityAuthToken, IdentityCompany, IdentityInvitation, IdentityMembership, IdentityUser,
 )
+
+
+def _unverified(token: str) -> dict:
+    """The claims of a token without checking its signature or expiry (what python-jose called get_unverified_claims)."""
+    return jwt.decode(token, options={"verify_signature": False})
 from models import CompanyBase, CompanyUser
 
 GOOD = "Str0ng!Passw0rd"
@@ -144,8 +149,8 @@ def test_tampered_expired_and_malformed_tokens_rejected(e):
 
 def test_token_lifetime_is_the_existing_session_length(e):
     token = ca.authenticate(e.session, "admin@example.com", GOOD).access_token
-    claims = jwt.get_unverified_claims(token)
-    assert claims["exp"] - jwt.get_unverified_claims(auth.create_access_token({"sub": "x"}))["exp"] in range(-5, 5)
+    claims = _unverified(token)
+    assert claims["exp"] - _unverified(auth.create_access_token({"sub": "x"}))["exp"] in range(-5, 5)
     assert set(claims) == {"sub", "purpose", "exp", "pwh", "sv"}  # nothing identifying beyond the id
 
 

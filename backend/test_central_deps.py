@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
-from jose import jwt
+import jwt
 from sqlalchemy import create_engine, update
 from sqlalchemy.orm import sessionmaker
 

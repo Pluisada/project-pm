@@ -209,5 +209,5 @@ def test_assignable_user_ids_unit(rig):
 
 def test_route_registered_in_main_app():
     import main
-    assert "/api/companies/{company_slug}/lead-options" in {r.path for r in main.app.routes}
-    assert "/api/lead-options" in {r.path for r in main.app.routes}
+    assert "/api/companies/{company_slug}/lead-options" in set(main.app.openapi()["paths"])
+    assert "/api/lead-options" in set(main.app.openapi()["paths"])

@@ -222,6 +222,6 @@ def test_no_database_url_fallback(lity, tmp_path, monkeypatch):
 
 def test_route_registered_in_main_app():
     import main
-    paths = {r.path for r in main.app.routes}
+    paths = set(main.app.openapi()["paths"])
     assert "/api/companies/{company_slug}/boards/{board_id}/report" in paths
     assert "/api/boards/{board_id}/report" in paths

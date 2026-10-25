@@ -252,6 +252,6 @@ def test_frontend_contract_matches_cardedithistoryentry_type():
 
 def test_routes_registered_in_main_app():
     import main
-    paths = {r.path for r in main.app.routes}
+    paths = set(main.app.openapi()["paths"])
     assert "/api/companies/{company_slug}/boards/{board_id}/cards/{card_id}/history" in paths
     assert "/api/boards/{board_id}/cards/{card_id}/history" in paths

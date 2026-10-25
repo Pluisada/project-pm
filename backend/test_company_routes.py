@@ -255,7 +255,7 @@ def test_engine_reused_per_company(rig):
 
 def test_route_registered_in_main_app():
     import main
-    paths = {r.path for r in main.app.routes}
+    paths = set(main.app.openapi()["paths"])
     assert "/api/companies/{company_slug}/boards/{board_id}" in paths
     assert "/api/boards/{board_id}" in paths
 
@@ -370,7 +370,7 @@ def test_kpi_session_closed_per_request(rig):
 
 def test_kpi_routes_registered_in_main_app():
     import main
-    paths = {r.path for r in main.app.routes}
+    paths = set(main.app.openapi()["paths"])
     for name in KPI_PATHS:
         assert f"/api/companies/{{company_slug}}/boards/{{board_id}}/kpis/{name}" in paths
         assert f"/api/boards/{{board_id}}/kpis/{name}" in paths

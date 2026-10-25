@@ -8,7 +8,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import bcrypt
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError
 from pydantic import BaseModel
 
 
@@ -150,7 +151,7 @@ def decode_access_token(token: str) -> Optional[dict]:
     """Return an access token's payload, or None if invalid, expired or purpose-scoped."""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    except JWTError:
+    except PyJWTError:
         return None
     # Anything carrying a `purpose` claim is not an access token.
     if "purpose" in payload or payload.get("sub") is None:
@@ -180,7 +181,7 @@ def decode_purpose_token(token: str, purpose: str) -> Optional[dict]:
     """Return a purpose token's payload, or None if invalid, expired or for another purpose."""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    except JWTError:
+    except PyJWTError:
         return None
     if payload.get("purpose") != purpose or not payload.get("sub"):
         return None

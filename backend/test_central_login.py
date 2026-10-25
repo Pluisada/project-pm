@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
-from jose import jwt
+import jwt
 from sqlalchemy import update
 
 import auth
@@ -230,6 +230,9 @@ def test_import_has_no_database_access():
 
 def test_main_app_registers_route_and_disposes_on_shutdown():
     import main
-    assert any(getattr(r, "path", "") == "/api/central/login" for r in main.app.routes)
-    assert any(getattr(r, "path", "") == "/api/login" for r in main.app.routes)
+    # Newer FastAPI keeps included routers nested instead of flattening them into app.routes, so ask for the
+    # registered paths through the OpenAPI schema (built from the same route table, whether or not /docs is served).
+    paths = main.app.openapi()["paths"]
+    assert "/api/central/login" in paths
+    assert "/api/login" in paths
     main.central_runtime.dispose()  # what the shutdown hook calls; safe when never opened

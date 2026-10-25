@@ -264,7 +264,7 @@ class TestProtectedEndpoints:
         """A login token must not outlive an 8-hour session."""
         from datetime import datetime, timezone
 
-        from jose import jwt
+        import jwt
 
         import auth
 
