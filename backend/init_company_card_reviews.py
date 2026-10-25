@@ -2,7 +2,10 @@
 
     PM_COMPANY_DB_LITY=sqlite:////abs/path/lity.db uv run python init_company_card_reviews.py --company lity [--apply]
 
-Creates the additive `card_versions` and `card_review_obligations` tables if they are missing (card_reviews.py).
+Creates the additive `card_versions`, `card_review_obligations` and `card_review_acknowledgments` (per-reviewer CLEAR
+state) tables if any is missing (card_reviews.py). A database that has the first two only gains the third; no existing row is
+changed and no pending review is acknowledged: pending role-level obligations simply get pending per-reviewer rows on
+their first touch.
 Idempotent; it never touches cards or any existing table, never moves the schema version, and affects only the company
 named. Until it has run, a company database refuses the changes that need a review obligation (a Sales Member's edit, a
 backward move) with 503 instead of skipping the review. The target comes only from that company's own PM_COMPANY_DB_*

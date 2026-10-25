@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from central_auth import AuthenticationFailed, user_for_token
 from identity_service import (
     SUPER_ADMIN_ROLE, IdentityServiceError, assignable_user_ids, can_grant_admin, can_delete_cards, can_export_cards, can_manage_boards, can_manage_cards, can_manage_imports, can_manage_members, can_manage_products, can_review,
-    company_access, review_role, is_admin_level, is_super, read_only, sync_assignable_users, sync_company_user,
+    company_access, review_reviewer_ids, review_role, is_admin_level, is_super, read_only, sync_assignable_users, sync_company_user,
 )
 
 ROLE_SUPER_ADMIN = SUPER_ADMIN_ROLE
@@ -229,3 +229,12 @@ __all__ = [
     # re-exported so the company routes never import identity_service directly (test_identity_service guard)
     "can_manage_cards", "can_manage_imports", "can_delete_cards", "can_export_cards", "company_access", "read_only",
 ]
+
+
+def reviewer_provider(identity, slug: str):
+    """`provider(role)` for card_reviews.set_reviewer_provider: the required reviewers of one company, read from the
+    identity database at call time (the cached rows of the request's session are dropped first)."""
+    def provider(role: str) -> list[int]:
+        identity.expire_all()
+        return review_reviewer_ids(identity, slug, role)
+    return provider

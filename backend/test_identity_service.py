@@ -423,7 +423,7 @@ def test_importing_has_no_side_effects(tmp_path):
 def test_nothing_in_the_application_imports_the_service():
     callers = [
         p.name for p in BACKEND.glob("*.py")
-        if not p.name.startswith("test_") and p.name not in ("identity_service.py", "central_auth.py", "central_deps.py", "identity_admin_cli.py", "e2e_central_seed.py", "seed_synthetic_homolog.py")
+        if not p.name.startswith("test_") and p.name not in ("identity_service.py", "central_auth.py", "central_deps.py", "identity_admin_cli.py", "diagnose_identity_limits.py", "e2e_central_seed.py", "seed_synthetic_homolog.py")
         and any(f"{kw} identity_service" in p.read_text() for kw in ("import", "from"))
     ]
     assert callers == []

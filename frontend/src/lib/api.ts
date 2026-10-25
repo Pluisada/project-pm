@@ -282,6 +282,11 @@ export interface ReviewItem {
   created_at: string;
   updated_at: string;
   refresh_count: number;
+  /** The caller's own acknowledgment: listed only while it is "pending" (another reviewer's CLEAR never clears it). */
+  my_status?: "pending";
+  /** Required reviewers of this role for the obligation, and how many already cleared it. */
+  reviewers_total?: number;
+  reviewers_cleared?: number;
   triggers: {
     kind: "member_edit" | "backward_move" | "lost_move";
     version: number;

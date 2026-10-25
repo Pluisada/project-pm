@@ -38,6 +38,7 @@ from card_rules import (
     new_card_fields,
 )
 from central_deps import (
+    reviewer_provider,
     CompanyContext,
     IdentityServiceError,
     assignable_user_ids,
@@ -173,8 +174,12 @@ def build_company_router(
     router = APIRouter(prefix="/api/companies/{company_slug}", tags=["companies"])
     get_context = company_context_dependency(identity_db)
 
-    def get_company_db(context: CompanyContext = Depends(get_context)) -> Iterator[Session]:
-        yield from runtime.session_for(context)
+    def get_company_db(
+        identity: Session = Depends(identity_db), context: CompanyContext = Depends(get_context)
+    ) -> Iterator[Session]:
+        for db in runtime.session_for(context):
+            card_reviews.set_reviewer_provider(db, reviewer_provider(identity, context.company_slug))
+            yield db
 
     def get_writer_context(context: CompanyContext = Depends(get_context)) -> CompanyContext:
         """The caller's context, only if the role may write. Runs before any company database is opened."""
@@ -256,6 +261,7 @@ def build_company_router(
         for db in runtime.session_for(context):
             sync_local_references(lambda: sync_company_user(identity, db, context.user_id, context.company_slug))
             set_stage_context(db, context, SOURCE_API)
+            card_reviews.set_reviewer_provider(db, reviewer_provider(identity, context.company_slug))
             if revalidate:
                 bind_authority(db, context.company_slug, lambda: fresh_role(identity, context) == context.role)
             yield db
@@ -850,7 +856,7 @@ def build_company_router(
         """Pending review obligations of the caller's own role on this board."""
         find_board(db, board_id)
         ensure_reviews(db)
-        return ReviewList(reviewer_role=context.review_role, items=card_reviews.pending_for_role(db, board_id, context.review_role))
+        return ReviewList(reviewer_role=context.review_role, items=card_reviews.pending_for_role(db, board_id, context.review_role, context.user_id))
 
     @router.get("/boards/{board_id}/cards/{card_id}/loss-events", response_model=List[LossEventItem])
     def card_loss_events(board_id: int, card_id: int, db: Session = Depends(get_company_db)):
@@ -884,7 +890,7 @@ def build_company_router(
             raise review_http(exc) from None
         record_audit(db, board_id, card.id, context, "review_cleared", {
             "title": card.title, "reviewer_role": reviewer_role, "card_version": body.card_version,
-            "obligation_id": done["id"],
+            "obligation_id": done["id"], "reviewer_user_id": context.user_id, "completed": done["completed"],
         })
         db.commit()
         return ReviewClearResult(card_id=card.id, reviewer_role=reviewer_role, card_version=body.card_version,

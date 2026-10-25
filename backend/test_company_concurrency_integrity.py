@@ -25,6 +25,7 @@ import main
 from company_routes import build_company_router
 from database_targets import company_database_path
 from identity_database import identity_db_dependency
+from test_company_admin_products import company_admin
 from test_company_card_writes import NOW, admin, member, rig  # noqa: F401  (fixture/helpers)
 from test_company_undo_import import undo
 
@@ -512,6 +513,7 @@ def test_F1_concurrent_deletes_succeed_once(rig):
 
 def test_F1_edit_that_loses_the_race_to_a_delete_is_404_without_records(rig):
     token = admin(rig)
+    company_admin(rig)  # an Admin must exist for an Admin obligation
     uid, owner = member(rig, "first@example.com")
     rig.assign(1, uid)
     warm_up(rig, token)
@@ -544,6 +546,7 @@ def test_F1_F3_delete_that_loses_the_race_to_a_member_edit_is_refused_and_keeps_
     """A member's edit that wins the race leaves pending reviews; the delete, made from the older version, is refused
     (409), so the card and its reviews stay."""
     token = admin(rig)
+    company_admin(rig)  # an Admin must exist for an Admin obligation
     uid, owner = member(rig, "first@example.com")
     rig.assign(1, uid)
     warm_up(rig, token)

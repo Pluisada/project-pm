@@ -18,7 +18,7 @@ import central_auth
 import identity_service as svc
 from database_targets import COMPANY_SLUGS
 from identity_database import create_identity_session_factory, open_identity_engine
-from identity_models import IdentityCompany, IdentityUser
+from identity_models import IdentityCompany
 
 NAMES = {"salcomp": "Salcomp", "lity": "Lity", "valor-log": "Valor Log"}
 
@@ -30,16 +30,8 @@ def bootstrap(session, admin_email: str) -> dict:
         if session.query(IdentityCompany).filter_by(slug=slug).first() is None:
             session.add(IdentityCompany(slug=slug, name=NAMES.get(slug, slug)))
             created_companies.append(slug)
-    existing = session.query(IdentityUser).filter_by(email=email).first()
-    if existing is not None and not (existing.is_global_admin and existing.is_active):
-        session.rollback()
-        raise svc.Conflict("an account with this email already exists and is not an active global administrator")
-    created_admin = existing is None
-    if created_admin:
-        session.add(IdentityUser(email=email, is_global_admin=True, email_verified_at=svc._now()))
-        session.flush()
-        svc._audit(session, "admin_bootstrapped", target=session.query(IdentityUser).filter_by(email=email).one().id)
-    session.commit()
+    session.flush()
+    _, created_admin = svc.grant_global_admin(session, email)  # enforces the single-global-administrator limit
     return {"companies_created": created_companies, "admin_created": created_admin}
 
 

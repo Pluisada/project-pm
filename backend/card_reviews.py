@@ -18,6 +18,17 @@ database and create_company_db.py to a new one):
   member edit or backward move refreshes the same pending row (the triggers since the last review accumulate in
   `context_json`, newest last, capped); a cleared row is history and is never reopened or inherited: the next trigger
   inserts a new pending row. Rows are never deleted; a deleted card's pending rows are closed as "void".
+- `card_review_acknowledgments`: one row per (obligation, required reviewer user) -- the per-user CLEAR state. The
+  obligation stays one row per (card, reviewer role); its required reviewers are the active company Admins ("admin")
+  or the active global administrator(s) ("super_admin"), resolved from the identity database through the session's
+  reviewer provider (session.info["review_reviewers"], set by the company routes). Each reviewer clears only their own
+  row; the obligation is "cleared" only when no required reviewer is still pending. A new card version resets every
+  acknowledgment to pending for that version. Reviewer changes are reconciled lazily under the write lock (new Admin ->
+  pending row for the still-pending obligations; removed reviewer -> their pending row is voided, never cleared).
+  An obligation whose every reviewer was removed is voided ("no_required_reviewer"), never presented as cleared.
+  Cleared role-level rows written before this table existed are history and are left untouched; a role-level
+  obligation still pending at migration simply has no acknowledgment rows yet and gets pending ones for the current
+  reviewers on first touch, so nothing is silently acknowledged.
 The underlying history stays where it already lives (card_edit_history, card_stage_events, audit_events).
 
 Everything is written from one before_flush listener so that the card change, its version, the obligations and the
@@ -88,8 +99,29 @@ class ReviewObligation(ReviewBase):
     closed_reason = SQLColumn(String, nullable=True)
 
 
+class ReviewAcknowledgment(ReviewBase):
+    """One required reviewer's own CLEAR state for one obligation (plain integers, no cross-table foreign keys)."""
+
+    __tablename__ = "card_review_acknowledgments"
+    __table_args__ = (
+        Index("uq_card_review_ack_reviewer", "obligation_id", "reviewer_user_id", unique=True),
+    )
+
+    id = SQLColumn(Integer, primary_key=True)
+    obligation_id = SQLColumn(Integer, nullable=False, index=True)
+    reviewer_user_id = SQLColumn(Integer, nullable=False)  # canonical identity_users.id
+    status = SQLColumn(String, nullable=False)  # pending | cleared | void
+    card_version = SQLColumn(Integer, nullable=False)  # the version this row is pending for / was cleared at
+    created_at = SQLColumn(DateTime, nullable=False)
+    updated_at = SQLColumn(DateTime, nullable=False)
+    cleared_at = SQLColumn(DateTime, nullable=True)
+    closed_reason = SQLColumn(String, nullable=True)
+
+
 _versions = CardVersion.__table__
 _obligations = ReviewObligation.__table__
+_acks = ReviewAcknowledgment.__table__
+_REVIEWERS = "review_reviewers"
 
 
 class ReviewError(Exception):
@@ -204,9 +236,14 @@ def review_schema_problem(conn) -> str | None:
         if not inspector.has_table(_obligations.name):
             return "table card_review_obligations is missing"
         absent = sorted({c.name for c in _obligations.columns} - {c["name"] for c in inspector.get_columns(_obligations.name)})
+        if absent:
+            return f"table card_review_obligations is missing columns: {', '.join(absent)}"
+        if not inspector.has_table(_acks.name):
+            return "table card_review_acknowledgments is missing (run init_company_card_reviews.py --apply)"
+        absent = sorted({c.name for c in _acks.columns} - {c["name"] for c in inspector.get_columns(_acks.name)})
     except SQLAlchemyError as exc:
         _inspection_failed(exc)
-    return f"table card_review_obligations is missing columns: {', '.join(absent)}" if absent else None
+    return f"table card_review_acknowledgments is missing columns: {', '.join(absent)}" if absent else None
 
 
 def has_reviews(db) -> bool:
@@ -225,8 +262,9 @@ def is_company_session(db) -> bool:
 
 def _tables_ready(conn) -> bool:
     names = {r[0] for r in conn.exec_driver_sql(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('card_versions','card_review_obligations')")}
-    return len(names) == 2
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+        "('card_versions','card_review_obligations','card_review_acknowledgments')")}
+    return len(names) == 3
 
 
 def has_pending(db, card_id: int) -> bool:
@@ -234,8 +272,86 @@ def has_pending(db, card_id: int) -> bool:
     conn = db.connection()
     if not is_company_session(db) or not _tables_ready(conn):
         return False
+    if db.info.get(_REVIEWERS) is not None:
+        reconcile(db, card_id)  # a removed reviewer must not keep an obligation (and so an undo) blocked
     return conn.execute(select(_obligations.c.id).where(
         _obligations.c.card_id == card_id, _obligations.c.status == STATUS_PENDING).limit(1)).first() is not None
+
+
+# --- required reviewers and their acknowledgments ---------------------------------------------------------------
+
+def set_reviewer_provider(db, provider) -> None:
+    """`provider(role) -> list[int]`: the user ids currently required to review for `role` ("admin" | "super_admin"),
+    read from the identity database each time it is called. Set by the company routes on every company session."""
+    db.info[_REVIEWERS] = provider
+
+
+def _reviewer_ids(session: Session, role: str) -> list[int]:
+    provider = session.info.get(_REVIEWERS)
+    if provider is None:
+        raise ReviewsNotInitialized("The required reviewers of this company could not be determined")
+    return sorted({int(i) for i in provider(role)})
+
+
+def _sync_acks(conn, obligation_id: int, version: int, reviewers: list[int], now: datetime, *, reset: bool) -> None:
+    """Make the acknowledgment rows of one pending obligation match `reviewers`.
+
+    A required reviewer without a row gets a pending one (a void row of a returning reviewer is revived). A pending row
+    of someone no longer required is voided with a reason, never cleared. With `reset` (the obligation moved to a new
+    version) every other row of a required reviewer is pending again for `version` and a cleared row of someone no
+    longer required is voided too; without it, cleared rows are kept as they are."""
+    rows = {r.reviewer_user_id: r for r in conn.execute(select(_acks).where(_acks.c.obligation_id == obligation_id))}
+    for user_id in reviewers:
+        row = rows.get(user_id)
+        if row is None:
+            conn.execute(insert(_acks).values(
+                obligation_id=obligation_id, reviewer_user_id=user_id, status=STATUS_PENDING, card_version=version,
+                created_at=now, updated_at=now))
+        elif row.status == STATUS_VOID or (reset and (row.status != STATUS_PENDING or row.card_version != version)):
+            conn.execute(update(_acks).where(_acks.c.id == row.id).values(
+                status=STATUS_PENDING, card_version=version, cleared_at=None, closed_reason=None, updated_at=now))
+    for user_id, row in rows.items():
+        if user_id not in reviewers and row.status != STATUS_VOID and (reset or row.status == STATUS_PENDING):
+            conn.execute(update(_acks).where(_acks.c.id == row.id).values(
+                status=STATUS_VOID, closed_reason="no_longer_required", updated_at=now))
+
+
+def _settle(conn, obligation_id: int, now: datetime) -> None:
+    """Close a pending obligation nobody is waiting on any more: cleared when at least one required reviewer cleared
+    it and none is pending; void ("no_required_reviewer") when no reviewer is left. Never invents an acknowledgment."""
+    acks = [r.status for r in conn.execute(select(_acks.c.status).where(_acks.c.obligation_id == obligation_id))]
+    if STATUS_PENDING in acks:
+        return
+    if STATUS_CLEARED in acks:
+        last = conn.execute(select(_acks.c.reviewer_user_id, _acks.c.cleared_at).where(
+            _acks.c.obligation_id == obligation_id, _acks.c.status == STATUS_CLEARED
+        ).order_by(_acks.c.cleared_at.desc(), _acks.c.id.desc())).first()
+        conn.execute(update(_obligations).where(_obligations.c.id == obligation_id, _obligations.c.status == STATUS_PENDING)
+                     .values(status=STATUS_CLEARED, cleared_by_user_id=last.reviewer_user_id,
+                             cleared_at=last.cleared_at or now, updated_at=now))
+    else:
+        conn.execute(update(_obligations).where(_obligations.c.id == obligation_id, _obligations.c.status == STATUS_PENDING)
+                     .values(status=STATUS_VOID, closed_reason="no_required_reviewer", updated_at=now))
+
+
+def reconcile(db, card_id: int | None = None) -> None:
+    """Bring the acknowledgments of the pending obligations (of one card, or of all) in line with the CURRENT required
+    reviewers, then settle the ones nobody is waiting on. The caller holds the write lock and commits. Idempotent."""
+    if not is_company_session(db):
+        return
+    conn = db.connection()
+    if not _tables_ready(conn):
+        return
+    query = select(_obligations).where(_obligations.c.status == STATUS_PENDING)
+    if card_id is not None:
+        query = query.where(_obligations.c.card_id == card_id)
+    now = utcnow()
+    cache: dict[str, list[int]] = {}
+    for obligation in conn.execute(query).all():
+        if obligation.reviewer_role not in cache:
+            cache[obligation.reviewer_role] = _reviewer_ids(db, obligation.reviewer_role)
+        _sync_acks(conn, obligation.id, obligation.card_version, cache[obligation.reviewer_role], now, reset=False)
+        _settle(conn, obligation.id, now)
 
 
 # --- triggers (recorded by the callers, written by the flush listener) ---------------------------------------
@@ -368,21 +484,26 @@ def _bump(conn, card_id: int, now: datetime) -> int:
     return conn.execute(select(_versions.c.version).where(_versions.c.card_id == card_id)).scalar_one()
 
 
-def _upsert_pending(conn, card_id: int, role: str, version: int, entry: dict, now: datetime) -> None:
+def _upsert_pending(conn, card_id: int, role: str, version: int, entry: dict, now: datetime, reviewers: list[int]) -> None:
     row = conn.execute(select(_obligations.c.id, _obligations.c.context_json, _obligations.c.refresh_count)
                        .where(_obligations.c.card_id == card_id, _obligations.c.reviewer_role == role,
                               _obligations.c.status == STATUS_PENDING)).first()
     entry = {**entry, "version": version}
     if row is None:
-        conn.execute(insert(_obligations).values(
+        if not reviewers:
+            return  # nobody holds this role in the company: nothing to acknowledge, nothing is faked
+        obligation_id = conn.execute(insert(_obligations).values(
             card_id=card_id, reviewer_role=role, status=STATUS_PENDING, card_version=version,
             trigger_user_id=entry.get("user_id"), context_json=json.dumps([entry]), refresh_count=0,
-            created_at=now, updated_at=now))
-        return
-    context = (json.loads(row.context_json) + [entry])[-CONTEXT_LIMIT:]
-    conn.execute(update(_obligations).where(_obligations.c.id == row.id).values(
-        card_version=version, trigger_user_id=entry.get("user_id"), context_json=json.dumps(context),
-        refresh_count=row.refresh_count + 1, updated_at=now))
+            created_at=now, updated_at=now)).inserted_primary_key[0]
+    else:
+        obligation_id = row.id
+        context = (json.loads(row.context_json) + [entry])[-CONTEXT_LIMIT:]
+        conn.execute(update(_obligations).where(_obligations.c.id == row.id).values(
+            card_version=version, trigger_user_id=entry.get("user_id"), context_json=json.dumps(context),
+            refresh_count=row.refresh_count + 1, updated_at=now))
+    _sync_acks(conn, obligation_id, version, reviewers, now, reset=True)
+    _settle(conn, obligation_id, now)
 
 
 @event.listens_for(Session, "before_flush")
@@ -409,19 +530,36 @@ def _review_before_flush(session: Session, flush_context, instances) -> None:
         raise ReviewsNotInitialized("The review workflow is not set up for this company yet")
     now = utcnow()
     versions = {card_id: _bump(conn, card_id, now) for card_id in changed}
-    triggered = {intent["card"].id for intent in intents}
+    triggered: dict[int, set[str]] = {}  # the roles a card's own trigger writes below; every other pending role just follows
+    for intent in intents:
+        triggered.setdefault(intent["card"].id, set()).update(intent["roles"])
     for card_id, version in versions.items():
-        if card_id in triggered:
-            continue
-        # Any other change (an Admin edit, a forward move, an import...) moves the pending reviews to the new version.
-        conn.execute(update(_obligations).where(_obligations.c.card_id == card_id, _obligations.c.status == STATUS_PENDING)
-                     .values(card_version=version, updated_at=now, refresh_count=_obligations.c.refresh_count + 1))
+        # Any change that does not write a role's obligation itself (an Admin edit, a forward move, an import, or a trigger
+        # of ANOTHER role: an Admin's backward move writes only the Super Admin's) moves that role's pending obligation to
+        # the new version, so a reviewer can still clear the latest state.
+        own = triggered.get(card_id, set())
+        pending_ids = select(_obligations.c.id).where(
+            _obligations.c.card_id == card_id, _obligations.c.status == STATUS_PENDING,
+            _obligations.c.reviewer_role.notin_(list(own)))
+        # a new version: every acknowledgment of the old one is pending again (voided rows stay void)
+        conn.execute(update(_acks).where(_acks.c.obligation_id.in_(pending_ids), _acks.c.status != STATUS_VOID)
+                     .values(status=STATUS_PENDING, card_version=version, cleared_at=None, updated_at=now))
+        conn.execute(update(_obligations).where(
+            _obligations.c.card_id == card_id, _obligations.c.status == STATUS_PENDING,
+            _obligations.c.reviewer_role.notin_(list(own)),
+        ).values(card_version=version, updated_at=now, refresh_count=_obligations.c.refresh_count + 1))
+    reviewers: dict[str, list[int]] = {}
     for intent in intents:
         card_id = intent["card"].id
         for role in intent["roles"]:
-            _upsert_pending(conn, card_id, role, versions[card_id], intent["entry"], now)
+            if role not in reviewers:
+                reviewers[role] = _reviewer_ids(session, role)
+            _upsert_pending(conn, card_id, role, versions[card_id], intent["entry"], now, reviewers[role])
     session.info.pop(_INTENTS, None)
     for card in deleted:
+        gone = select(_obligations.c.id).where(_obligations.c.card_id == card.id, _obligations.c.status == STATUS_PENDING)
+        conn.execute(update(_acks).where(_acks.c.obligation_id.in_(gone), _acks.c.status == STATUS_PENDING)
+                     .values(status=STATUS_VOID, closed_reason="card_deleted", updated_at=now))
         conn.execute(update(_obligations).where(_obligations.c.card_id == card.id, _obligations.c.status == STATUS_PENDING)
                      .values(status=STATUS_VOID, closed_reason="card_deleted", updated_at=now))
 
@@ -433,17 +571,22 @@ def _forget_intents(session: Session, previous_transaction) -> None:
 
 # --- reading and clearing ------------------------------------------------------------------------------------
 
-def _public(row, card_title: str, column_title: str, board_id: int) -> dict:
+def _public(row, card_title: str, column_title: str, board_id: int, mine: str, total: int, done: int) -> dict:
     return {
         "id": row.id, "board_id": board_id, "card_id": row.card_id, "card_title": card_title, "column_title": column_title,
         "reviewer_role": row.reviewer_role, "card_version": row.card_version, "status": row.status,
         "created_at": row.created_at, "updated_at": row.updated_at, "refresh_count": row.refresh_count,
         "triggers": json.loads(row.context_json),
+        "my_status": mine, "reviewers_total": total, "reviewers_cleared": done,
     }
 
 
-def pending_for_role(db, board_id: int, role: str) -> list[dict]:
-    """The pending obligations of `role` on one board, oldest first."""
+def pending_for_role(db, board_id: int, role: str, user_id: int) -> list[dict]:
+    """The obligations of `role` on one board that `user_id` still has to clear, oldest first (read-only).
+
+    Each item carries the caller's own status ("pending") and how many of the required reviewers have cleared it. A
+    reviewer who already cleared an obligation does not see it again, whatever the others did; a current reviewer
+    without a row yet (a newly added Admin, or an obligation older than the acknowledgment table) sees it pending."""
     from models import BoardColumn
 
     rows = db.execute(
@@ -454,31 +597,59 @@ def pending_for_role(db, board_id: int, role: str) -> list[dict]:
                BoardColumn.board_id == board_id)
         .order_by(_obligations.c.created_at, _obligations.c.id)
     ).all()
-    return [_public(r, r.title, r.column_title, board_id) for r in rows]
+    if not rows:
+        return []
+    current = _reviewer_ids(db, role)
+    acks: dict[int, dict[int, str]] = {}
+    for a in db.execute(select(_acks.c.obligation_id, _acks.c.reviewer_user_id, _acks.c.status)
+                        .where(_acks.c.obligation_id.in_([r.id for r in rows]))):
+        acks.setdefault(a.obligation_id, {})[a.reviewer_user_id] = a.status
+    items = []
+    for r in rows:
+        by_user = acks.get(r.id, {})
+        # required: every current reviewer, plus a former reviewer's completed acknowledgment (it still counts)
+        required = set(current) | {u for u, st in by_user.items() if st == STATUS_CLEARED}
+        mine = by_user.get(user_id)
+        if user_id in current and mine in (None, STATUS_VOID):
+            mine = STATUS_PENDING  # newly responsible: the obligation is still open
+        if mine != STATUS_PENDING or user_id not in current:
+            continue
+        done = sum(1 for u in required if by_user.get(u) == STATUS_CLEARED)
+        items.append(_public(r, r.title, r.column_title, board_id, STATUS_PENDING, len(required), done))
+    return items
 
 
 def clear_review(db, card: Card, role: str, version: int, reviewer_id: int) -> dict:
-    """Clear `role`'s pending obligation of `card`, only if `version` is the card's current version.
+    """Clear `reviewer_id`'s own acknowledgment of the pending `role` obligation of `card`, only if `version` is the
+    card's current version. The obligation itself is cleared only when no required reviewer is still pending.
 
     The caller holds the write lock (begin_write) and commits; nothing is changed on a refusal.
-    ReviewNotFound: nothing pending for this role on this card. ReviewStale: the card changed since the reviewer saw it.
+    ReviewNotFound: nothing pending for this role on this card, or the caller is not (or no longer) a required
+    reviewer, or already cleared it. ReviewStale: the card changed since the reviewer saw it.
     """
     if role not in REVIEW_ROLES:
         raise ReviewNotFound("No such review")
     conn = db.connection()
+    reconcile(db, card.id)  # reviewer changes since the obligation was written are applied before anything is decided
     row = conn.execute(select(_obligations).where(
         _obligations.c.card_id == card.id, _obligations.c.reviewer_role == role,
         _obligations.c.status == STATUS_PENDING)).first()
     if row is None:
         raise ReviewNotFound("Nothing to review for this card")
+    mine = conn.execute(select(_acks).where(
+        _acks.c.obligation_id == row.id, _acks.c.reviewer_user_id == reviewer_id)).first()
+    if mine is None or mine.status != STATUS_PENDING:
+        raise ReviewNotFound("Nothing to review for this card")
     current = conn.execute(select(_versions.c.version).where(_versions.c.card_id == card.id)).scalar()
-    if version != row.card_version or current != row.card_version:
+    if version != row.card_version or current != row.card_version or mine.card_version != row.card_version:
         raise ReviewStale("The card changed since you opened it. Review the latest version.")
     now = utcnow()
-    result = conn.execute(update(_obligations).where(
-        _obligations.c.id == row.id, _obligations.c.status == STATUS_PENDING, _obligations.c.card_version == version,
-    ).values(status=STATUS_CLEARED, cleared_by_user_id=reviewer_id, cleared_at=now, updated_at=now))
+    result = conn.execute(update(_acks).where(
+        _acks.c.id == mine.id, _acks.c.status == STATUS_PENDING, _acks.c.card_version == version,
+    ).values(status=STATUS_CLEARED, cleared_at=now, updated_at=now))
     if result.rowcount != 1:
         raise ReviewStale("The review was already completed or the card changed.")
+    _settle(conn, row.id, now)
+    completed = conn.execute(select(_obligations.c.status).where(_obligations.c.id == row.id)).scalar() == STATUS_CLEARED
     return {"id": row.id, "card_id": card.id, "reviewer_role": role, "card_version": version, "cleared_at": now,
-            "triggers": json.loads(row.context_json)}
+            "triggers": json.loads(row.context_json), "completed": completed}

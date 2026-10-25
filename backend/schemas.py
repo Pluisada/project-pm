@@ -387,6 +387,9 @@ class ReviewItem(BaseModel):
     updated_at: datetime
     refresh_count: int
     triggers: List[dict]  # newest last: {kind, version, user_id, at, changes | from_title/to_title}
+    my_status: str = "pending"  # the caller's own acknowledgment ("pending": listed because only the caller's CLEAR is missing)
+    reviewers_total: int = 1  # required reviewers of this role for the obligation
+    reviewers_cleared: int = 0  # how many of them already cleared it (others' CLEAR never clears the caller's)
 
 
 class ReviewList(BaseModel):

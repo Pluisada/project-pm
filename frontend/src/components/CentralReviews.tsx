@@ -141,6 +141,14 @@ export const CentralReviewDialog = ({ companySlug, boardId, item, stillPending, 
           <dd>{reviewLabel(item)}</dd>
           <dt className="font-semibold text-[var(--gray-text)]">Status</dt>
           <dd data-testid="review-status">{stillPending ? "Pending" : "No longer pending on the server"}</dd>
+          {item.reviewers_total != null && item.reviewers_total > 1 && (
+            <>
+              <dt className="font-semibold text-[var(--gray-text)]">Reviewers</dt>
+              <dd data-testid="review-progress">
+                {item.reviewers_cleared ?? 0} of {item.reviewers_total} cleared - your own clearing is still needed
+              </dd>
+            </>
+          )}
           <dt className="font-semibold text-[var(--gray-text)]">Stage</dt>
           <dd>{item.column_title}</dd>
           <dt className="font-semibold text-[var(--gray-text)]">Opened</dt>

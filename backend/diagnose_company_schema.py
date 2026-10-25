@@ -16,7 +16,7 @@ Two groups are checked:
 - required: company_schema.REQUIRED_COMPANY_SCHEMA and COMPANY_SCHEMA_VERSION. A gap here is not fixed by an init script
   (a version below 4 needs migrate_confidence_level.py; version 1 has no migration; anything else is refused).
 - additive: tables created by init_company_*.py and by create_company_db.py (products, card_excel_imports,
-  card_loss_events, card_versions, card_review_obligations), with their columns and the unique guards the runtime relies
+  card_loss_events, card_versions, card_review_obligations, card_review_acknowledgments), with their columns and the unique guards the runtime relies
   on. An init script only creates a MISSING table: it never adds a column or index to an existing one, so such a gap is
   reported as "incompatible" and has no script.
 """
@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from urllib.parse import quote
 
 from card_loss import CardLossEvent
-from card_reviews import CardVersion, ReviewObligation
+from card_reviews import CardVersion, ReviewAcknowledgment, ReviewObligation
 from company_schema import COMPANY_SCHEMA_VERSION, REQUIRED_COMPANY_SCHEMA, CompanySchemaError
 from database_targets import COMPANY_SLUGS, DatabaseTargetError, company_database_path
 from excel_import_ledger import ExcelImport
@@ -72,6 +72,7 @@ ADDITIVE: tuple[Additive, ...] = (
     _additive(CardLossEvent, (), "init_company_card_loss.py"),
     _additive(CardVersion, (), "init_company_card_reviews.py", ("card_id",)),
     _additive(ReviewObligation, (), "init_company_card_reviews.py"),
+    _additive(ReviewAcknowledgment, (), "init_company_card_reviews.py"),
 )
 
 

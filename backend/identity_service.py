@@ -42,7 +42,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -63,6 +63,8 @@ INVITATION_TTL = timedelta(days=7)
 SUPER_ADMIN_ROLE = "super_admin"  # what company_access reports for a global admin; never a membership role
 ADMIN_ROLE = "admin"  # the company-scoped Admin: commercial card operations only (see can_manage_cards)
 VISITOR_ROLE = "visitor"
+MAX_COMPANY_ADMINS = 2  # active Admin memberships plus open (unexpired) Admin invitations, per company
+MAX_GLOBAL_ADMINS = 1  # active users with is_global_admin; the Super Admin never counts toward MAX_COMPANY_ADMINS
 
 
 # Role predicates over the role company_access reports. Every authorization site goes through these, so the
@@ -263,6 +265,90 @@ def _audit(session: Session, action: str, *, actor=None, target=None, company_id
     ))
 
 
+# --- Admin / Super Admin capacity (backend enforcement; the screens only mirror it) ----------------------------
+#
+# Every check below runs inside a transaction that already holds SQLite's write lock (`_begin_write`, or the
+# conditional token claim of claim_invitation), so two concurrent requests serialize and the later one counts the
+# earlier one's result. Existing over-limit data is never changed: the checks only refuse to add to it, and
+# `over_limit_report` lists it.
+
+def _active_admin_memberships(session: Session, company_id: int) -> int:
+    return session.scalar(select(func.count()).select_from(IdentityMembership).where(
+        IdentityMembership.company_id == company_id, IdentityMembership.role == ADMIN_ROLE,
+        IdentityMembership.is_active.is_(True))) or 0
+
+
+def _open_admin_invitations(session: Session, company_id: int, now: datetime, *, exclude_id: int | None = None) -> int:
+    """Admin invitations that still reserve capacity: not accepted, not revoked and not expired."""
+    query = select(func.count()).select_from(IdentityInvitation).where(
+        IdentityInvitation.company_id == company_id, IdentityInvitation.role == ADMIN_ROLE,
+        IdentityInvitation.accepted_at.is_(None), IdentityInvitation.revoked_at.is_(None),
+        IdentityInvitation.expires_at > now)
+    if exclude_id is not None:
+        query = query.where(IdentityInvitation.id != exclude_id)
+    return session.scalar(query) or 0
+
+
+def admin_capacity_used(session: Session, company_id: int, now: datetime, *, exclude_invitation_id: int | None = None) -> int:
+    return _active_admin_memberships(session, company_id) + _open_admin_invitations(
+        session, company_id, now, exclude_id=exclude_invitation_id)
+
+
+def _require_admin_capacity(session: Session, company_id: int, now: datetime, *, exclude_invitation_id: int | None = None) -> None:
+    """Refuse (Conflict) when one more Admin would exceed MAX_COMPANY_ADMINS. Caller holds the write lock."""
+    if admin_capacity_used(session, company_id, now, exclude_invitation_id=exclude_invitation_id) >= MAX_COMPANY_ADMINS:
+        raise Conflict(
+            f"this company already has the maximum of {MAX_COMPANY_ADMINS} Admins (active Admins plus pending Admin "
+            "invitations); deactivate an Admin or revoke a pending Admin invitation first")
+
+
+def active_global_admin_count(session: Session) -> int:
+    return session.scalar(select(func.count()).select_from(IdentityUser).where(
+        IdentityUser.is_global_admin.is_(True), IdentityUser.is_active.is_(True))) or 0
+
+
+def grant_global_admin(session: Session, email: str) -> tuple[IdentityUser, bool]:
+    """The only code path that gives anyone is_global_admin: (user, created).
+
+    At most MAX_GLOBAL_ADMINS active global administrators may exist, so a second, different address is refused
+    (Conflict). The same active global administrator again is a no-op. An existing ordinary account is never
+    promoted. Zero global administrators is allowed. One transaction under the write lock; existing extra
+    global administrators are left alone (see over_limit_report)."""
+    email = normalize_email(email)
+    with _Transaction(session):
+        _begin_write(session)
+        existing = session.scalar(select(IdentityUser).where(IdentityUser.email == email))
+        if existing is not None:
+            if existing.is_global_admin and existing.is_active:
+                return existing, False
+            raise Conflict("an account with this email already exists and is not an active global administrator")
+        if active_global_admin_count(session) >= MAX_GLOBAL_ADMINS:
+            raise Conflict(
+                f"the maximum of {MAX_GLOBAL_ADMINS} global administrator is already active; "
+                "deactivate it explicitly before creating another")
+        user = IdentityUser(email=email, is_global_admin=True, email_verified_at=_now())
+        session.add(user)
+        session.flush()
+        _audit(session, "admin_bootstrapped", target=user.id)
+    return user, True
+
+
+def over_limit_report(session: Session, *, now: datetime | None = None) -> dict:
+    """Read-only: companies above MAX_COMPANY_ADMINS and the active global administrators when above
+    MAX_GLOBAL_ADMINS. Nothing is changed; resolving it is an explicit decision."""
+    now = now or _now()
+    companies = []
+    for company in session.scalars(select(IdentityCompany).order_by(IdentityCompany.id)):
+        active, invited = _active_admin_memberships(session, company.id), _open_admin_invitations(session, company.id, now)
+        if active + invited > MAX_COMPANY_ADMINS:
+            companies.append({"company": company.slug, "active_admins": active, "pending_admin_invitations": invited})
+    supers = session.scalars(select(IdentityUser.id).where(
+        IdentityUser.is_global_admin.is_(True), IdentityUser.is_active.is_(True)).order_by(IdentityUser.id)).all()
+    return {"companies_over_admin_limit": companies,
+            "active_global_admins": list(supers) if len(supers) > MAX_GLOBAL_ADMINS else []}
+
+
+
 # --- users and companies -------------------------------------------------
 
 def get_user(session: Session, user_id: int) -> IdentityUser | None:
@@ -387,6 +473,8 @@ def create_invitation(
     email, role = normalize_email(email), _check_role(role)
     now = now or _now()
     with _Transaction(session):
+        if role == ADMIN_ROLE:
+            _begin_write(session)  # the Admin capacity count below must see every concurrent invitation or promotion
         company = get_company(session, company_slug)
         if not _may_issue(session, admin_user_id, company_slug, role):
             raise NotAuthorized("administrator access is required")
@@ -412,6 +500,8 @@ def create_invitation(
             if open_invitation.expires_at > now:
                 raise Conflict("an invitation for this email and company is already open")
             _close_invitation(session, open_invitation, now)
+        if role == ADMIN_ROLE:
+            _require_admin_capacity(session, company.id, now)  # a pending Admin invitation reserves a seat
         expires_at = now + INVITATION_TTL
         invitation = IdentityInvitation(
             email=email, company_id=company.id, role=role, invited_by_user_id=admin.id,
@@ -631,6 +721,12 @@ def claim_invitation(session: Session, raw_token: str, *, user_id: int | None, n
         IdentityMembership.user_id == user.id, IdentityMembership.company_id == company.id))
     if membership is not None and membership.is_active:
         raise InvitationInvalid()  # no second active membership
+    if invitation.role == ADMIN_ROLE and admin_capacity_used(
+            session, company.id, now, exclude_invitation_id=invitation.id) >= MAX_COMPANY_ADMINS:
+        # The invitation's own reservation becomes the membership, so only the OTHER seats are counted. This can only
+        # fail if the company was pushed over the limit after the invitation was issued; the token stays unconsumed
+        # (the caller's transaction rolls back) and the answer is the uniform invitation-side refusal.
+        raise InvitationInvalid()
     closed = session.execute(update(IdentityInvitation).where(
         IdentityInvitation.id == invitation.id,
         IdentityInvitation.accepted_at.is_(None), IdentityInvitation.revoked_at.is_(None),
@@ -788,6 +884,8 @@ def change_membership_role(
         old_role = membership.role
         if old_role == new_role:
             raise Conflict("the member already has this role")
+        if new_role == ADMIN_ROLE:
+            _require_admin_capacity(session, company.id, now)
         result = session.execute(update(IdentityMembership).where(
             IdentityMembership.id == membership.id, IdentityMembership.is_active.is_(True),
             IdentityMembership.role == old_role,
@@ -863,3 +961,21 @@ def sync_assignable_users(identity_session: Session, company_session: Session, s
         company_session.rollback()
         raise LocalSyncError("the company references could not be written; retry") from exc
     return created
+
+
+def review_reviewer_ids(session: Session, slug: str, role: str) -> list[int]:
+    """The users currently required to review for `role` in company `slug`, read from the central database now:
+    "admin" -> the active company Admins (active user, active membership, active company; a global administrator is
+    never counted here); "super_admin" -> the active global administrator(s). Any other role -> none."""
+    if role == SUPER_ADMIN_ROLE:
+        return sorted(session.scalars(select(IdentityUser.id).where(
+            IdentityUser.is_global_admin.is_(True), IdentityUser.is_active.is_(True))).all())
+    if role != ADMIN_ROLE:
+        return []
+    return sorted(session.scalars(
+        select(IdentityUser.id)
+        .join(IdentityMembership, IdentityMembership.user_id == IdentityUser.id)
+        .join(IdentityCompany, IdentityCompany.id == IdentityMembership.company_id)
+        .where(IdentityCompany.slug == slug, IdentityCompany.is_active.is_(True),
+               IdentityMembership.role == ADMIN_ROLE, IdentityMembership.is_active.is_(True),
+               IdentityUser.is_active.is_(True), IdentityUser.is_global_admin.is_(False))).all())

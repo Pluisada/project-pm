@@ -59,6 +59,17 @@ describe("central card reviews: markers on the cards and a dialog per obligation
     expect(screen.queryByRole("dialog", { name: /review/i })).not.toBeInTheDocument(); // details only when a marker is opened
   });
 
+  it("shows the caller's own pending status and how many of the required reviewers already cleared it", async () => {
+    backend("admin", { canReview: true, canEditAnyCard: true }, [
+      Object.assign(review("admin", 1, "Alpha"), { my_status: "pending", reviewers_total: 2, reviewers_cleared: 1 })]);
+    render(<CentralBoardView companySlug="acme" boardId={3} />);
+    await userEvent.click(await screen.findByTestId("review-marker-11"));
+    const dialog = screen.getByRole("dialog", { name: "Admin review: Alpha" });
+    expect(within(dialog).getByTestId("review-status")).toHaveTextContent("Pending");
+    expect(within(dialog).getByTestId("review-progress")).toHaveTextContent("1 of 2 cleared");
+    expect(within(dialog).getByRole("button", { name: "Clear" })).toBeEnabled();
+  });
+
   it("opens the review dialog from the marker with category, status, who, when and the before and after values", async () => {
     backend("admin", { canReview: true, canEditAnyCard: true }, [review("admin", 1, "Alpha", 1, [
       { kind: "member_edit", version: 1, user_id: 7, at: "2026-10-22T10:00:00",

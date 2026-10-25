@@ -231,9 +231,11 @@ test("the backend refuses role changes by non-Super Admins and every Super Admin
     }
   }
   // The Super Admin may invite an Admin: pending, with the role recorded, and it is never a Super Admin invitation.
-  const ok = await request.post(`${API}/api/central/companies/lity/invitations`, { headers: await auth(request, ADMIN), data: { email: "b2-invited-admin@example.com", role: "admin" } });
+  // A company holds at most two Admins counting pending Admin invitations and lity already has one, so this runs in
+  // valor-log: a pending invitation would keep lity's second seat reserved for the next test (the Users form).
+  const ok = await request.post(`${API}/api/central/companies/valor-log/invitations`, { headers: await auth(request, ADMIN), data: { email: "b2-invited-admin@example.com", role: "admin" } });
   expect(ok.status()).toBe(202);
-  const pending = await (await request.get(`${API}/api/central/companies/lity/invitations`, { headers: await auth(request, ADMIN) })).json();
+  const pending = await (await request.get(`${API}/api/central/companies/valor-log/invitations`, { headers: await auth(request, ADMIN) })).json();
   expect(pending.find((p: { email: string }) => p.email === "b2-invited-admin@example.com")?.role).toBe("admin");
   expect(pending.some((p: { role: string }) => p.role === "super_admin")).toBe(false);
 });

@@ -7,6 +7,7 @@ response tests go through the company routes.
 from contextlib import contextmanager
 from datetime import date
 
+from test_company_admin_products import company_admin
 import pytest
 
 import card_reviews
@@ -167,6 +168,7 @@ def test_a_new_card_with_bid_details_and_a_deleted_card_with_details_leave_no_st
 
 
 def test_a_member_edit_of_next_step_is_one_increment_and_still_reviewed(rig):
+    company_admin(rig)  # an Admin must exist for an Admin obligation (without one only the Super Admin reviews)
     uid, token = member(rig)
     rig.assign(1, uid)
     r = rig.call("put", "/cards/1", token, json={"title": "t", "next_step": "do it"})
@@ -177,6 +179,7 @@ def test_a_member_edit_of_next_step_is_one_increment_and_still_reviewed(rig):
 
 
 def test_a_bid_details_change_moves_a_pending_review_to_the_new_version(rig):
+    company_admin(rig)
     uid, token = member(rig)
     rig.assign(1, uid)
     assert rig.call("put", "/cards/1", token, json={"title": "t"}).status_code == 200
@@ -187,6 +190,7 @@ def test_a_bid_details_change_moves_a_pending_review_to_the_new_version(rig):
 
 
 def test_a_position_only_move_leaves_versions_and_pending_reviews_alone(rig):
+    company_admin(rig)
     uid, token = member(rig)
     rig.assign(1, uid)
     assert rig.call("put", "/cards/1", token, json={"title": "t"}).status_code == 200

@@ -287,7 +287,7 @@ Phases 2 and 3 of the central mode added behaviour that needs tables a company d
 
 | Table(s) | Created by | Without it |
 |---|---|---|
-| `card_versions`, `card_review_obligations` (unique partial index `uq_card_review_pending` on `card_id, reviewer_role` where `status = 'pending'`) | `init_company_card_reviews.py` | A Sales Member's edit, a backward move and the review list/clear endpoints answer 503 `review_not_initialized`; nothing is skipped silently. Reads and forward moves are unaffected. |
+| `card_versions`, `card_review_obligations`, `card_review_acknowledgments` (per-reviewer CLEAR state; unique `(obligation_id, reviewer_user_id)`; obligations keep the unique partial index `uq_card_review_pending` on `card_id, reviewer_role` where `status = 'pending'`) | `init_company_card_reviews.py` | A Sales Member's edit, a backward move and the review list/clear endpoints answer 503 `review_not_initialized`; nothing is skipped silently. Reads and forward moves are unaffected. |
 | `card_loss_events` | `init_company_card_loss.py` | A move or creation into a `lost` stage answers 503 `loss_not_initialized`; no move is recorded without a reason. |
 | `card_excel_imports` (unique `board_id, repeat_guard`) | `init_company_excel_imports.py` | The Cards import answers 503 `import_not_initialized`. |
 | `products` | `init_company_products.py` | The lead options fall back to the built-in defaults and catalog writes answer 409. |
@@ -323,7 +323,7 @@ uv run python init_company_products.py --company <slug> --apply
 uv run python diagnose_company_schema.py --company <slug>
 ```
 
-A script that finds nothing to do prints so and exits 0. Two different failures can occur. (1) A failure partway through creating the several tables of ONE script (only `init_company_card_reviews.py` creates two): SQLite DDL here is not one transaction across tables, so the first table may remain; the diagnostic names the other as missing and re-running the same script creates it (tested with a simulated failure after the first review table, asserting that exactly that table exists, the diagnostic reports the other as missing and a re-run completes). (2) A failure BETWEEN separate scripts (for example the first of the four succeeds, the second does not): the scripts are independent, the earlier ones stay applied, the diagnostic lists the scripts still needed, and each is run again as needed; no script rolls back another. The scripts do not back up anything.
+A script that finds nothing to do prints so and exits 0. Two different failures can occur. (1) A failure partway through creating the several tables of ONE script (only `init_company_card_reviews.py` creates three): SQLite DDL here is not one transaction across tables, so the first table may remain; the diagnostic names the other as missing and re-running the same script creates it (tested with a simulated failure after the first review table, asserting that exactly that table exists, the diagnostic reports the other as missing and a re-run completes). (2) A failure BETWEEN separate scripts (for example the first of the four succeeds, the second does not): the scripts are independent, the earlier ones stay applied, the diagnostic lists the scripts still needed, and each is run again as needed; no script rolls back another. The scripts do not back up anything.
 
 An existing additive table with missing columns or a missing unique guard is not repaired: the script refuses (dry run too) with an error naming the table and the gap, exit 1, writes nothing and never reports it as created or as already present. Such a table needs a separately authorized, backed-up task.
 
@@ -617,3 +617,8 @@ Limits: the commands above were derived from the code and have not been run for 
 ## SMTP and invitation resend
 
 Resending an invitation needs working SMTP (`SMTP_HOST` and the related `SMTP_*` settings): without it the endpoint answers 503 and changes nothing. Verify it on the target server with a real resend before relying on it; the 2026-10-23 acceptance used the test SMTP settings in a local manual-validation environment only.
+
+### Access limits and per-reviewer CLEAR (upgrade notes)
+
+- **Before starting this code on an existing company database**, back it up and run `init_company_card_reviews.py --company <slug>` (dry run), then `--apply`: it adds only the empty `card_review_acknowledgments` table. No row is changed. Pending role-level obligations remain pending and receive one pending acknowledgment per current required reviewer the first time they are touched (a list, a CLEAR or a card change); already cleared obligations are history and are not reopened. Nothing is ever marked acknowledged by the upgrade.
+- **Over-limit data is reported, not repaired.** Run `uv run python diagnose_identity_limits.py` (read-only; `IDENTITY_DATABASE_URL`) to list companies with more than two Admins (counting pending Admin invitations) and installations with more than one active global administrator. Exit 1 means a limit is exceeded; resolve it deliberately (deactivate a membership, revoke an invitation). The limits only block adding to it.
