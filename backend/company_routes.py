@@ -37,8 +37,8 @@ from card_rules import (
     new_card_deal_fields,
     new_card_fields,
 )
-from identity_service import ADMIN_ROLE
 from central_deps import (
+    ROLE_ADMIN,
     reviewer_provider,
     CompanyContext,
     IdentityServiceError,
@@ -146,7 +146,7 @@ def assignable_ids_for(identity: Session, context: CompanyContext) -> list[int]:
     other Admins stay refused); they may still take a card for themself. The caller's own central access to the
     company is re-checked by sync_company_user before the local reference is written."""
     ids = assignable_user_ids(identity, context.company_slug)
-    if context.role == ADMIN_ROLE and context.user_id not in ids:
+    if context.role == ROLE_ADMIN and context.user_id not in ids:
         ids = sorted([*ids, context.user_id])
     return ids
 
