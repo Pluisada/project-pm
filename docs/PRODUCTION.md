@@ -1,6 +1,6 @@
 # Production environment: Sales Tracker (Sales Pipeline), central mode
 
-State as documented on 2026-10-26, the day of the first production deployment. This is the operator's reference for what runs in production, how it is operated, which risks were accepted and what is still open. The procedures it builds on are in `docs/VPS_DEPLOYMENT_PLAN.md` (plan, rehearsal and production runbook) and `docs/DEPLOYMENT.md` (repository deployment notes).
+State as documented on 2026-10-26, the day of the first production deployment, updated the same day for the upgrade to `e1a79ae` (section 3A). This is the operator's reference for what runs in production, how it is operated, which risks were accepted and what is still open. The procedures it builds on are in `docs/VPS_DEPLOYMENT_PLAN.md` (plan, rehearsal and production runbook) and `docs/DEPLOYMENT.md` (repository deployment notes).
 
 **Evidence levels used below.**
 - **Observed**: seen by the operator in command output during the deployment (2026-10-25 and 2026-10-26). The deployment records (`records/rehearsal-20261026.md`, `records/production-20261026.md` on the VPS) hold the same facts. **None of this has been re-verified when this document was written.**
@@ -15,12 +15,12 @@ No credentials, secret values, tokens, activation links or configuration file co
 | Item | State |
 |---|---|
 | Production URL | `https://pipeline.pluisada.com.br` (observed: HTTPS 200, valid Let's Encrypt certificate issued 2026-10-26, expires 2027-01-24) |
-| Release | Commit `cb216f722d33820d84537885ac18e2d93e70030b` on `origin/main` (pull request #3, fast-forward of `fdfe3b5`) |
+| Release | Commit `e1a79ae4e524649dc66aaa3cc229d3a122e3b092` on `origin/main` (pull request #7 merged; deployed 2026-10-26 18:05 UTC, section 3A). First production release: `cb216f722d33820d84537885ac18e2d93e70030b` (pull request #3), kept as the rollback image |
 | Mode | Central (`PM_AUTH_MODE=central`), `PM_ENV=production`; four SQLite databases: identity, Salcomp, Lity, Valor Log |
-| Users | One active global Super Admin, `pluisada@gmail.com` (observed: identity database counts users 1, active global admins 1, with password 1, email verified 1, memberships 0). No other user, no company Admin, no data |
+| Users | At the first deployment: one active global Super Admin, `pluisada@gmail.com` (observed: identity database counts users 1, active global admins 1, with password 1, email verified 1, memberships 0). Since then the owner has invited users (owner-reported: at least one company Admin, on Valor Log, who accepted); the counts were **not re-read** after the upgrade |
 | Container | `pm-central-app-1` (Compose project `pm-central`), **no published host port** (observed: `docker port` empty, nothing listening on host port 8000, port 8000 times out from the internet) |
 | Edge | Existing Nginx Proxy Manager (NPM 2.15.1), proxy host `pipeline.pluisada.com.br` to `http://sales-pipeline:8000` over the Docker network `nginx-proxy_default` |
-| AI assistant | **Disabled** (no `OPENROUTER_API_KEY`); the panel stays visible and answers that the key is not configured |
+| AI assistant | **Enabled** on 2026-10-26 18:32 UTC by the owner's decision (a dedicated `OPENROUTER_API_KEY` typed by the owner on the VPS into `pm-central.env`; observed: set in the container, 73 characters, value never shown; the owner reported that the assistant answered). Data of the board is sent to OpenRouter (model `openai/gpt-oss-120b`); cost and any spending limit are managed in the provider account and **not verified** here (R7) |
 | Backups | Daily local backup at 03:30 Brasilia time (06:30 UTC) with a manifest. **Local to the VPS only** |
 | Monitoring | Five-minute e-mail monitor on the VPS (HTTPS, container health, disk, backup age, certificate) |
 | Disaster recovery | **Not disaster-recovery ready**: application backups exist only on the same VPS (section 7) |
@@ -48,6 +48,19 @@ Internet --443--> NPM (nginx-proxy-npm-1; Let's Encrypt; Force SSL; HTTP/2)
 - **Dependency remediation** (pull request #3): the audit of the original release `fdfe3b5` found 20 distinct advisories in 6 Python runtime packages (3 critical, 7 high, some without a fix: `python-jose`, `ecdsa`) and 16 findings in JavaScript development tooling (3 critical, 9 high). The commit replaces `python-jose` with PyJWT (used only in `backend/auth.py`), upgrades FastAPI/Starlette/Pydantic/`python-multipart`/`python-dotenv`/`certifi`, and upgrades the frontend test tooling (`vitest` 5, `@types/node` 24).
 - **Results on the exact commit**, in a clean clone (Python 3.11.15, Node 24.19.0, macOS arm64): backend full suite 3475 passed, 1 skipped (not individually identified), 0 failed; central end-to-end 39 passed; frontend unit tests 799 passed; lint 0 errors and 1 warning; type check clean; production build ok; `pip-audit` 2.10.1 on the runtime lock (34 of 34 packages, platform markers removed): no known vulnerabilities; `npm audit` (production and all dependencies, 598 packages): 0 findings.
 - **Limits of that evidence:** advisory databases only, as of the audit day; operating-system packages of the base images are not scanned; the test run was on macOS, not on the Linux image; the production application had never run on FastAPI 0.162 / Starlette 1.10 before the rehearsal.
+
+## 3A. Upgrade to `e1a79ae` (2026-10-26)
+
+Code-only release: no change to schema, models, migrations, Dockerfile, Compose files or dependency lockfiles since `cb216f7` (verified with `git diff --name-only cb216f7 e1a79ae`). The merge commit `e1a79ae` (pull request #7, parents `7a2a39c` and `7e6c014`) has the same tree (`2bfa1d02bf39e5c89c1f65b19a3535bc5fd1f78d`) as the commit that was tested.
+
+- **What it adds:** branded HTML invitation and password-reset emails (company logo embedded, neutral layout for a reset); the invitation endpoint reports `email_sent` and a pending or deactivated member can be invited again; the Lead Generation Pareto on the KPIs screen (leads created this calendar year ranked by creator); a company Admin may assign a card to themself and to no other Admin (owner decision, 2026-10-26); clearer AI provider errors; the label "Confidence level"; `test_no_automatic_email.py`.
+- **Evidence on the exact commit** (clean clone, Node 24.19.0, Python 3.12.13 on macOS arm64, `uv sync --locked --extra dev`): frontend `tsc` clean, lint 0 errors and 1 warning, 815 unit tests passed (vitest 5.0.5), production build ok; central end-to-end 39 passed; backend focused run 202 passed; the backend full suite (3533 passed, 1 skipped, 0 failed) was run on the identical tree earlier the same day and reused. `npm audit` (production and all dependencies): 0 vulnerabilities; `pip-audit` 2.10.1 on the runtime lock: 34 of 34 packages, no known vulnerabilities, none skipped. Evidence files: the owner's `~/pm-archive-20261026/release-e1a79ae-evidence/` (not in the repository).
+- **Image:** `sales-pipeline:e1a79ae4e524649dc66aaa3cc229d3a122e3b092`, ID `sha256:51ea72b1df1d154706e1b569c92ff547c1699e27ea7b2332566d2eecb21b5fc6`, `linux/amd64`, Python 3.11.17, FastAPI 0.162.0, Starlette 1.10.0, PyJWT 2.15.1, uid 10001, no `.env` or database, three company logos in `static/brand` (observed). Built once on the Mac; loaded on the VPS with `docker save | docker load`; image ID and layer digests equal the Mac's (observed).
+- **Protection:** the existing backup script was run before the change: set `20261026T180406Z`; `sha256sum -c` passed for the four databases and the manifest; each file `integrity_check` ok, 0 foreign-key violations; the manifest records release `cb216f7` and its image ID (observed). The previous image stayed on the VPS.
+- **Deployment:** the VPS source tree was moved to `e1a79ae` (clean); only the `image:` line of `docker-compose.vps.yml` changed (the previous file is kept as `docker-compose.vps.yml.pre-e1a79ae`); only `pm-central-app-1` was recreated at 18:05:15 UTC and was healthy after about 9 seconds (observed). NPM, DNS, SMTP settings, OpenClaw, n8n and the databases were not touched.
+- **Checks (observed):** public `/api/health` 200 and `/api/mode` central; no published port; `/docs`, `/redoc` and `/openapi.json` 404; one HSTS header; CSP, nosniff, frame and referrer headers; no CORS header for a foreign origin; `diagnose_company_schema.py` for the three companies "Schema complete" (version 4) and `diagnose_identity_limits.py` "Within limits"; the new KPI route answers 401 without a token; the container's `APP_BASE_URL` is `https://pipeline.pluisada.com.br`; one password-reset email, sent only to the Super Admin's own address, accepted by the SMTP server (`Email sent`, no error). **Owner-reported:** Super Admin sign-in, the Lead Generation Pareto section on the KPIs screen, and receipt of the reset email (neutral layout, link host the production URL; the link was not used).
+- **AI enablement** at 18:32 UTC (separate step, same day): see the summary table and R7. A copy of the previous `pm-central.env` was kept in root's home (mode 600) and should be deleted once no longer needed.
+- **Not done in production:** no invitation was sent by the operator, no test account or record was created; the multi-user tests of section 8 remain deferred. A backup run after the upgrade, and the first cron run on the new release, were not yet observed. **Known limits of the Admin self-assignment rule (accepted by the owner):** it applies to card creation, card edit and the lead-options list; AI chat, Excel valid-values and Undo still use the unchanged central eligibility, and Undo back to the Admin's own id is untested. The owner chose to keep the original rule that an Admin is not an assignable salesperson in the Cards workbook import (a Valor Log Admin's address was refused on import, as designed).
 
 ## 4. How it was deployed
 
@@ -80,9 +93,9 @@ Not copied from development: no database, backup, `.env` or token. The productio
 | `/etc/cron.d/sales-pipeline-backup`, `/etc/cron.d/sales-pipeline-monitor` | Schedules | root |
 | `/var/log/sales-pipeline-backup.log`, `/var/log/sales-pipeline-monitor.log`, `/var/lib/sales-pipeline-monitor/` | Logs and monitor state | root |
 
-**Environment variable names in `pm-central.env`**: `PM_CENTRAL_DATA_HOST_PATH`, `PM_CENTRAL_DATA_CONTAINER_PATH`, `PM_IDENTITY_DATABASE_URL`, `PM_COMPANY_DB_SALCOMP`, `PM_COMPANY_DB_LITY`, `PM_COMPANY_DB_VALOR_LOG`, `PM_PUBLIC_URL`, `PM_BEHIND_PROXY`, `RATE_LIMIT_TRUSTED_PROXIES` (the NPM address `172.16.1.2/32`, to be re-read if NPM is ever recreated), `HSTS_ENABLED`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, `SMTP_USER`, `SMTP_PASSWORD`, `SECRET_KEY`. `OPENROUTER_API_KEY` is intentionally absent. `DATABASE_URL`, `PM_ENV`, `PM_E2E`, `PM_SETUP_TOKEN`, `PM_ALLOW_CREATE_DB` and `PM_REQUIRE_EXISTING_DB` must not be set (the Compose file sets what it needs).
+**Environment variable names in `pm-central.env`**: `PM_CENTRAL_DATA_HOST_PATH`, `PM_CENTRAL_DATA_CONTAINER_PATH`, `PM_IDENTITY_DATABASE_URL`, `PM_COMPANY_DB_SALCOMP`, `PM_COMPANY_DB_LITY`, `PM_COMPANY_DB_VALOR_LOG`, `PM_PUBLIC_URL`, `PM_BEHIND_PROXY`, `RATE_LIMIT_TRUSTED_PROXIES` (the NPM address `172.16.1.2/32`, to be re-read if NPM is ever recreated), `HSTS_ENABLED`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, `SMTP_USER`, `SMTP_PASSWORD`, `SECRET_KEY`. `OPENROUTER_API_KEY` was absent at the first deployment and was added on 2026-10-26 (section 1). `DATABASE_URL`, `PM_ENV`, `PM_E2E`, `PM_SETUP_TOKEN`, `PM_ALLOW_CREATE_DB` and `PM_REQUIRE_EXISTING_DB` must not be set (the Compose file sets what it needs).
 
-**Email**: Gmail SMTP on port 587 with STARTTLS (certificate and host verification are enforced by the application); the sender is the Super Admin's own Gmail account, authenticated with an application password. Emails are plain text in this release.
+**Email**: Gmail SMTP on port 587 with STARTTLS (certificate and host verification are enforced by the application); the sender is the Super Admin's own Gmail account, authenticated with an application password. Invitation and reset emails are HTML with a plain-text alternative since `e1a79ae` (plain text in `cb216f7`).
 
 **NPM proxy host** (verified in NPM's database): domain `pipeline.pluisada.com.br`, scheme `http`, forward host `sales-pipeline`, port 8000, certificate Let's Encrypt, Force SSL on, HTTP/2 on, Websockets off, HSTS off in NPM (the application sends one `Strict-Transport-Security` header), Block Common Exploits on, no access list, Advanced block exactly `access_log off;` and `client_max_body_size 11m;`.
 
@@ -105,7 +118,9 @@ Not copied from development: no database, backup, `.env` or token. The productio
 | R3 | **No automatic cleanup of old local backups.** Sets accumulate (about 1 MB each at the time of writing); the disk monitor alerts at 80%. | Open gap; deletion not enabled until it has been exercised on aged test sets |
 | R4 | **No independent monitoring.** A total VPS or network failure raises no alert. | **Accepted by the owner** |
 | R5 | Shared host: no swap and about 3.9 GB of free memory at the time; OpenClaw alone uses about 1.9 GB. The production container is small but memory pressure could affect all services. | Open, not caused by this deployment |
-| R6 | The 1 skipped backend test is not individually identified; the frontend lint has 1 warning; the assistant's error message names the internal variable `OPENROUTER_API_KEY`. | Open, cosmetic |
+| R6 | The 1 skipped backend test is not individually identified; the frontend lint has 1 warning (an unused parameter in `AuthModeGate.test.tsx`). | Open, cosmetic |
+| R7 | **AI assistant enabled.** Card, company and user data in the assistant's context is sent to OpenRouter (model `openai/gpt-oss-120b`); the key is dedicated to this environment and sits in `pm-central.env` (mode 600). A spending limit in the provider account was recommended; whether one is set is **not verified**. The application rate-limits the assistant. | Accepted by the owner (enabled by the owner's decision) |
+| R8 | Company Admin self-assignment: Undo back to the Admin's own id and the AI-chat path are not covered by tests (section 3A). | Accepted by the owner |
 
 ## 8. Deferred tests
 
@@ -117,13 +132,15 @@ These need more than one account, so they were **not** run (the automated suite 
 4. Permanent user cancellation (the cancelled user cannot sign in).
 5. Stale card-version rejection on production data (it was observed in the rehearsal, not in production).
 
+Also deferred: Undo of a reassignment back to a company Admin's own id (R8).
+
 Plan: run them at the first additional Admin onboarding (plan Phase F6, step 4), with clearly labelled test cards, and record the results in a new production record.
 
 ## 9. Open items
 
 - The owner is to delete the rehearsal proxy host in NPM (it would answer 502 now that the rehearsal container is gone). The rehearsal DNS record no longer resolved at the last check (observed 2026-10-26); the NPM entry was not re-checked.
 - Health bot (`@paulo_saude_bot`, OpenClaw): after the NPM changes the bot did not answer at first; the investigation (read-only) showed Telegram flood control (HTTP 429) on the bot's replies, no request reaching `/webhook/saude/paulo`, and other webhooks through NPM answering 200. The owner later reported that the original messages were answered. **Not independently verified** (no log check after the recovery). Debug notes for OpenClaw were delivered separately to the owner and are not part of this repository.
-- Documentation that still describes the pre-deployment state and needs a follow-up edit by whoever holds the local, uncommitted changes to them: `CLAUDE.md` (Status section), `docs/DEPLOYMENT.md` (statements that nothing was run on a server, "none exists yet" for the reverse proxy, the central-mode section), `docs/SECURITY.md` and `docs/TESTING.md`. They were **not edited here** because they carry uncommitted local modifications.
+- (Resolved by pull requests #5 and #6 on 2026-10-26; kept for history.) Documentation that still described the pre-deployment state and needed a follow-up edit by whoever held the local, uncommitted changes to them: `CLAUDE.md` (Status section), `docs/DEPLOYMENT.md` (statements that nothing was run on a server, "none exists yet" for the reverse proxy, the central-mode section), `docs/SECURITY.md` and `docs/TESTING.md`. They were **not edited here** because they carry uncommitted local modifications.
 - The Hostinger manual snapshot before the NPM edit was skipped by the owner; a copy of the NPM database (integrity checked) was taken instead and is kept in root's home on the VPS.
 
 ## 10. Recommendations (not done)
@@ -134,12 +151,13 @@ Plan: run them at the first additional Admin onboarding (plan Phase F6, step 4),
 4. Add an **independent external check** of the HTTPS health endpoint (outside the VPS) when a free option without extra accounts is acceptable.
 5. Review the memory budget (swap or container limits) with the OpenClaw owner before adding load.
 6. Complete the deferred multi-user tests at the first Admin onboarding.
-7. Enabling the AI assistant later: provide a dedicated `OPENROUTER_API_KEY` in `pm-central.env` and restart the container; the key, its cost and the rate limits are a separate decision.
+7. The AI assistant is enabled (R7): confirm that a spending limit is set in the provider account, and rotate the key if it is ever exposed (edit `pm-central.env`, recreate the container).
 8. Update the stale documents listed in section 9 together with the owner's pending local edits, and pin base-image digests in the Dockerfile when convenient.
+9. After about a week without incident, delete `/root/pm-central.env.before-ai` (it holds the previous secrets) and `docker-compose.vps.yml.pre-e1a79ae`, and observe the first scheduled backup on `e1a79ae` (its manifest must record the new release SHA and image ID).
 
 ## 11. Recovery and redeployment pointers
 
-- **Application or configuration failure, data intact**: stop or recreate only `pm-central-app-1`; never touch `data/`. Check `docker logs`, the production-config message (the application refuses to start and lists every problem) and `docker compose ... config`. Rollback for code is the previous image tag in `docker-compose.vps.yml`.
+- **Application or configuration failure, data intact**: stop or recreate only `pm-central-app-1`; never touch `data/`. Check `docker logs`, the production-config message (the application refuses to start and lists every problem) and `docker compose ... config`. Rollback for code is the previous image tag in `docker-compose.vps.yml` (`sales-pipeline:cb216f722d33820d84537885ac18e2d93e70030b` is still on the VPS, and `docker-compose.vps.yml.pre-e1a79ae` is the file before the upgrade); also return the source tree with `git -C /docker/sales-pipeline/src checkout --detach cb216f7...`, because the backup script takes the release SHA and image tag from it. The upgrade changed no schema, so a code rollback needs no database action.
 - **Data damaged**: restore from the latest set that verifies against its manifest, using the procedure in plan section 8.5 (stop, move the damaged files aside, restore with the repository helper, verify against the manifest, run the schema and limit diagnostics, start). Data written after the set's timestamp is lost.
 - **VPS lost**: the databases and local backups are lost with it (R2). Rebuild from this repository and the plan (Phases A, B and E: image, configuration with a new `SECRET_KEY`, fresh databases, bootstrap, NPM proxy host, activation by email), and recover data only if the provider's weekly backup or a manual copy exists.
 - **Super Admin cannot sign in**: send a new activation or reset link; no command sets a password by design.
@@ -155,6 +173,8 @@ Plan: run them at the first additional Admin onboarding (plan Phase F6, step 4),
 | The owner received the test and activation emails, set the password and signed in | Owner-reported |
 | Backup sets, manifests and their verification; cron and monitor installed | Observed |
 | The monitor's behaviour under a real failure; certificate renewal; the first scheduled (cron) backup run | **Not verified** at the time of writing |
+| Upgrade to `e1a79ae`: image identity, backup set, health, headers, diagnostics, reset email accepted by SMTP | Observed on 2026-10-26 (section 3A) |
+| Sign-in, Pareto screen, reset email received, AI answering after enablement | Owner-reported |
 | Restore on production data | **Not performed** |
 | Provider weekly backups for this VPS | Provider claim, not checked |
 | Health bot working again | Owner-reported |
