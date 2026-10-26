@@ -1,6 +1,7 @@
-"""A company Admin may assign a card to themself (on creation, on the edit form, and in the lead options), and only to
-themself: other Admins, Visitors, lapsed members and people of another company stay refused. The original creator is
-the `create` audit actor, whoever the card is assigned to. Synthetic data, tmp_path databases only."""
+"""A company Admin is an eligible salesperson (decided 2026-10-26; first only the Admin themself, then every active
+Admin of the company): a card may be created for, assigned to and imported for an Admin, and the Admin appears in the
+lead options. Visitors, lapsed members, a lapsed Admin and people of another company stay refused. The original
+creator is the `create` audit actor, whoever the card is assigned to. Synthetic data, tmp_path databases only."""
 import pytest
 
 import identity_service as svc
@@ -55,17 +56,30 @@ def test_original_creator_and_assignment_are_both_audited_for_the_pareto(rig):
     assert [(r["salesperson_id"], r["count"]) for r in result["rows"]] == [(aid, 2)]  # credit follows the creator, not the owner
 
 
-def test_other_ids_are_still_refused_on_creation(rig):
+def test_ineligible_ids_are_still_refused_on_creation(rig):
     aid, token = company_admin(rig)
     visitor, _ = member(rig, "v@example.com", role="visitor")
     outsider, _ = member(rig, "o@example.com", slug="valor-log")
     lapsed, _ = member(rig, "l@example.com")
-    other_admin, _ = company_admin(rig, "a2@example.com")
+    lapsed_admin, _ = company_admin(rig, "la@example.com")
     svc.deactivate_membership(rig.e.session, rig.e.admin, "lity", lapsed)
-    for uid in (visitor, outsider, lapsed, other_admin, 9999, None):
+    svc.deactivate_membership(rig.e.session, rig.e.admin, "lity", lapsed_admin)
+    for uid in (visitor, outsider, lapsed, lapsed_admin, 9999, None):
         r = create(rig, token, uid)
         assert r.status_code == 422, (uid, r.text)
     assert rig.sql("SELECT COUNT(*) FROM cards WHERE title = 'new lead'") == [(0,)]
+
+
+def test_another_company_admin_can_be_the_owner_on_creation(rig):
+    aid, token = company_admin(rig)
+    other_admin, _ = company_admin(rig, "a2@example.com")
+    r = create(rig, token, other_admin)
+    assert r.status_code == 201, r.text
+    assert r.json()["salesperson_id"] == other_admin
+    # the local reference was created for this company only; the creator of record is still the caller
+    assert rig.sql("SELECT COUNT(*) FROM users WHERE id = ?", (other_admin,), "lity") == [(1,)]
+    assert rig.sql("SELECT COUNT(*) FROM users WHERE id = ?", (other_admin,), "valor-log") == [(0,)]
+    assert audit(rig, r.json()["id"]) == [("create", aid), ("assign", aid)]  # both events record who acted, not the new owner
 
 
 def test_an_admin_of_another_company_cannot_assign_to_themself_here(rig):
@@ -83,29 +97,35 @@ def test_a_sales_member_still_cannot_choose_the_owner(rig):
     assert r.status_code == 201 and r.json()["salesperson_id"] == mid  # the client-supplied id is ignored
 
 
-def test_lead_options_offer_the_admin_themself_but_not_other_admins(rig):
+def test_lead_options_list_every_active_admin_and_member_but_never_a_visitor(rig):
     aid, token = company_admin(rig)
     other_admin, _ = company_admin(rig, "a2@example.com")
     m, _ = member(rig, "m@example.com")
-    local_row(rig, m, "m@example.com")
+    visitor, _ = member(rig, "v@example.com", role="visitor")
+    for uid, email in ((m, "m@example.com"), (other_admin, "a2@example.com"), (visitor, "v@example.com")):
+        local_row(rig, uid, email)
     ids = options(rig, token)
-    assert aid in ids and m in ids and other_admin not in ids
-    # a member's view is unchanged: no admin in the list
-    _, member_token = member(rig, "m2@example.com")
-    assert aid not in options(rig, member_token)
+    assert {aid, other_admin, m} <= ids and visitor not in ids
 
 
-def test_admin_can_assign_an_existing_card_to_themself_but_not_to_another_admin(rig):
+def test_admin_can_assign_an_existing_card_to_themself_or_to_another_admin(rig):
     aid, token = company_admin(rig)
     other_admin, _ = company_admin(rig, "a2@example.com")
     local_row(rig, other_admin)
-    assert call(rig, "put", "/cards/1", token, json={"salesperson_id": other_admin}).status_code == 422
+    r = call(rig, "put", "/cards/1", token, json={"salesperson_id": other_admin})
+    assert r.status_code == 200, r.text
+    assert rig.sql("SELECT salesperson_id FROM cards WHERE id = 1") == [(other_admin,)]
     r = call(rig, "put", "/cards/1", token, json={"salesperson_id": aid})
     assert r.status_code == 200, r.text
     assert rig.sql("SELECT salesperson_id FROM cards WHERE id = 1") == [(aid,)]
     assert ("assign", aid) in audit(rig, 1)
 
 
-def test_central_eligibility_function_is_unchanged(rig):
+def test_central_eligibility_includes_active_admins_only(rig):
     aid, _ = company_admin(rig)
-    assert aid not in svc.assignable_user_ids(rig.e.session, "lity")
+    lapsed_admin, _ = company_admin(rig, "la@example.com")
+    visitor, _ = member(rig, "v@example.com", role="visitor")
+    svc.deactivate_membership(rig.e.session, rig.e.admin, "lity", lapsed_admin)
+    ids = svc.assignable_user_ids(rig.e.session, "lity")
+    assert aid in ids and lapsed_admin not in ids and visitor not in ids
+    assert aid not in svc.assignable_user_ids(rig.e.session, "valor-log")  # eligibility is per company

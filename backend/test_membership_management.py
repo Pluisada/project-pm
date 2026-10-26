@@ -254,7 +254,7 @@ def test_admin_membership_grants_no_general_company_privilege(s):
                 or context.can_manage_members or context.can_grant_admin)
     assert not context.read_only  # unchanged Phase 2B behavior: at most Sales Member-like, never admin-level
     assert context.role not in ("super_admin",) and not cd_is_admin(context)  # get_admin_context refuses it
-    assert a not in svc.assignable_user_ids(s.session, "lity")
+    assert a in svc.assignable_user_ids(s.session, "lity")  # an Admin may own cards, but gains no privilege by it
 
 
 # --- invitations closed on demotion / deactivation -------------------------

@@ -190,7 +190,7 @@ def test_a_failed_recovery_changes_nothing_and_can_be_retried(restored_once, mon
     def explode(*args, **kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(cards_excel_import, "audit_new_card_owner", explode)
+    monkeypatch.setattr(cards_excel_import, "audit_imported_card", explode)
     r = confirm(rig, token, content, digest, RECOVER)
     assert r.status_code == 500 and r.json()["detail"]["code"] == "import_failed"
     assert state(rig) == before  # cards, versions, audit, stage events, undo and the ledger are exactly as they were

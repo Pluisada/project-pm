@@ -409,17 +409,18 @@ def company_access(session: Session, user_id: int, slug: str) -> CompanyAccess |
 def assignable_user_ids(session: Session, slug: str) -> list[int]:
     """Ids of the active users who may be assigned opportunities in a company, from the central database only.
 
-    Eligible: an active user who is a global admin, or who holds an active `sales_member` membership in the
-    company. Visitors are read-only and never eligible. Legacy lead-options listed every user, admins
-    included, and card_rules never restricted who an admin may assign, so admins stay eligible. An inactive
-    company yields nobody. Read-only, ordered by id; creates no company-local reference.
+    Eligible: an active user who is a global admin, or who holds an active `sales_member` or `admin` (company
+    Admin) membership in the company. Visitors are read-only and never eligible. A company Admin may therefore
+    own cards, be assigned by the Super Admin or another Admin, and appear in the Cards workbook (decided
+    2026-10-26; before that only the Admin themself could take a card). An inactive company yields nobody.
+    Read-only, ordered by id; creates no company-local reference.
     """
     company = get_company(session, slug)
     if not company.is_active:
         return []
     member = select(IdentityMembership.user_id).where(
         IdentityMembership.company_id == company.id,
-        IdentityMembership.role == "sales_member",
+        IdentityMembership.role.in_(("sales_member", ADMIN_ROLE)),
         IdentityMembership.is_active.is_(True),
     )
     return list(session.scalars(
@@ -934,7 +935,7 @@ def sync_assignable_users(identity_session: Session, company_session: Session, s
     """Create or refresh the company-local reference of every person the central database lets this company assign to.
 
     Same rules as sync_company_user, applied to the whole eligible set (assignable_user_ids: active global
-    admins and active `sales_member` memberships of an active company), so someone who accepted an invitation
+    admins and active `sales_member` or `admin` memberships of an active company), so someone who accepted an invitation
     but never wrote in the company can still be assigned. Idempotent: existing rows are kept (only a changed
     e-mail is refreshed), nothing is duplicated, no one outside the eligible set gets a row, and no credential
     or role is written. Not atomic with the central database; a failure raises LocalSyncError and changes
