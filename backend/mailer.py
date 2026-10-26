@@ -31,8 +31,8 @@ def is_configured() -> bool:
     return bool(os.getenv("SMTP_HOST"))
 
 
-def send_email(to: str, subject: str, body: str) -> None:
-    """Send a plain-text email, or record that it was not sent.
+def send_email(to: str, subject: str, body: str, html: str | None = None, inline_images=()) -> None:
+    """Send an email (plain text, plus an HTML alternative when given), or record that it was not sent.
 
     Without SMTP_HOST (local dev) nothing is sent and the link cannot be read
     from the logs: configure SMTP, or capture the message in tests.
@@ -48,6 +48,10 @@ def send_email(to: str, subject: str, body: str) -> None:
     message["To"] = to
     message["Subject"] = subject
     message.set_content(body)
+    if html:
+        message.add_alternative(html, subtype="html")
+        for image in inline_images:  # embedded (cid:) images travel inside the message, with no URL to reach
+            message.get_payload()[-1].add_related(image.data, "image", image.subtype, cid=f"<{image.cid}>")
 
     try:
         with smtplib.SMTP(host, int(os.getenv("SMTP_PORT", "587")), timeout=10) as smtp:
@@ -62,13 +66,13 @@ def send_email(to: str, subject: str, body: str) -> None:
     logger.info("Email sent: to=%s subject=%r", recipient, subject)
 
 
-def send_in_background(background, to: str, subject: str, body: str) -> None:
+def send_in_background(background, to: str, subject: str, body: str, html: str | None = None, inline_images=()) -> None:
     """Deliver after the response, so latency doesn't reveal whether mail was sent.
     A delivery failure is already logged (type only) by `send_email`."""
 
     def deliver():
         try:
-            send_email(to, subject, body)
+            send_email(to, subject, body, html, inline_images) if html else send_email(to, subject, body)
         except EmailDeliveryError:
             pass
 

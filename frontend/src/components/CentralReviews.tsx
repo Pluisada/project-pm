@@ -16,7 +16,7 @@ const KIND_LABEL: Record<string, string> = { member_edit: "Sales Member edit", b
 const FIELD_LABELS: Record<string, string> = {
   title: "Title", details: "Details", company: "Customer", contact: "Contact", deal_value: "Deal value (current year)",
   deal_value_next_year: "Deal value (next year)", expected_close_date: "Expected close date", lead_source: "Lead source",
-  product_line: "Product line", confidence_level: "Probability level", salesperson: "Salesperson",
+  product_line: "Product line", confidence_level: "Confidence level", salesperson: "Salesperson",
 };
 
 const show = (value: unknown) => (value === null || value === undefined || value === "" ? "(empty)" : String(value));

@@ -89,7 +89,9 @@ export const CentralInviteScreen = ({ token, onDone }: { token: string; onDone: 
         onDone("Your account is ready. Sign in with your email and password.");
       }
     } catch (err) {
-      setError(linkFailure(err, "This invitation is invalid, expired or was already used. Ask your administrator for a new one."));
+      const invalid = "This invitation is invalid, expired or was already used. Ask your administrator for a new one.";
+      // The answer never says whether an account exists, so this hint is the same for everyone.
+      setError(linkFailure(err, existing ? invalid : `${invalid} If you already have an account, choose "I already have an account" below and sign in with it.`));
       setPassword("");
       setConfirm("");
     } finally {

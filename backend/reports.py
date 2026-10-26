@@ -5,7 +5,7 @@ won/lost/open by the column's stage_kind) are clearer here than in SQL.
 """
 from collections import defaultdict
 from collections.abc import Iterable
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy.orm import Session, selectinload
@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 from lead_options import (
     CONFIDENCE_LEVELS, CONFIDENCE_UNASSIGNED, CONFIDENCE_UNASSIGNED_LABEL, DEAL_CURRENCY, STAGE_LOST, STAGE_WON,
 )
-from models import Card, Column, CompanyUser
+from models import AuditEvent, Card, Column, CompanyUser
 
 CLOSING_SOON_DAYS = 30
 FORMER_USER_LABEL = "Former user"
@@ -108,6 +108,60 @@ def _confidence_groups(cards: list[Card]) -> list[dict]:
         rows[level][0] if rows[level] else {**empty, "key": CONFIDENCE_UNASSIGNED_LABEL if level is None else level}
         for level in (*CONFIDENCE_LEVELS, None)
     ]
+
+
+def build_lead_generation(
+    db: Session,
+    board_id: int,
+    now: Optional[datetime] = None,
+) -> dict:
+    """Pareto of the leads created this calendar year, by the user who created them.
+
+    A lead is a card still on the board whose `created_at` falls in [Jan 1 of the current year, next Jan 1) and
+    not after `now`. Its generator is the actor of the card's earliest `create` audit event, never the current
+    salesperson, so reassigning a card does not move the credit. Cards with no such event (created before the
+    audit trail, or by an actor whose id was not recorded) are counted in `unattributed_count`, not ranked.
+    Timestamps are naive UTC, as everywhere else in the database, so the year boundary is UTC.
+    Ties are ordered by name, then id. Unfiltered: the KPIs screen has no card filters.
+    """
+    now = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    start = datetime(now.year, 1, 1)
+    end = datetime(now.year + 1, 1, 1)
+    cards = (
+        db.query(Card.id)
+        .join(Column)
+        .filter(Column.board_id == board_id)
+        .filter(Card.created_at >= start, Card.created_at < end, Card.created_at <= now)
+        .all()
+    )
+    card_ids = [card_id for (card_id,) in cards]
+    creators: dict[int, int | None] = {}
+    if card_ids:
+        events = (
+            db.query(AuditEvent.card_id, AuditEvent.actor_user_id)
+            .filter(AuditEvent.board_id == board_id, AuditEvent.action == "create", AuditEvent.card_id.in_(card_ids))
+            .order_by(AuditEvent.id.desc())
+            .all()
+        )
+        creators = {card_id: actor for card_id, actor in events}  # newest first, so the earliest event wins
+    counts: dict[int, int] = defaultdict(int)
+    for card_id in card_ids:
+        if creators.get(card_id) is not None:
+            counts[creators[card_id]] += 1
+    labels = user_labels(db, counts)
+    total = sum(counts.values())
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], labels[item[0]].casefold(), item[0]))
+    rows, running = [], 0
+    for user_id, count in ranked:
+        running += count
+        rows.append({
+            "salesperson_id": user_id, "name": labels[user_id], "count": count,
+            "share": count / total, "cumulative_share": running / total,
+        })
+    return {
+        "period_start": start.date(), "period_end": now.date(), "total": total,
+        "unattributed_count": len(card_ids) - total, "rows": rows,
+    }
 
 
 def build_board_report(

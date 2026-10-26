@@ -22,7 +22,8 @@ def s(tmp_path, monkeypatch):
         session.add(admin)
         session.commit()
     sent = []
-    monkeypatch.setattr(mailer, "send_email", lambda to, subject, body: sent.append((to, subject, body)))
+    monkeypatch.setenv("SMTP_HOST", "smtp.invalid")  # the send itself is mocked; this only marks mail as configured
+    monkeypatch.setattr(mailer, "send_email", lambda to, subject, body, html=None, inline_images=(): sent.append((to, subject, body, html)))
     setup.sent = sent
     rate_limit.reset() if hasattr(rate_limit, "reset") else None
     yield setup
@@ -77,6 +78,18 @@ def test_reset_flow_single_use_and_policy(s):
     assert s.client.post("/api/central/password/reset", json={"token": token, "new_password": "N3w!Passw0rdyy"}).status_code == 400
     assert s.login("ok@example.com", GOOD).status_code == 401
     assert s.login("ok@example.com", "N3w!Passw0rdxx").status_code == 200
+
+
+def test_invitation_email_is_branded_for_the_invitation_company(s):
+    h = bearer(s, "admin@example.com")
+    for slug, color in (("salcomp", "#be3124"), ("valor-log", "#b8450b")):
+        r = s.client.post(f"/api/central/companies/{slug}/invitations", headers=h,
+                          json={"email": f"{slug}@example.com", "role": "sales_member"})
+        assert r.status_code == 202 and "token" not in r.text
+        to, subject, text, html = s.sent[-1]
+        assert subject == "You're invited to Sales Tracker" and "central_invite_token=" in text
+        assert color in html and "cid:company-logo" in html
+        assert "central_invite_token=" in html
 
 
 def test_admin_invite_then_accept_creates_membership(s):
@@ -350,7 +363,7 @@ def test_resend_delivery_failure_is_502_keeps_old_link_and_can_be_retried(s, mon
     monkeypatch.setenv("SMTP_HOST", "smtp.invalid")
     inv, old = _open_invitation(s)
 
-    def boom(to, subject, body):
+    def boom(to, subject, body, html=None, inline_images=()):
         raise mailer.EmailDeliveryError("Could not send email")
     monkeypatch.setattr(mailer, "send_email", boom)
     r = _resend(s, inv)
@@ -359,7 +372,7 @@ def test_resend_delivery_failure_is_502_keeps_old_link_and_can_be_retried(s, mon
         tokens = session.query(svc.IdentityAuthToken).all()
         assert len(tokens) == 2 and sum(t.invalidated_at is None for t in tokens) == 1  # only the original is live
         assert "invitation_resend_failed" in [a.action for a in session.query(svc.IdentityAuditEvent)]
-    monkeypatch.setattr(mailer, "send_email", lambda to, subject, body: s.sent.append((to, subject, body)))
+    monkeypatch.setattr(mailer, "send_email", lambda to, subject, body, html=None, inline_images=(): s.sent.append((to, subject, body, html)))
     assert _resend(s, inv).status_code == 200  # retry after the failure
     new = s.sent[-1][2].split("central_invite_token=")[1].split()[0]
     assert _accept(s, old) == 400 and _accept(s, new) == 200
@@ -391,9 +404,50 @@ def test_resend_refuses_an_expired_invitation(s, monkeypatch):
     assert _resend(s, inv).status_code == 409 and not s.sent
 
 
+# --- invitation delivery is reported honestly, and members can be invited again ---------------------------------
+
 def _invite(s, email, role="sales_member", slug="salcomp", headers=None):
     return s.client.post(f"/api/central/companies/{slug}/invitations",
                          headers=headers or bearer(s, "admin@example.com"), json={"email": email, "role": role})
+
+
+def _pending(s, email):
+    with s.factory() as session:
+        return session.query(svc.IdentityInvitation).filter_by(email=email, accepted_at=None, revoked_at=None).count()
+
+
+def test_invite_reports_email_sent_only_when_delivered(s):
+    r = _invite(s, "ok@example.com")
+    assert r.status_code == 202 and r.json() == {"email_sent": True, "message": "Invitation sent."}
+    assert len(s.sent) == 1 and _pending(s, "ok@example.com") == 1
+
+
+def test_invite_without_smtp_creates_invitation_but_says_nothing_was_sent(s, monkeypatch):
+    monkeypatch.delenv("SMTP_HOST")
+    r = _invite(s, "nomail@example.com")
+    assert r.status_code == 202 and r.json()["email_sent"] is False and "not configured" in r.json()["message"]
+    assert s.sent == [] and _pending(s, "nomail@example.com") == 1 and "token" not in r.text.lower().replace("email", "")
+
+
+def test_invite_with_provider_failure_keeps_invitation_and_reports_failure(s, monkeypatch):
+    def boom(*a, **k):
+        raise mailer.EmailDeliveryError("Could not send email")
+    monkeypatch.setattr(mailer, "send_email", boom)
+    r = _invite(s, "fail@example.com")
+    assert r.status_code == 202 and r.json()["email_sent"] is False and "could not be sent" in r.json()["message"]
+    assert _pending(s, "fail@example.com") == 1
+
+
+def test_undelivered_invitation_can_be_resent_once_mail_works(s, monkeypatch):
+    monkeypatch.delenv("SMTP_HOST")
+    _invite(s, "later@example.com")
+    with s.factory() as session:
+        inv_id = session.query(svc.IdentityInvitation).filter_by(email="later@example.com").one().id
+    h = bearer(s, "admin@example.com")
+    assert s.client.post(f"/api/central/companies/salcomp/invitations/{inv_id}/resend", headers=h).status_code == 503
+    monkeypatch.setenv("SMTP_HOST", "smtp.invalid")
+    assert s.client.post(f"/api/central/companies/salcomp/invitations/{inv_id}/resend", headers=h).status_code == 200
+    assert len(s.sent) == 1 and _pending(s, "later@example.com") == 1
 
 
 def _accept_latest(s, password=GOOD):
@@ -404,6 +458,64 @@ def _accept_latest(s, password=GOOD):
 def _member_of(s, email, slug="salcomp"):
     members = s.client.get(f"/api/central/companies/{slug}/members", headers=bearer(s, "admin@example.com")).json()
     return next((m for m in members if m["email"] == email), None)
+
+
+def test_deactivated_member_can_be_invited_again_and_is_reactivated_without_duplicates(s):
+    assert _invite(s, "again@example.com", "visitor").status_code == 202
+    assert _accept_latest(s).status_code == 200
+    member = _member_of(s, "again@example.com")
+    admin_h = bearer(s, "admin@example.com")
+    assert s.client.post(f"/api/central/companies/salcomp/members/{member['user_id']}/deactivate", headers=admin_h).status_code == 204
+    assert _member_of(s, "again@example.com")["is_active"] is False
+    r = _invite(s, "again@example.com", "sales_member")
+    assert r.status_code == 202 and r.json()["email_sent"] is True
+    assert _invite(s, "again@example.com").status_code == 422  # a second open invitation is refused
+    token = s.sent[-1][2].split("central_invite_token=")[1].split()[0]
+    joined = s.client.post("/api/central/invitations/join", json={"token": token, "email": "again@example.com", "password": GOOD})
+    assert joined.status_code == 200
+    assert _member_of(s, "again@example.com")["is_active"] is True and _member_of(s, "again@example.com")["role"] == "sales_member"
+    with s.factory() as session:
+        rows = session.query(svc.IdentityMembership).filter_by(user_id=member["user_id"]).all()
+        assert len(rows) == 1
+
+
+def test_existing_identity_without_membership_can_be_invited(s):
+    with s.factory() as session:
+        session.add(svc.IdentityUser(email="stale@example.com", password_hash=ca.hash_password(GOOD), email_verified_at=svc._now()))
+        session.commit()
+    assert _invite(s, "stale@example.com").status_code == 202
+
+
+def test_active_member_and_open_invitation_conflicts_remain(s):
+    assert _invite(s, "dup@example.com").status_code == 202
+    assert _invite(s, "dup@example.com").status_code == 422
+    assert _accept_latest(s).status_code == 200
+    assert _invite(s, "dup@example.com").status_code == 422  # already an active member
+    assert _pending(s, "dup@example.com") == 0
+
+
+def test_only_the_global_admin_may_invite(s):
+    assert _invite(s, "x@example.com").status_code == 202
+    assert _accept_latest(s).status_code == 200
+    member_h = bearer(s, "x@example.com")
+    assert _invite(s, "y@example.com", headers=member_h).status_code == 403
+    assert s.client.post("/api/central/companies/salcomp/invitations", json={"email": "y@example.com", "role": "visitor"}).status_code == 401
+
+
+def test_password_reset_email_is_branded_and_uses_the_effective_base_url(s, monkeypatch, caplog):
+    import logging
+    import central_routes
+    monkeypatch.setattr(central_routes, "APP_BASE_URL", "http://127.0.0.1:3010")
+    with caplog.at_level(logging.DEBUG):
+        r = s.client.post("/api/central/password/forgot", json={"email": "ok@example.com"})
+    assert r.status_code == 200
+    to, subject, text, html = s.sent[0]
+    assert subject == "Reset your Sales Tracker password"
+    token = text.split("central_reset_token=")[1].split()[0]
+    assert f"http://127.0.0.1:3010/?central_reset_token={token}" in text
+    assert f'href="http://127.0.0.1:3010/?central_reset_token={token}"' in html and "Reset Password" in html
+    assert token not in caplog.text and "central_reset_token" not in caplog.text
+    assert s.client.post("/api/central/password/reset", json={"token": token, "new_password": "N3w!Passw0rdxx"}).status_code == 200
 
 
 def test_first_password_form_refuses_an_account_that_already_has_a_password_and_the_link_stays_usable(s):

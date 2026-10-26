@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import central_auth as ca
+import branded_email
 import mailer
 import rate_limit
 from auth import APP_BASE_URL
@@ -115,10 +116,9 @@ def build_central_router(runtime: CentralIdentityRuntime) -> APIRouter:
         if rate_limit.try_hit("forgot_account", account):
             raw = ca.issue_password_reset(session, body.email)
             if raw is not None:
-                mailer.send_in_background(
-                    background, body.email.strip(), "Reset your Sales Pipeline password",
-                    f"Open this link to choose a new password:\n\n{APP_BASE_URL}/?central_reset_token={raw}\n\n"
-                    "It expires in one hour and works once. If you didn't ask for this, ignore this email.")
+                message = branded_email.build_password_reset_email(f"{APP_BASE_URL}/?central_reset_token={raw}")
+                mailer.send_in_background(background, body.email.strip(), message.subject, message.text,
+                                          message.html, message.inline_images)
         return {"message": GENERIC_FORGOT}
 
     @router.post("/password/reset")
@@ -167,7 +167,7 @@ def build_central_router(runtime: CentralIdentityRuntime) -> APIRouter:
         return {"message": "You have joined the company. It now appears in your company list."}
 
     @router.post("/companies/{company_slug}/invitations", status_code=202, dependencies=[Depends(require_matching_company_header)])
-    def invite(company_slug: str, body: InviteRequest, background: BackgroundTasks,
+    def invite(company_slug: str, body: InviteRequest,
                user=Depends(current_user), session: Session = Depends(runtime.get_session)):
         """Global administrators only. The link goes to the invitee by email and is never returned."""
         if company_slug not in COMPANY_SLUGS or not user.is_global_admin:
@@ -176,10 +176,18 @@ def build_central_router(runtime: CentralIdentityRuntime) -> APIRouter:
             issued = ca.create_invitation(session, user.id, body.email, company_slug, body.role)
         except ca.IdentityServiceError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
-        mailer.send_in_background(
-            background, body.email.strip(), "You have been invited to the Sales Pipeline",
-            f"Open this link to set your password and join {company_slug}:\n\n{APP_BASE_URL}/?central_invite_token={issued.token}\n")
-        return {"message": "Invitation sent."}
+        message = _invitation_message(session, company_slug, issued.token)
+        # The invitation exists either way; the answer says whether the email actually went out. Admin-only, so the
+        # synchronous send leaks nothing about which addresses are registered.
+        if not mailer.is_configured():
+            return {"email_sent": False, "message": "Invitation created, but email delivery is not configured, so nothing "
+                    "was sent. Use Resend on the pending invitation once mail works."}
+        try:
+            mailer.send_email(body.email.strip(), message.subject, message.text, message.html, message.inline_images)
+        except mailer.EmailDeliveryError:
+            return {"email_sent": False, "message": "Invitation created, but the email could not be sent. "
+                    "Use Resend on the pending invitation to try again."}
+        return {"email_sent": True, "message": "Invitation sent."}
 
     @router.post("/companies/{company_slug}/invitations/{invitation_id}/resend", dependencies=[Depends(require_matching_company_header)])
     def resend_invitation(company_slug: str, invitation_id: int, user=Depends(current_user),
@@ -193,14 +201,19 @@ def build_central_router(runtime: CentralIdentityRuntime) -> APIRouter:
             raise HTTPException(status_code=503, detail="Email delivery is not configured; the invitation was not sent")
         resend = _managed(ca.begin_invitation_resend, session, user.id, company_slug, invitation_id)
         try:
-            mailer.send_email(
-                resend.email, "You have been invited to the Sales Pipeline",
-                f"Open this link to set your password and join {company_slug}:\n\n{APP_BASE_URL}/?central_invite_token={resend.token}\n")
+            message = _invitation_message(session, company_slug, resend.token)
+            mailer.send_email(resend.email, message.subject, message.text, message.html, message.inline_images)
         except mailer.EmailDeliveryError:
             ca.finish_invitation_resend(session, user.id, resend, delivered=False)
             raise HTTPException(status_code=502, detail="The email could not be sent; try again later") from None
         ca.finish_invitation_resend(session, user.id, resend, delivered=True)
         return {"message": "Invitation email sent."}
+
+    def _invitation_message(session: Session, company_slug: str, token: str) -> branded_email.BrandedEmail:
+        """Branding comes from the company of the invitation (slug already validated server-side), never the request."""
+        company = ca.get_company(session, company_slug)
+        return branded_email.build_invitation_email(
+            company.slug, company.name, f"{APP_BASE_URL}/?central_invite_token={token}", APP_BASE_URL)
 
     def _managed(call, *args, **kwargs):
         """Run a membership service call; every refusal is a fixed-message HTTP error."""

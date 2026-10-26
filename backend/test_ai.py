@@ -52,6 +52,37 @@ class TestAIConnectivity:
                     await call_ai([{"role": "user", "content": "test"}])
 
 
+class TestDiagnosticsDistinguishCauses:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status,expected", [
+        (401, "rejected the API key"), (403, "rejected the API key"),
+        (404, "model unavailable"), (400, "model unavailable"),
+        (429, "OpenRouter API error 429"), (503, "OpenRouter API error 503"),
+    ])
+    async def test_status_maps_to_cause(self, status, expected):
+        request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+        upstream = httpx.Response(status, json={"error": "sk-leak"}, request=request)
+        with patch("ai.validate_api_key", return_value=True), \
+                patch("httpx.AsyncClient.post", return_value=upstream):
+            with pytest.raises(AIError) as caught:
+                await call_ai([{"role": "user", "content": "x"}])
+        assert expected in str(caught.value) and "sk-leak" not in str(caught.value)
+
+    @pytest.mark.asyncio
+    async def test_missing_key_message_names_variable_not_value(self, monkeypatch):
+        monkeypatch.setattr(ai, "OPENROUTER_API_KEY", "")
+        with pytest.raises(AIError, match="OPENROUTER_API_KEY not configured"):
+            await call_ai([{"role": "user", "content": "x"}])
+
+    def test_key_is_read_from_environment_at_import(self):
+        import os, subprocess, sys
+        env = {**os.environ, "OPENROUTER_API_KEY": "env-key"}
+        code = ("import ai; print(ai.OPENROUTER_API_KEY == 'env-key', ai.MODEL_ID, ai.OPENROUTER_BASE_URL)")
+        out = subprocess.run([sys.executable, "-I", "-c", "import sys; sys.path.insert(0, '.'); " + code],
+                             env=env, capture_output=True, text=True, check=True).stdout.split()
+        assert out == ["True", "openai/gpt-oss-120b", "https://openrouter.ai/api/v1"]
+
+
 class TestAIErrorHandling:
     """Test AI error handling."""
 

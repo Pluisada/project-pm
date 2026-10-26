@@ -91,7 +91,7 @@ Source of truth: the predicates in `backend/identity_service.py` and `card_rules
 | Role | Cards | Everything else |
 |---|---|---|
 | `super_admin` (global administrator) | Create for any eligible salesperson, edit any, assign, move forward and backward, delete, export, import | Boards and columns, products, members and invitations |
-| `admin` (company Admin) | Create for an eligible salesperson, edit any, assign, move forward and backward, export | Read-only member list. No delete, imports, boards, products or member changes |
+| `admin` (company Admin) | Create for an eligible salesperson or for themself, edit any, assign (to an eligible salesperson or to themself; other Admins are refused), move forward and backward, export | Read-only member list. No delete, imports, boards, products or member changes |
 | `sales_member` | Create (assigned to themself, a client-supplied salesperson is ignored); edit and move only cards assigned to them, never unassigned ones; move forward or within a column only | None |
 | `visitor` | Read only, even a card assigned to them | None |
 

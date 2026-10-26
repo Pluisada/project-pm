@@ -19,12 +19,18 @@ export const LandingArtwork = () => (
  * narrow ones show the whole image over a blurred copy. Without `open` it offers the LOGIN button; with it,
  * the children (the sign-in form) sit over the artwork. The company picker uses the same artwork (LandingArtwork).
  */
-export const CentralLanding = ({ open, onLogin, children }: { open: boolean; onLogin: () => void; children: React.ReactNode }) => (
+export const CentralLanding = ({ open, onLogin, note, children }: { open: boolean; onLogin: () => void; note?: string | null; children: React.ReactNode }) => (
   <div className="fixed inset-0 overflow-hidden bg-[#0b1f3a]">
     <LandingArtwork />
     {open ? (
       <div className="absolute inset-0 overflow-y-auto bg-black/50">{children}</div>
     ) : (
+      <>
+      {note && (
+        <p role="status" className="absolute bottom-[calc(max(2rem,env(safe-area-inset-bottom))+4rem)] left-1/2 w-[min(90vw,32rem)] -translate-x-1/2 rounded-lg bg-black/60 px-4 py-2 text-center text-sm font-medium text-white">
+          {note}
+        </p>
+      )}
       <button
         type="button"
         onClick={onLogin}
@@ -32,6 +38,7 @@ export const CentralLanding = ({ open, onLogin, children }: { open: boolean; onL
       >
         LOGIN
       </button>
+      </>
     )}
   </div>
 );

@@ -129,7 +129,7 @@ export const CardDetailsModal = ({
     { label: "Stage", value: `${stageTitle}${stageKind === "open" ? "" : ` (${stageKind})`}` },
     { label: "Lead source", value: card.lead_source },
     { label: "Product line", value: card.product_line },
-    { label: "Probability level", value: <ConfidenceBadge level={card.confidence_level} showUnassigned /> },
+    { label: "Confidence level", value: <ConfidenceBadge level={card.confidence_level} showUnassigned /> },
     { label: "Details", value: card.details },
   ];
 

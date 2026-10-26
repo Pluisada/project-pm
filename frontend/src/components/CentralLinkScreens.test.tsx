@@ -66,6 +66,15 @@ describe("central link screens", () => {
     expect(done).not.toHaveBeenCalled();
   });
 
+  it("points a person who already has an account to the existing-account form", async () => {
+    stubFetch(() => json(400, { detail: "This invitation is invalid or has expired" }));
+    render(<CentralInviteScreen token="secret-token" onDone={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText("Password"), STRONG);
+    await userEvent.type(screen.getByLabelText("Confirm password"), STRONG);
+    await userEvent.click(screen.getByRole("button", { name: "Activate account" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent('choose "I already have an account"');
+  });
+
   it("shows the password policy message of a weak password", async () => {
     stubFetch(() => json(422, { detail: "Password does not meet the requirements" }));
     render(<CentralInviteScreen token="t" onDone={vi.fn()} />);

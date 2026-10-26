@@ -219,8 +219,8 @@ describe("a write is never aborted by a company switch", () => {
     await vi.waitFor(() => expect(sent).toBeDefined());
     setActiveCompany("salcomp"); // the person switched while the invitation was being sent
     expect(sent?.aborted).toBe(false);
-    release(json(202, {}));
-    await expect(pending).resolves.toBeUndefined();
+    release(json(202, { email_sent: true, message: "Invitation sent." }));
+    await expect(pending).resolves.toEqual({ email_sent: true, message: "Invitation sent." });
   });
 
   it("reports a failed write as the real error, not as a cancellation", async () => {

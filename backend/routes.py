@@ -30,7 +30,7 @@ import kpis
 import token_store
 from mailer import send_in_background
 from rate_limit import limit_ai_chat
-from reports import build_board_report
+from reports import build_board_report, build_lead_generation
 from undo import (
     UndoError,
     apply_undo,
@@ -61,6 +61,7 @@ from schemas import (
     KpiAgingResponse,
     KpiConversionResponse,
     KpiPipelineResponse,
+    LeadGeneration,
     KpiStageTimeResponse,
     KpiSummaryResponse,
     UndoStatus,
@@ -968,6 +969,20 @@ async def get_kpi_pipeline(
 ):
     """Current cards per stage and per currency."""
     return kpi_pipeline_payload(db, board_id)
+
+
+def kpi_lead_generation_payload(db: Session, board_id: int):
+    return build_lead_generation(db, board_id)
+
+
+@router.get("/boards/{board_id}/kpis/lead-generation", response_model=LeadGeneration)
+async def get_kpi_lead_generation(
+    board_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """This calendar year's leads ranked by creator (Pareto). Not affected by the KPI period filter."""
+    return kpi_lead_generation_payload(db, board_id)
 
 
 # ============================================================================

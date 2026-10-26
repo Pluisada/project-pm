@@ -46,7 +46,7 @@ const value = (scope: string, name: string) => {
   return match[1];
 };
 
-describe("probability level colours", () => {
+describe("confidence level colours", () => {
   it("light theme: text on background is readable for every level", () => {
     const scope = light;
     for (const level of ["low", "medium", "high"]) {

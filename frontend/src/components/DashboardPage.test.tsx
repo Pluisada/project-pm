@@ -35,6 +35,10 @@ vi.mock("@/lib/api", async (importOriginal) => ({
         age_days: null, history: "none", deal_value: null, deal_value_next_year: 0, deal_value_total: null, deal_year: 2026, currency: "USD" },
     ],
   }),
+  getKpiLeadGeneration: async () => ({
+    period_start: "2026-01-01", period_end: "2026-10-24", total: 1, unattributed_count: 0,
+    rows: [{ salesperson_id: 1, name: "alice", count: 1, share: 1, cumulative_share: 1 }],
+  }),
   getKpiPipeline: async () => ({
     as_of: "x",
     deal_years: [2026],
@@ -87,5 +91,15 @@ describe("DashboardPage annual Deal Value", () => {
     expect(screen.getByText(/can't be divided by year/)).toBeInTheDocument();
     // An outcome with no cards shows no money at all.
     expect(within(screen.getByTestId("closing-lost")).getAllByRole("cell")[5]).toHaveTextContent("-");
+  });
+});
+
+describe("DashboardPage lead generation Pareto", () => {
+  it("is the first block of the KPIs screen, above the Period filter", async () => {
+    render(<DashboardPage boardId={1} />);
+    const pareto = (await screen.findByText("Lead Generation Pareto")).closest("section")!;
+    const period = screen.getByLabelText("Period");
+    expect(pareto.compareDocumentPosition(period) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(pareto).getByTestId("pareto-row")).toHaveTextContent("alice");
   });
 });

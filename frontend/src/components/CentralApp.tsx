@@ -135,6 +135,8 @@ export const CentralApp = () => {
   const [forgot, setForgot] = useState(false);
   // The sign-in form stays behind the landing page's LOGIN button; a notice (expired session, finished link) opens it.
   const [loginOpen, setLoginOpen] = useState(false);
+  // What a finished invitation or reset link tells the person. It sits on the landing page and does not open the form.
+  const [landingNote, setLandingNote] = useState<string | null>(null);
   const [me, setMe] = useState<CentralMe | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [companySlug, setCompanySlug] = useState<string | null>(null);
@@ -407,7 +409,10 @@ export const CentralApp = () => {
     setProblem(null);
     setLink(null);
     setForgot(false);
-    setNotice(message);
+    // Back to the landing page, as after a fresh visit: the sign-in form stays behind its LOGIN button.
+    setNotice(null);
+    setLoginOpen(false);
+    setLandingNote(message);
   };
 
   if (!ready) return <LoadingScreen message="Loading..." />;
@@ -432,7 +437,7 @@ export const CentralApp = () => {
   if (!me && forgot) return <CentralForgotScreen onBack={() => setForgot(false)} />;
   if (!me) {
     return (
-      <CentralLanding open={loginOpen || Boolean(notice)} onLogin={() => setLoginOpen(true)}>
+      <CentralLanding open={loginOpen || Boolean(notice)} note={landingNote} onLogin={() => { setLandingNote(null); setLoginOpen(true); }}>
         <CentralLogin notice={notice} onForgot={() => setForgot(true)} onSuccess={() => { setNotice(null); setProblem(null); setAccountNotice(null); loadMe(); }} />
       </CentralLanding>
     );
