@@ -29,6 +29,23 @@ Mount a **directory** for the commercial database, not the file: SQLite writes j
 - `restore-check/pm-commercial.restore-check.db` (beside `data/`) is a byte-identical verification copy; keep it until its removal is authorized.
 - Administrator activation (password-reset email) and cleanup each need a separate explicit authorization. The CPM migration and the workbook import have been done (2026-10-16).
 
+### Real local runtime (manual acceptance; decided 2026-10-24)
+
+The default environment for manual validation on the user's Mac is the real central-mode runtime, not a copy. Its policy and checklist are in `docs/TESTING.md`; the operational facts are here.
+
+- Directory `~/Library/Application Support/SalcompSalesPipeline`: `central-run/start-backend.sh` (backend on `127.0.0.1:8010`) and `start-frontend.sh` (`next dev` on `127.0.0.1:3010`, build directory `.next-eval`), `central/` (`identity.db`, `salcomp.db`, `lity.db`, `valor-log.db`; fictional test data kept for local validation only: the production databases were created fresh on the VPS on 2026-10-26 and no contents of these files were copied into production, see `docs/PRODUCTION.md`), `central-backups/` (verified backups taken before migrations). Both scripts run the code in `/Users/pauloluisada/IA/pm-pilot-dev`.
+- Manual test URL: `http://127.0.0.1:3010`. `/api/health` on 8010 must answer 200.
+- `APP_BASE_URL` in this runtime is `http://127.0.0.1:3010`: the script exports it, which overrides `.env`. Emailed invitation, reset and (in invitation emails) logo URLs are built from it, so they point to the real local application and open only on this machine. The development `.env` keeps `APP_BASE_URL=http://localhost:3000` for `next dev` on 3000 / backend 8000; do not change it for the runtime.
+- The runtime scripts deliberately `unset` `SMTP_*` and `OPENROUTER_API_KEY`, so by default the real backend sends no mail and the AI assistant answers 503. Do not edit the scripts or `.env` to change that. Use a temporary launcher outside the application directory, derived from `start-backend.sh`: replace the `HERE=` line with the absolute `central-run` path, drop `OPENROUTER_API_KEY` from the `unset` line, and before `export PM_AUTH_MODE=central` export `OPENROUTER_API_KEY` and `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, each read from the repository `.env` by name (never typed, echoed or logged). Keep the `APP_BASE_URL` line as the script has it. Restart only the backend; a healthy 3010 frontend stays up. If port 3010's `.next-eval` is locked by another dev server, run the frontend with a different ignored build directory (for example `.next-check`) through a launcher, rather than stopping the other stack.
+- Check that the process really has the settings, names only: `ps eww -p <backend pid> | tr ' ' '\n' | grep -E '^(SMTP_|APP_BASE_URL)'` and report `set`/`empty` (the values of `SMTP_HOST`, `SMTP_PORT` and `APP_BASE_URL` are not secret; the others are).
+- Schema compatibility comes first: `diagnose_company_schema.py --company <slug>` must say "Schema complete." for the three companies before the backend starts; otherwise follow "Existing company databases" below (backup, dry run, apply, verify) after inspecting the exact change.
+
+#### SMTP for the real local runtime
+
+- Provider and sender: `SMTP_HOST`, `SMTP_PORT` (587, STARTTLS), `SMTP_USER`, `SMTP_PASSWORD` and `SMTP_FROM` live only in the git-ignored repository `.env`; never copy the values into documentation, source, commits or reports. `SMTP_FROM` must equal the authenticated account or be a sender alias verified with the provider (Gmail rewrites or rejects others).
+- Distinguish: invitation or reset request persisted; SMTP submission attempted; SMTP server accepted the message; provider delivery status (not available over plain SMTP submission); receipt confirmed by the person in the mailbox. The application answers honestly up to the SMTP step: creating an invitation returns `email_sent: false` with an explanatory message when SMTP is unconfigured or the send fails (the invitation stays pending and can be resent), and resend answers 503/502. Accepted by SMTP does not prove delivery, and only the user can confirm receipt.
+- A real send needs the user to name the recipient first. Logs record only the subject, a masked recipient and the status (`mailer.py`); a connection or authentication failure appears as `Email delivery failed ... error=<type>` with no detail.
+
 ### Running natively against the local commercial database (when activation is authorized)
 
 The backend does not read `.env` itself, so `DATABASE_URL` comes only from the process environment. SQLite URL form is `sqlite:///` plus an absolute path (four slashes); spaces are used literally and the whole value must be quoted:
@@ -442,6 +459,8 @@ Then, for the intended commit only: run the full backend suite and the checklist
 
 ## Manual testing of the current code on disposable copies of the real central databases (procedure; executed once on 2026-10-23, never writes to the real files)
 
+> **Superseded 2026-10-24.** Manual acceptance now uses the real local runtime (8010/3010, see "Real local runtime" above and `docs/TESTING.md`). This copy procedure is kept as history and for disposable rehearsals of destructive or migration steps; it is not an acceptance environment.
+
 Use this when the current code needs realistic data but the real databases lack a newer schema element (for example the Batch 2 contact columns) or must not be written. Placeholders are yours to fill.
 
 1. Stop nothing: check that the real application is not running (`lsof -nP -iTCP:<ports>`), that the four files have no `-wal`, `-shm` or `-journal` beside them and no open handle (`lsof <file>`), and record each source's size, modification time and SHA-256.
@@ -619,6 +638,7 @@ Limits: the commands above were derived from the code and have not been run for 
 ## SMTP and invitation resend
 
 Resending an invitation needs working SMTP (`SMTP_HOST` and the related `SMTP_*` settings): without it the endpoint answers 503 and changes nothing. Verify it on the target server with a real resend before relying on it; the 2026-10-23 acceptance used the test SMTP settings in a local manual-validation environment only.
+
 
 ### Access limits and per-reviewer CLEAR (upgrade notes)
 
