@@ -130,7 +130,7 @@ def test_a_failed_confirmation_leaves_the_destination_board_and_ledger_unchanged
     def explode(*args, **kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(cards_excel_import, "audit_new_card_owner", explode)
+    monkeypatch.setattr(cards_excel_import, "audit_imported_card", explode)
     r = confirm(rig, token, content, digest, board=2)
     assert r.status_code == 500 and r.json()["detail"]["code"] == "import_failed" and r.json()["detail"]["applied"] is False
     assert (counts(rig), board_cards(rig, 2)) == before and board_cards(rig, 2) == []

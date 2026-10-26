@@ -428,7 +428,7 @@ def test_a_failure_halfway_rolls_back_every_create_update_and_the_ledger(rig, mo
     content = book([row(card_id=1, title="Renamed", stage="Second"), row(title="n1"), row(title="n2"), row(title="n3")])
     body = preview(rig, token, content).json()
     before, snapshot = counts(rig), cards(rig)
-    real, calls = cards_excel_import.audit_new_card_owner, []
+    real, calls = cards_excel_import.audit_imported_card, []
 
     def explode(*args, **kwargs):
         calls.append(1)
@@ -436,7 +436,7 @@ def test_a_failure_halfway_rolls_back_every_create_update_and_the_ledger(rig, mo
             raise RuntimeError("disk exploded: secret-path /private/db")
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(cards_excel_import, "audit_new_card_owner", explode)
+    monkeypatch.setattr(cards_excel_import, "audit_imported_card", explode)
     r = rig.client.post("/api/companies/lity/boards/1" + CONFIRM, headers={"Authorization": f"Bearer {token}"},
                         files=upload(content), data={"confirm": "true", "plan_digest": body["plan_digest"]})
     assert r.status_code == 500

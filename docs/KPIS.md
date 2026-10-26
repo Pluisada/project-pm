@@ -186,3 +186,12 @@ Every endpoint is read-only `GET`. Each needs a login, either member or admin, t
 - Period dates are shown as UTC calendar dates with the end inclusive, matching the API's `[start, end)` interval.
 - Numbers are shown only for the filters that produced them. Nothing is shown while a custom range is incomplete or a new period is loading.
 
+
+## 13. Lead Generation Pareto
+
+Leads created in the current calendar year (UTC, up to now) that are still on the board, ranked by **the creator of record**: the actor of the card's earliest `create` audit event (`reports.build_lead_generation`). The credit never follows the current salesperson, so reassigning a card does not move it. It does not depend on the KPI period filter.
+
+- A card created on the board (or by the AI chat) is credited to the person who created it, whoever it is assigned to.
+- A card created by a **Cards workbook import** is credited to the row's `salesperson_email` (the importer is kept in the event details as `imported_by_id` and is the actor of the `assign` event). A row **without** a salesperson has no recorded creator: it is counted in `unattributed_count` and not ranked.
+- Cards created before this rule keep the credit already recorded (for earlier imports that is the person who ran the import); there is no automatic correction of existing events.
+- Ties are ordered by name, then id; shares are of the attributed total.
