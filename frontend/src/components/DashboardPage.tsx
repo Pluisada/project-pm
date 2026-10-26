@@ -6,6 +6,7 @@ import {
   getErrorMessage,
   getKpiAging,
   getKpiConversion,
+  getKpiLeadGeneration,
   getKpiPipeline,
   getKpiStageTime,
   getKpiSummary,
@@ -13,6 +14,7 @@ import {
   type KpiConversion,
   type KpiCoverage,
   type KpiDuration,
+  type LeadGeneration,
   type KpiPeriodPreset,
   type KpiPeriodQuery,
   type KpiPipeline,
@@ -32,6 +34,7 @@ import {
   formatRate,
   moneyTotalsToNumbers,
 } from "@/lib/format";
+import { LeadGenerationPareto } from "@/components/LeadGenerationPareto";
 import { AnnualLegend, AnnualTotals, Section, StageBars, StatTile, Totals, selectClass, tdClass, thClass } from "@/components/ReportBlocks";
 
 type DashboardPageProps = {
@@ -154,6 +157,7 @@ export const DashboardPage = ({ boardId, companySlug }: DashboardPageProps) => {
   const [compare, setCompare] = useState(true);
   const [flow, setFlow] = useState<FlowData | null>(null);
   const [stock, setStock] = useState<StockData | null>(null);
+  const [leadGeneration, setLeadGeneration] = useState<LeadGeneration | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const customIncomplete = preset === "custom" && (!start || !end);
@@ -163,6 +167,13 @@ export const DashboardPage = ({ boardId, companySlug }: DashboardPageProps) => {
     Promise.all([getKpiAging(boardId, companySlug), getKpiPipeline(boardId, companySlug)])
       .then(([aging, pipeline]) => setStock({ aging, pipeline }))
       .catch((err: unknown) => setError(getErrorMessage(err, "Failed to load the pipeline")));
+  }, [boardId, companySlug]);
+
+  // The calendar year's Pareto does not depend on the Period filter, so it is fetched once per board.
+  useEffect(() => {
+    getKpiLeadGeneration(boardId, companySlug)
+      .then(setLeadGeneration)
+      .catch((err: unknown) => setError(getErrorMessage(err, "Failed to load the lead generation Pareto")));
   }, [boardId, companySlug]);
 
   useEffect(() => {
@@ -214,6 +225,8 @@ export const DashboardPage = ({ boardId, companySlug }: DashboardPageProps) => {
           </p>
         </div>
       </div>
+
+      {leadGeneration && <LeadGenerationPareto data={leadGeneration} />}
 
       {/* Filters: one row above everything they affect */}
       <div className="flex flex-wrap items-center gap-3">

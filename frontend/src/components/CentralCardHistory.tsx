@@ -18,7 +18,7 @@ const FIELD_LABELS: Record<string, string> = {
   next_step: "Next Action Description",
   lead_source: "Lead source",
   product_line: "Product line",
-  confidence_level: "Probability level",
+  confidence_level: "Confidence level",
   salesperson: "Salesperson",
 };
 

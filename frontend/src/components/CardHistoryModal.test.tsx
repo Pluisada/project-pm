@@ -10,10 +10,10 @@ const entry = (changes: CardEditHistoryEntry["changes"], id = 1): CardEditHistor
 const show = (entries: CardEditHistoryEntry[]) =>
   render(<CardHistoryModal cardTitle="Opp" entries={entries} isLoading={false} onClose={vi.fn()} />);
 
-describe("CardHistoryModal probability level", () => {
+describe("CardHistoryModal confidence level", () => {
   it("renders a change between two levels under a readable label", () => {
     show([entry({ confidence_level: { old: "LOW", new: "HIGH" } })]);
-    expect(screen.getByText("Probability level")).toBeInTheDocument();
+    expect(screen.getByText("Confidence level")).toBeInTheDocument();
     expect(screen.getByText("LOW")).toBeInTheDocument();
     expect(screen.getByText(/HIGH/)).toBeInTheDocument();
   });

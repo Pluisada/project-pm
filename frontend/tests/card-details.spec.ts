@@ -126,8 +126,8 @@ test("the details view groups general, Bid and source data and keeps their meani
   // Null Bid fields are not shown.
   await expect(dialog.getByText("Close reason")).toHaveCount(0);
 
-  // Probability level is the card's own field; the removed Bid percentage and source label are gone.
-  await expect(dialog.getByText("Probability level")).toBeVisible();
+  // Confidence level is the card's own field; the removed Bid percentage and source label are gone.
+  await expect(dialog.getByText("Confidence level")).toBeVisible();
   await expect(dialog.getByTestId("confidence-badge")).toHaveText("HIGH");
   // The source code stays; the old confidence label is gone.
   await expect(dialog.getByText("OPP-0042")).toBeVisible();

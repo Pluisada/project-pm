@@ -42,7 +42,7 @@ const countsText = (s: Pick<CardsImportSummary, "created" | "updated" | "unchang
 
 const FIELD_LABEL: Record<string, string> = {
   title: "Title", company: "Customer", contact: "Contact", contact_email: "Contact email", contact_phone: "Contact telephone", details: "Details", deal_value: "Deal value (USD)",
-  deal_value_next_year: "Next-year value (USD)", confidence_level: "Probability", expected_close_date: "Close date", next_step_due: "Next action date",
+  deal_value_next_year: "Next-year value (USD)", confidence_level: "Confidence level", expected_close_date: "Close date", next_step_due: "Next action date",
   product_line: "Product line", lead_source: "Lead source", salesperson_id: "Salesperson", stage: "Stage",
 };
 const SHOWN_MAX = 120;

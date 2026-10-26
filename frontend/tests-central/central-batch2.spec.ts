@@ -252,7 +252,8 @@ test("the Users form can invite an Admin after a confirmation", async ({ page, r
   expect(before.some((p: { email: string }) => p.email === "b2-form-admin@example.com")).toBe(false); // declined: nothing sent
   page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: "Send invitation" }).click();
-  await expect(page.getByTestId("members-notice")).toContainText("Invitation sent");
+  // This stack has no SMTP: the invitation exists, and the screen must not claim it was emailed.
+  await expect(page.getByTestId("members-notice")).toContainText("Invitation created, but email delivery is not configured");
   const after = await (await request.get(`${API}/api/central/companies/lity/invitations`, { headers: await auth(request, ADMIN) })).json();
   expect(after.find((p: { email: string }) => p.email === "b2-form-admin@example.com")?.role).toBe("admin");
 });

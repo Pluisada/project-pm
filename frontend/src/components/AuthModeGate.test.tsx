@@ -83,6 +83,70 @@ describe("AuthModeGate", () => {
       for (const spy of logs) expect(JSON.stringify(spy.mock.calls)).not.toContain(SYNTHETIC);
     });
 
+    const landingAfter = async () => {
+      // Back on the landing page (LOGIN button), not on the sign-in form, and the link is gone from the address.
+      expect(await screen.findByRole("button", { name: "LOGIN" })).toBeInTheDocument();
+      expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Sign In" })).not.toBeInTheDocument();
+      expect(window.location.search).toBe("");
+    };
+
+    it("after a successful reset the landing page shows, not the sign-in form, and a refresh does not reopen the reset", async () => {
+      window.history.replaceState(null, "", `/?central_reset_token=${SYNTHETIC}`);
+      vi.stubGlobal("fetch", vi.fn(async (url: string) =>
+        String(url).includes("/api/mode")
+          ? new Response(JSON.stringify({ auth: "central" }), { status: 200 })
+          : new Response("null", { status: 200 })
+      ));
+      const { unmount } = render(<AuthModeGate />);
+      await userEvent.type(await screen.findByLabelText("New password"), STRONG);
+      await userEvent.type(screen.getByLabelText("Confirm password"), STRONG);
+      await userEvent.click(screen.getByRole("button", { name: "Save password" }));
+      await landingAfter();
+      expect(screen.getByRole("status")).toHaveTextContent("Password updated");
+      // The sign-in form opens only through the normal entry: the LOGIN button.
+      await userEvent.click(screen.getByRole("button", { name: "LOGIN" }));
+      expect(await screen.findByLabelText("Email")).toBeInTheDocument();
+      // A refresh (a new page load at the cleaned address) starts at the landing page, never at the reset screen.
+      unmount();
+      render(<AuthModeGate />);
+      expect(await screen.findByRole("button", { name: "LOGIN" })).toBeInTheDocument();
+      expect(screen.queryByLabelText("New password")).not.toBeInTheDocument();
+    });
+
+    it("after accepting an invitation the landing page shows, not the sign-in form", async () => {
+      window.history.replaceState(null, "", `/?central_invite_token=${SYNTHETIC}`);
+      const fetchMock = vi.fn(async (url: string) =>
+        String(url).includes("/api/mode")
+          ? new Response(JSON.stringify({ auth: "central" }), { status: 200 })
+          : new Response("null", { status: 200 })
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      render(<AuthModeGate />);
+      await userEvent.type(await screen.findByLabelText("Password"), STRONG);
+      await userEvent.type(screen.getByLabelText("Confirm password"), STRONG);
+      await userEvent.click(screen.getByRole("button", { name: "Activate account" }));
+      expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/api/central/invitations/accept"))).toBe(true);
+      await landingAfter();
+      expect(screen.getByRole("status")).toHaveTextContent("Your account is ready");
+      expect(JSON.stringify({ ...localStorage, ...sessionStorage })).not.toContain(SYNTHETIC);
+    });
+
+    it("an invalid invitation keeps the invitation screen with the error and does not go to the landing page", async () => {
+      window.history.replaceState(null, "", `/?central_invite_token=${SYNTHETIC}`);
+      vi.stubGlobal("fetch", vi.fn(async (url: string) =>
+        String(url).includes("/api/mode")
+          ? new Response(JSON.stringify({ auth: "central" }), { status: 200 })
+          : new Response(JSON.stringify({ detail: "x" }), { status: 400 })
+      ));
+      render(<AuthModeGate />);
+      await userEvent.type(await screen.findByLabelText("Password"), STRONG);
+      await userEvent.type(screen.getByLabelText("Confirm password"), STRONG);
+      await userEvent.click(screen.getByRole("button", { name: "Activate account" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(/invalid|expired/i);
+      expect(screen.queryByRole("button", { name: "LOGIN" })).not.toBeInTheDocument();
+    });
+
     it("reports an invalid or expired token in plain language", async () => {
       window.history.replaceState(null, "", `/?central_reset_token=${SYNTHETIC}`);
       vi.stubGlobal("fetch", vi.fn(async (url: string) =>

@@ -24,6 +24,15 @@ def _upstream_request_id(response: httpx.Response) -> str:
     return value if _REQUEST_ID.fullmatch(value) else "-"
 
 
+def _upstream_message(status: int) -> str:
+    """Client-safe message that tells credential, model and provider failures apart (no upstream body)."""
+    if status in (401, 403):
+        return f"OpenRouter rejected the API key (status {status})"
+    if status in (400, 404):
+        return f"OpenRouter model unavailable or request invalid (status {status})"
+    return f"OpenRouter API error {status}"
+
+
 class AIError(Exception):
     """AI service error."""
 
@@ -56,7 +65,7 @@ async def call_ai(
         AIError: If API call fails
     """
     if not validate_api_key():
-        raise AIError("OPENROUTER_API_KEY not configured")
+        raise AIError("OPENROUTER_API_KEY not configured in the backend environment")
 
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -89,7 +98,7 @@ async def call_ai(
                     "AI upstream failure: category=upstream_http_error status=%s request_id=%s",
                     response.status_code, _upstream_request_id(response),
                 )
-                raise AIError(f"OpenRouter API error {response.status_code}")
+                raise AIError(_upstream_message(response.status_code))
 
             data = response.json()
 

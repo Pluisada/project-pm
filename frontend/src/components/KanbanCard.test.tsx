@@ -90,7 +90,7 @@ describe("KanbanCard Next Action", () => {
   });
 });
 
-describe("KanbanCard probability level", () => {
+describe("KanbanCard confidence level", () => {
   const lead = (confidenceLevel: "LOW" | "MEDIUM" | "HIGH" | null): Card["lead"] => ({
     company: null, contact: null, dealValue: null, productLine: null,
     confidenceLevel, salespersonName: null, nextStep: null, nextStepDue: null,

@@ -501,6 +501,23 @@ class ClosingSoonLead(BaseModel):
         return DEAL_CURRENCY
 
 
+class LeadGenerationRow(BaseModel):
+    salesperson_id: int
+    name: str
+    count: int
+    share: float  # of the attributed total, 0..1
+    cumulative_share: float  # running share down the ranking; the last row is exactly 1
+
+
+class LeadGeneration(BaseModel):
+    """Leads created this calendar year (UTC), ranked by who created them. Definition: reports.build_lead_generation."""
+    period_start: date
+    period_end: date
+    total: int  # attributed leads: the sum of the rows
+    unattributed_count: int  # in the period but with no recorded creator; not ranked
+    rows: List[LeadGenerationRow]
+
+
 class BoardReport(BaseModel):
     """Sales report over a board's leads. Money totals are per currency."""
     kpis: ReportKpis

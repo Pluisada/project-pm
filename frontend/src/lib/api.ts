@@ -969,6 +969,16 @@ export interface ReportGroup {
   won_sum_totals?: CurrencyTotals;
 }
 
+/** Leads created this calendar year (UTC) ranked by who created them; shares are 0..1 of the attributed total. */
+export interface LeadGeneration {
+  period_start: string;
+  period_end: string;
+  total: number;
+  /** In the period but with no recorded creator; not ranked. */
+  unattributed_count: number;
+  rows: { salesperson_id: number; name: string; count: number; share: number; cumulative_share: number }[];
+}
+
 export interface BoardReport {
   kpis: {
     open_count: number;
@@ -1232,6 +1242,11 @@ export async function getKpiAging(boardId: number, companySlug?: string): Promis
 
 export async function getKpiPipeline(boardId: number, companySlug?: string): Promise<KpiPipeline> {
   return apiCall<KpiPipeline>(`${apiRoot(companySlug)}/boards/${boardId}/kpis/pipeline`);
+}
+
+/** This calendar year's leads ranked by creator; not affected by the KPI period filter. */
+export async function getKpiLeadGeneration(boardId: number, companySlug?: string): Promise<LeadGeneration> {
+  return apiCall<LeadGeneration>(`${apiRoot(companySlug)}/boards/${boardId}/kpis/lead-generation`);
 }
 
 // ============================================================================
@@ -1639,8 +1654,11 @@ export interface PendingInvitation {
   expires_at: string;
 }
 
-export async function inviteCompanyMember(companySlug: string, email: string, role: InviteRole): Promise<void> {
-  await apiCall(`/api/central/companies/${encodeURIComponent(companySlug)}/invitations`, {
+/** The invitation is created either way; `email_sent` says whether the email actually went out. */
+export async function inviteCompanyMember(
+  companySlug: string, email: string, role: InviteRole
+): Promise<{ email_sent: boolean; message: string }> {
+  return apiCall(`/api/central/companies/${encodeURIComponent(companySlug)}/invitations`, {
     method: "POST",
     body: JSON.stringify({ email, role }),
   });

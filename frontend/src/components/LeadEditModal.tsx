@@ -239,7 +239,7 @@ export const LeadEditModal = ({ card, options, onSave, onClose }: LeadEditModalP
             </select>
           </label>
           <label className={labelClass}>
-            Probability level
+            Confidence level
             <select value={form.confidence_level} onChange={set("confidence_level")} className={inputClass}>
               <option value="">Not assigned</option>
               {CONFIDENCE_LEVELS.map((level) => (

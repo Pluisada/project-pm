@@ -101,14 +101,29 @@ export const CentralMembers = ({ companySlug, companyName }: { companySlug: stri
     }
   };
 
+  const sendInvite = async (target: string, inviteRole: InviteRole): Promise<boolean> => {
+    // Inviting an Admin is an escalation like promoting one: ask first. The backend decides regardless.
+    if (inviteRole === "admin" && !window.confirm(`Invite ${target} as an Admin of ${companyName}? Admins can edit, assign and move any card.`)) return false;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const result = await inviteCompanyMember(companySlug, target, inviteRole);
+      setNotice(result.email_sent
+        ? { kind: "ok", text: `Invitation sent to ${target}. The link was emailed and expires in 7 days.` }
+        : { kind: "error", text: `${result.message} (${target})` });
+      return true;
+    } catch (err) {
+      setNotice({ kind: "error", text: failure(err, "send the invitation") });
+      return false;
+    } finally {
+      await load();
+      setBusy(false);
+    }
+  };
+
   const invite = async (e: React.FormEvent) => {
     e.preventDefault();
-    const target = email.trim();
-    // Inviting an Admin is an escalation like promoting one: ask first. The backend decides regardless.
-    if (role === "admin" && !window.confirm(`Invite ${target} as an Admin of ${companyName}? Admins can edit, assign and move any card.`)) return;
-    const ok = await run("send the invitation", () => inviteCompanyMember(companySlug, target, role),
-      `Invitation sent to ${target}. The link was emailed and expires in 7 days.`);
-    if (ok) setEmail("");
+    if (await sendInvite(email.trim(), role)) setEmail("");
   };
 
   const resend = (p: PendingInvitation) => {
@@ -175,6 +190,13 @@ export const CentralMembers = ({ companySlug, companyName }: { companySlug: stri
                 <span className="text-xs text-[var(--gray-text)]">{ROLE_LABELS[m.role] ?? m.role}</span>
               )}
               <span className="text-xs text-[var(--gray-text)]">{m.is_active ? "Active" : "Inactive"}</span>
+              {!m.is_active && m.user_is_active && (
+                <button type="button" disabled={busy} aria-label={`Invite ${m.email} again`}
+                  onClick={() => void sendInvite(m.email, INVITE_ROLES.includes(m.role as InviteRole) ? (m.role as InviteRole) : "sales_member")}
+                  className={secondaryButton}>
+                  Invite again
+                </button>
+              )}
               {m.is_active && m.role !== "admin" && (
                 <button type="button" disabled={busy} aria-label={`Remove ${m.email} from ${companyName}`}
                   title={`Removes access to ${companyName} only. The person keeps their account and any other company.`}

@@ -37,7 +37,7 @@ export const ConfidenceBadge = ({ level, showUnassigned = false }: ConfidenceBad
     <span
       data-testid="confidence-badge"
       data-level={level}
-      title={`Probability level: ${level}`}
+      title={`Confidence level: ${level}`}
       className={clsx(
         "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.1em]",
         TONE[level]

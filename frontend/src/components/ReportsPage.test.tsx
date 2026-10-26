@@ -87,7 +87,7 @@ describe("ReportsPage annual Deal Value", () => {
   });
 });
 
-describe("ReportsPage probability level", () => {
+describe("ReportsPage confidence level", () => {
   it("shows the four groups with counts and Deal Value totals", async () => {
     const data = report();
     data.by_confidence_level = [
@@ -98,7 +98,7 @@ describe("ReportsPage probability level", () => {
     ];
     getBoardReport.mockResolvedValue(data);
     render(<ReportsPage boardId={1} />);
-    const heading = await screen.findByText("By probability level");
+    const heading = await screen.findByText("By confidence level");
     const table = heading.closest("section") ?? heading.parentElement!;
     for (const key of ["LOW", "MEDIUM", "HIGH", "Not assigned"]) expect(within(table).getByText(key)).toBeInTheDocument();
     expect(within(table).getByText("LOW").closest("tr")).toHaveTextContent("$30");
@@ -111,7 +111,7 @@ describe("ReportsPage probability level", () => {
     getBoardReport.mockResolvedValue(data);
     render(<ReportsPage boardId={1} />);
     await screen.findByTestId("report-kpis");
-    expect(screen.queryByText("By probability level")).toBeNull();
+    expect(screen.queryByText("By confidence level")).toBeNull();
   });
 
   it.each([["LOW", "LOW"], ["MEDIUM", "MEDIUM"], ["HIGH", "HIGH"], ["UNASSIGNED", "UNASSIGNED"]])(
@@ -120,7 +120,7 @@ describe("ReportsPage probability level", () => {
       render(<ReportsPage boardId={1} />);
       await screen.findByTestId("report-kpis");
       await userEvent.selectOptions(screen.getByLabelText("Filter by salesperson"), "1");
-      await userEvent.selectOptions(screen.getByLabelText("Filter by probability level"), option);
+      await userEvent.selectOptions(screen.getByLabelText("Filter by confidence level"), option);
       await waitFor(() =>
         expect(getBoardReport).toHaveBeenLastCalledWith(1, { salespersonId: 1, productLine: undefined, confidenceLevel: token }, undefined)
       );
@@ -130,7 +130,7 @@ describe("ReportsPage probability level", () => {
     getBoardReport.mockResolvedValue(report());
     render(<ReportsPage boardId={1} />);
     await screen.findByTestId("report-kpis");
-    const select = screen.getByLabelText("Filter by probability level") as HTMLSelectElement;
+    const select = screen.getByLabelText("Filter by confidence level") as HTMLSelectElement;
     expect(Array.from(select.options).map((o) => [o.value, o.text])).toEqual([
       ["", "All"], ["LOW", "LOW"], ["MEDIUM", "MEDIUM"], ["HIGH", "HIGH"], ["UNASSIGNED", "Not assigned"],
     ]);

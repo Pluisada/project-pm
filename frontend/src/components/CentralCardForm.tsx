@@ -347,7 +347,7 @@ export const CentralCardForm = ({ companySlug, boardId, target, canAssign = fals
               <label className={labelClass}>Next Action Date
                 <input type="date" value={values.nextStepDue} onChange={set("nextStepDue")} disabled={saving} className={inputClass} />
               </label>
-              <label className={labelClass}>Probability level
+              <label className={labelClass}>Confidence level
                 <select value={values.confidenceLevel} onChange={set("confidenceLevel")} disabled={saving} className={inputClass}>
                   <option value="">Not assigned</option>
                   {CONFIDENCE_LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}

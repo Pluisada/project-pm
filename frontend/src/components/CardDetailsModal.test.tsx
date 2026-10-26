@@ -101,9 +101,9 @@ describe("CardDetailsModal", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it.each([["LOW"], ["MEDIUM"], ["HIGH"]] as const)("shows the %s probability level with its text label", (level) => {
+  it.each([["LOW"], ["MEDIUM"], ["HIGH"]] as const)("shows the %s confidence level with its text label", (level) => {
     const { dialog } = open(card({ confidence_level: level }));
-    expect(within(dialog).getByText("Probability level")).toBeInTheDocument();
+    expect(within(dialog).getByText("Confidence level")).toBeInTheDocument();
     const badge = within(dialog).getByTestId("confidence-badge");
     expect(badge).toHaveTextContent(level);
     expect(badge).toHaveAttribute("data-level", level);

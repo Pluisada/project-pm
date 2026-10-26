@@ -133,12 +133,12 @@ export const ReportsPage = ({ boardId, companySlug }: ReportsPageProps) => {
           </select>
         </label>
         <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.15em] text-[var(--gray-text)]">
-          Probability level
+          Confidence level
           <select
             value={confidence}
             onChange={(e) => setConfidence(e.target.value as ConfidenceFilter | "")}
             className={selectClass}
-            aria-label="Filter by probability level"
+            aria-label="Filter by confidence level"
           >
             <option value="">All</option>
             {CONFIDENCE_LEVELS.map((level) => (
@@ -196,8 +196,8 @@ export const ReportsPage = ({ boardId, companySlug }: ReportsPageProps) => {
             </Section>
           </div>
           {report.by_confidence_level && (
-            <Section title="By probability level">
-              <GroupTable label="Probability level" groups={report.by_confidence_level} years={report.deal_years} />
+            <Section title="By confidence level">
+              <GroupTable label="Confidence level" groups={report.by_confidence_level} years={report.deal_years} />
             </Section>
           )}
         </>

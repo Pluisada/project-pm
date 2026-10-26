@@ -155,8 +155,8 @@ describe("LeadEditModal Next Action Date and Action", () => {
   });
 });
 
-describe("LeadEditModal probability level", () => {
-  const select = () => screen.getByLabelText("Probability level") as HTMLSelectElement;
+describe("LeadEditModal confidence level", () => {
+  const select = () => screen.getByLabelText("Confidence level") as HTMLSelectElement;
   const save = () => userEvent.click(screen.getByRole("button", { name: "Save lead" }));
 
   it("offers Not assigned, LOW, MEDIUM and HIGH and shows the saved value", () => {
