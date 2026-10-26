@@ -12,6 +12,8 @@ Mocks, simulated services and disposable databases with synthetic data are appro
 
 Report exactly what ran and its result. Level A says nothing about the running application or about acceptance.
 
+Production data: the production databases were created fresh with the repository's creation scripts (`docs/PRODUCTION.md`). No disposable test database, manual-validation database, backup or `.env` of any local environment is ever copied into production, and testing never needs production data.
+
 ## Level B - Running-application verification
 
 The developer does this; the user is not asked to restart services or do technical setup.
