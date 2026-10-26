@@ -48,7 +48,7 @@ def test_company_admin_assigns_reassigns_edits_any_card_with_audit_and_no_member
     assert rig.sql("SELECT COUNT(*) FROM card_edit_history") == [(0,)]  # admin edits never set the member badge
 
 
-def test_assignment_validation_is_unchanged_for_the_company_admin(rig):
+def test_assignment_validation_refuses_ineligible_people_for_the_company_admin(rig):
     aid, token = company_admin(rig)
     visitor, _ = member(rig, "v@example.com", role="visitor")
     outsider, _ = member(rig, "o@example.com", slug="valor-log")
@@ -58,7 +58,7 @@ def test_assignment_validation_is_unchanged_for_the_company_admin(rig):
     no_row, _ = member(rig, "n@example.com")  # eligible centrally, no local row
     if no_row == 7:  # id 7 is the seeded local user "ana"; use a user without any local row
         no_row, _ = member(rig, "n2@example.com")
-    for uid in (visitor, outsider, lapsed, other_admin, 9999):  # the Admin's own id is accepted: test_company_admin_self_assignment.py
+    for uid in (visitor, outsider, lapsed, 9999):  # Admins (the caller and others) are eligible: test_company_admin_assignable.py
         local_row(rig, uid) if uid != 9999 else None
         r = call(rig, "put", "/cards/1", token, json={"salesperson_id": uid})
         assert r.status_code == 422, (uid, r.text)
@@ -71,9 +71,8 @@ def test_assignment_validation_is_unchanged_for_the_company_admin(rig):
     assert r.json()["salesperson_id"] == no_row
     assert rig.sql("SELECT COUNT(*) FROM users WHERE id = ?", (no_row,)) == [(1,)]
     assert rig.sql("SELECT salesperson_id FROM cards WHERE id = 1") == [(no_row,)]
-    # the central eligibility rule is unchanged (company Admins are not salespeople); only the caller's own id is added
-    # by the company routes (assignable_ids_for)
-    assert aid not in svc.assignable_user_ids(rig.e.session, "lity")
+    # a company Admin is an eligible salesperson centrally (decided 2026-10-26)
+    assert aid in svc.assignable_user_ids(rig.e.session, "lity")
 
 
 def test_company_admin_moves_backward_and_any_card(rig):

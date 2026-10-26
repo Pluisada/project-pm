@@ -54,7 +54,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 import excel_import_ledger as ledger
-from card_rules import apply_card_updates, audit_new_card_owner, new_card_fields
+from card_rules import apply_card_updates, audit_imported_card, new_card_fields
 from commercial_excel_reader import CommercialReadResult, ExcelIssue
 from lead_options import DEAL_CURRENCY
 from models import Card, CardStageEvent, Column, CompanyUser
@@ -471,7 +471,7 @@ def apply_plan(
             touched.add(row.column_id)
             db.add(card)
             db.flush()
-            audit_new_card_owner(db, board_id, card, context)
+            audit_imported_card(db, board_id, card, context)
             created.append(card.id)
             if row.unmatched_id and row.card_id is not None:
                 created_from[str(row.card_id)] = card.id

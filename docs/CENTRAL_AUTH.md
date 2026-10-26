@@ -91,9 +91,11 @@ Source of truth: the predicates in `backend/identity_service.py` and `card_rules
 | Role | Cards | Everything else |
 |---|---|---|
 | `super_admin` (global administrator) | Create for any eligible salesperson, edit any, assign, move forward and backward, delete, export, import | Boards and columns, products, members and invitations |
-| `admin` (company Admin) | Create for an eligible salesperson or for themself, edit any, assign (to an eligible salesperson or to themself; other Admins are refused), move forward and backward, export | Read-only member list. No delete, imports, boards, products or member changes |
+| `admin` (company Admin) | Create for an eligible salesperson (which includes themself and the company's other Admins), edit any, assign to any eligible salesperson, move forward and backward, export | Read-only member list. No delete, imports, boards, products or member changes |
 | `sales_member` | Create (assigned to themself, a client-supplied salesperson is ignored); edit and move only cards assigned to them, never unassigned ones; move forward or within a column only | None |
 | `visitor` | Read only, even a card assigned to them | None |
+
+**Who can own a card (eligible salespeople), decided 2026-10-26.** An active user with an active `sales_member` or `admin` membership in the company, or the active global administrator; a Visitor, a deactivated member (Admin included) and a person of another company are never eligible. The same list is used by card creation and edit, the lead options, the Cards workbook template ("Valid values") and import, the AI chat and Undo, so an Admin can be the creator of a lead (credited in the Lead Generation Pareto), be assigned a card and be imported by e-mail. Earlier the rule excluded Admins; a narrower interim rule (only the Admin themself) was in production from 2026-10-26 18:05 UTC to this change.
 
 The company Admin role exists in the schema (version 2) and in the permission predicates. An invitation may carry it (Correction 1, 2026-10-23): `create_invitation` accepts `admin` only from a current Super Admin (`can_grant_admin(inviter role)` is true for the Super Admin only), acceptance re-checks the inviter's authority at that moment, and the role is stored in the membership. The Super Admin can also set it on a joined member (`change_membership_role`, the Users list). `super_admin` is never invitable: it is the `is_global_admin` flag, created only with `identity_admin_cli.py`. An Admin cannot invite, promote or manage members.
 

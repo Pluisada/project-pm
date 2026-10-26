@@ -57,16 +57,20 @@ def can_edit_card(user: User, card: Card, *, admin: bool | None = None) -> bool:
     return card.salesperson_id is not None and card.salesperson_id == user.id
 
 
-def record_audit(db, board_id: int, card_id: int | None, actor: User, action: str, details: dict) -> None:
-    """Add an audit row (assignment change or deletion) to the open transaction."""
+def _add_audit(db, board_id: int, card_id: int | None, actor_id: int | None, action: str, details: dict) -> None:
     db.add(AuditEvent(
         board_id=board_id,
         card_id=card_id,
-        actor_user_id=actor.id,
+        actor_user_id=actor_id,
         action=action,
         details=json.dumps(details),
         created_at=datetime.now(timezone.utc).replace(tzinfo=None),
     ))
+
+
+def record_audit(db, board_id: int, card_id: int | None, actor: User, action: str, details: dict) -> None:
+    """Add an audit row (assignment change or deletion) to the open transaction."""
+    _add_audit(db, board_id, card_id, actor.id, action, details)
 
 
 def _assignment_details(db, card: Card, old_id, new_id) -> dict:
@@ -99,6 +103,20 @@ def audit_new_card_owner(db, board_id: int, card: Card, user: User) -> None:
     })
     if card.salesperson_id is not None:
         record_audit(db, board_id, card.id, user, "assign", _assignment_details(db, card, None, card.salesperson_id))
+
+
+def audit_imported_card(db, board_id: int, card: Card, importer: User) -> None:
+    """Audit a card created by a workbook import. The `create` event is credited to the row's salesperson, the person
+    who actually generated the lead, which is what the Lead Generation Pareto reads; a row without a salesperson has no
+    recorded creator and stays out of the ranking. The importer is kept in the details and remains the actor of the
+    `assign` event, because the importer performed the assignment."""
+    _add_audit(db, board_id, card.id, card.salesperson_id, "create", {
+        "title": card.title,
+        "column": card.column.title if card.column else None,
+        "imported_by_id": importer.id,
+    })
+    if card.salesperson_id is not None:
+        record_audit(db, board_id, card.id, importer, "assign", _assignment_details(db, card, None, card.salesperson_id))
 
 
 def audit_deletion(db, board_id: int, card: Card, user: User) -> None:

@@ -62,17 +62,21 @@ def test_ai_super_admin_can_delete_with_the_same_audit(rig, monkeypatch):
     assert rig.sql("SELECT action FROM audit_events") == [("delete",)]
 
 
-def test_ai_assignment_validation_is_unchanged_for_the_admin(rig, monkeypatch):
+def test_ai_assignment_refuses_visitors_and_outsiders_but_accepts_a_company_admin(rig, monkeypatch):
     _, token = company_admin(rig)
     visitor, _ = member(rig, "v@example.com", role="visitor")
     outsider, _ = member(rig, "o@example.com", slug="valor-log")
     other_admin, _ = company_admin(rig, "a2@example.com")
     for uid in (visitor, outsider, other_admin):
         local_row(rig, uid)
-    fake_ai(monkeypatch, [{"type": "update", "card_id": 1, "salesperson_id": u} for u in (visitor, outsider, other_admin)])
+    fake_ai(monkeypatch, [{"type": "update", "card_id": 1, "salesperson_id": u} for u in (visitor, outsider)])
     applied = ai(rig, token).json()["actions_applied"]
-    assert applied["successful"] == [] and len(applied["failed"]) == 3
+    assert applied["successful"] == [] and len(applied["failed"]) == 2
     assert owner(rig, 1) is None
+    fake_ai(monkeypatch, [{"type": "update", "card_id": 1, "salesperson_id": other_admin}])  # a company Admin is eligible (2026-10-26)
+    applied = ai(rig, token).json()["actions_applied"]
+    assert len(applied["successful"]) == 1 and applied["failed"] == []
+    assert owner(rig, 1) == other_admin
 
 
 def test_ai_create_by_admin_needs_an_eligible_salesperson_and_structure_is_refused(rig, monkeypatch):

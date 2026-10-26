@@ -434,13 +434,12 @@ def test_admin_level_assignment_to_an_ineligible_person_is_refused_and_writes_no
     outsider, _ = member(rig, "o@example.com", slug="valor-log")
     lapsed, _ = member(rig, "l@example.com")
     svc.deactivate_membership(rig.e.session, rig.e.admin, "lity", lapsed)
-    other_admin, _ = company_admin(rig, "a2@example.com")
     before = rig.sql("SELECT COUNT(*) FROM cards")
-    for bad in (visitor, outsider, lapsed, other_admin, 9999, 0, -1):
+    for bad in (visitor, outsider, lapsed, 9999, 0, -1):
         r = rig.call("post", "/cards", token, json={"column_id": 1, "title": "t", "salesperson_id": bad})
         assert r.status_code == 422, (bad, r.text)
     assert rig.sql("SELECT COUNT(*) FROM cards") == before
-    assert not {visitor, outsider, lapsed, other_admin, 9999} & _local_ids(rig)  # no stub row for an ineligible person
+    assert not {visitor, outsider, lapsed, 9999} & _local_ids(rig)  # no stub row for an ineligible person
     assert rig.sql("SELECT COUNT(*) FROM audit_events") == [(0,)]
 
 

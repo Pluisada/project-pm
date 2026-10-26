@@ -38,7 +38,6 @@ from card_rules import (
     new_card_fields,
 )
 from central_deps import (
-    ROLE_ADMIN,
     reviewer_provider,
     CompanyContext,
     IdentityServiceError,
@@ -139,16 +138,6 @@ DEFAULT_BOARD_TITLE = "Sales Pipeline"
 DEFAULT_BOARD_DESCRIPTION = "Company sales pipeline"
 
 
-
-def assignable_ids_for(identity: Session, context: CompanyContext) -> list[int]:
-    """Who this caller may assign cards to: the company's centrally eligible people (assignable_user_ids), plus the
-    caller themself when they are a company Admin. A company Admin is not a salesperson in the central rules (the
-    other Admins stay refused); they may still take a card for themself. The caller's own central access to the
-    company is re-checked by sync_company_user before the local reference is written."""
-    ids = assignable_user_ids(identity, context.company_slug)
-    if context.role == ROLE_ADMIN and context.user_id not in ids:
-        ids = sorted([*ids, context.user_id])
-    return ids
 
 def version_conflict(card_id: int, expected_version: int, current_version: int) -> HTTPException:
     """The stable 409 for a write made from an out-of-date card (raised by the update, move and delete routes)."""
@@ -383,7 +372,7 @@ def build_company_router(
         if context.can_manage_cards:
             if card.salesperson_id is None:
                 raise HTTPException(status_code=422, detail="A salesperson is required")
-            if card.salesperson_id not in assignable_ids_for(identity, context):
+            if card.salesperson_id not in assignable_user_ids(identity, context.company_slug):
                 raise HTTPException(status_code=422, detail="Salesperson not found")
             # An eligible person who never wrote in this company has no local reference yet: central eligibility only.
             sync_local_references(lambda: sync_company_user(identity, db, card.salesperson_id, context.company_slug))
@@ -433,7 +422,7 @@ def build_company_router(
         updates = card_update.model_dump(exclude_unset=True)
         expected_version = updates.pop("expected_version", None)
         new_owner = updates.get("salesperson_id")
-        if context.can_manage_cards and new_owner is not None and new_owner in assignable_ids_for(identity, context):
+        if context.can_manage_cards and new_owner is not None and new_owner in assignable_user_ids(identity, context.company_slug):
             # As on create: an eligible person who never wrote in this company has no local reference yet, and card_rules
             # needs it. Done before the write lock (it commits); an ineligible id is refused below.
             sync_local_references(lambda: sync_company_user(identity, db, new_owner, context.company_slug))
@@ -443,7 +432,7 @@ def build_company_router(
             check_card_version(db, card, expected_version)  # the card-managing roles have no permission check to wait for
         if context.can_manage_cards and new_owner is not None and new_owner != card.salesperson_id:
             # Only a person the central database lets this company assign to (the local row is checked by card_rules).
-            if new_owner not in assignable_ids_for(identity, context):
+            if new_owner not in assignable_user_ids(identity, context.company_slug):
                 raise HTTPException(status_code=422, detail="Salesperson not found")
         undo_step = undo_update(card, updates)
         undo_description = f'Undo edit to "{card.title}"'
@@ -1143,7 +1132,7 @@ def build_company_router(
         identity_users.id, which is CompanyUser.id. The label is the local CompanyUser.username. An
         eligible user with no local row is omitted: assigning needs that row, and this GET never creates it.
         """
-        ids = assignable_ids_for(identity, context)
+        ids = assignable_user_ids(identity, context.company_slug)
         labels = dict(db.query(CompanyUser.id, CompanyUser.username).filter(CompanyUser.id.in_(ids)).all()) if ids else {}
         if context.can_manage_cards and ids:
             # Whoever may create a card for someone else sees every eligible person, including one who has no

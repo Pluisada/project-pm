@@ -285,6 +285,58 @@ def test_invited_salesperson_without_a_local_row_can_be_assigned_by_import(rig):
     assert rig.sql("SELECT COUNT(*) FROM users WHERE id = ?", (uid,)) == [(1,)]
 
 
+def test_a_company_admin_can_be_assigned_by_import_but_a_lapsed_admin_cannot(rig):
+    """2026-10-26: a company Admin is an eligible salesperson. An accepted Admin who never wrote in the company is
+    assigned (case-insensitive e-mail, reference created once); a deactivated Admin and a Visitor are still refused."""
+    token = admin(rig)
+    boss, _ = company_admin(rig, "arthur.braga@example.com")
+    lapsed, _ = company_admin(rig, "lapsed.admin@example.com")
+    svc.deactivate_membership(rig.e.session, rig.e.admin, "lity", lapsed)
+    assert rig.sql("SELECT COUNT(*) FROM users WHERE id = ?", (boss,)) == [(0,)]
+    body = preview(rig, token, book([row(title="Admin lead", salesperson_email="Arthur.Braga@example.com"),
+                                     row(title="Lapsed", salesperson_email="lapsed.admin@example.com")])).json()
+    assert [[e["code"] for e in r["errors"]] for r in body["rows"]] == [[], ["salesperson_unavailable"]]
+    body, response = apply(rig, token, book([row(title="Admin lead", salesperson_email="ARTHUR.BRAGA@example.com")]))
+    assert body["confirmable"] is True and response.status_code == 201
+    assert [c[4] for c in cards(rig) if c[1] == "Admin lead"] == [boss]
+    assert rig.sql("SELECT COUNT(*) FROM users WHERE id = ?", (boss,)) == [(1,)]
+
+
+def _pareto(rig, slug="lity"):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from reports import build_lead_generation
+    engine = create_engine(f"sqlite:///{company_database_path(slug, rig.e.env)}")
+    with sessionmaker(bind=engine)() as db:
+        return build_lead_generation(db, 1)
+
+
+def test_imported_leads_are_credited_to_the_workbook_salesperson_not_to_the_importer(rig):
+    """The Lead Generation Pareto credits the creator of record. For an import that is the row's salesperson; a row
+    without one has no recorded creator and stays out of the ranking; a later reassignment never moves the credit."""
+    token = admin(rig)
+    ana = person(rig, "ana@example.com")
+    bia = person(rig, "bia@example.com")
+    boss, _ = company_admin(rig, "boss@example.com")
+    body, response = apply(rig, token, book([
+        row(title="A1", salesperson_email="ana@example.com"), row(title="A2", salesperson_email="ana@example.com"),
+        row(title="B1", salesperson_email="bia@example.com"), row(title="Boss", salesperson_email="boss@example.com"),
+        row(title="Nobody")]))
+    assert response.status_code == 201
+    result = _pareto(rig)
+    assert [(r["salesperson_id"], r["count"]) for r in result["rows"]] == [(ana, 2), (bia, 1), (boss, 1)]
+    assert result["total"] == 4 and result["unattributed_count"] == 1  # the importer (Super Admin) has no credit
+    card_id = [c[0] for c in cards(rig) if c[1] == "A1"][0]
+    # the importer stays visible in the audit trail: actor of the assignment, named in the creation details
+    events = rig.sql("SELECT action, actor_user_id, details FROM audit_events WHERE card_id = ? ORDER BY id", (card_id,))
+    assert [(e[0], e[1]) for e in events] == [("create", ana), ("assign", rig.e.admin)]
+    assert json.loads(events[0][2])["imported_by_id"] == rig.e.admin
+    # moving the card to another salesperson later does not move the credit
+    r = rig.call("put", f"/cards/{card_id}", token, json={"salesperson_id": bia})
+    assert r.status_code == 200, r.text
+    assert [(x["salesperson_id"], x["count"]) for x in _pareto(rig)["rows"]] == [(ana, 2), (bia, 1), (boss, 1)]
+
+
 def test_sync_creates_references_only_for_eligible_people_and_is_idempotent(rig):
     token = admin(rig)
     ana, _ = member(rig, "ana@example.com")
