@@ -768,7 +768,7 @@ Everything in 8.2 to 8.5 is a **template that has not been run anywhere**. The u
 | 8.4 restore test | **Template, untested** |
 | 8.5 production restore | **Template, untested** |
 | Off-host encryption and transfer | **Undefined until P3**; placeholders only, no tool is chosen here |
-| Retention pruning | **Listing only** until reviewed and exercised on aged synthetic sets in D8 |
+| Retention pruning | **Listing only** until reviewed and exercised on aged synthetic sets in D8. **Update 2026-10-27: installed, 7-day window (owner's choice), section 8.6** |
 
 ### 8.1 Policy and mandatory gates
 
@@ -777,7 +777,7 @@ Everything in 8.2 to 8.5 is a **template that has not been run anywhere**. The u
 | What | All four files, every run, from the live app using SQLite's online-backup API (`make_backup`: consistent snapshot; verifies `integrity_check`, `foreign_key_check` and logical equality with the source; never overwrites). Never copy live `.db` files with `cp` |
 | When | Daily at a quiet hour (UTC, to be chosen), plus before every upgrade, import or role-structure change, and once right after the databases are created (baseline, E8) |
 | Per-set manifest | Every set carries `MANIFEST.json` (8.2): UTC timestamp, release SHA and image ID, and for **exactly the four files** (`identity.db`, `salcomp.db`, `lity.db`, `valor-log.db`) its size, SHA-256, `integrity_check` result, foreign-key violations, `user_version` (schema version) and the **row count of every table** (counts only; no row data) |
-| Local retention | 14 daily sets in `$PM_DIR/backups` |
+| Local retention | 14 daily sets in `$PM_DIR/backups` (as planned; the owner chose 7 days on 2026-10-27, see 8.6) |
 | **Gate: off-host copy** | Every set is encrypted, transferred to the P3 destination, and re-hashed there; a set counts as successful only when the destination hash equals the local one. Not optional |
 | **Gate: retention** | Off-host: 14 daily + 8 weekly + 12 monthly (proposal; the owner confirms and P3 must be able to enforce it). The pruning rule is exercised on aged synthetic sets in D8 and its output reviewed before deletion is enabled |
 | **Gate: restore testing** | A full restore drill in D8 and in the first month of production; afterwards a non-destructive restore test **monthly** from the **off-host** copy; each checked against the manifest of the selected set |
@@ -999,6 +999,142 @@ pmc up -d; docker inspect -f '{{.State.Health.Status}}' "$PM_CTR"
 Then: sign in; compare what you see with the **manifest** of the restored set (the restore is complete when it matches the set, not the damaged live data); write down what was lost between the set's timestamp and the incident (everything since the last backup is gone, which is why the daily schedule and the pre-change backups exist); keep the quarantine until the owner approves deletion. If the restore check reports any mismatch, stop with the application still stopped and the quarantine intact.
 
 ---
+
+### 8.6 Automatic pruning of old local sets (installed and tested 2026-10-27)
+
+A separate script, run by cron after the backup, so the proven backup script is not changed (the backup script still prints "retention candidates (listing only)" and deletes nothing). Python 3 standard library only. Install as `/usr/local/sbin/sales-pipeline-backup-prune.py` (root, mode 700) and schedule `/etc/cron.d/sales-pipeline-backup-prune`:
+
+```
+50 6 * * * root PM_BACKUP_DIR=/docker/sales-pipeline/backups PRUNE_APPLY=1 /usr/bin/python3 /usr/local/sbin/sales-pipeline-backup-prune.py >> /var/log/sales-pipeline-backup.log 2>&1
+```
+
+Rules (owner's decision: 7 days): a set is deleted only if it verifies against its `SHA256SUMS` (exactly the four databases and `MANIFEST.json`, every hash matching), is older than 7 days by the UTC timestamp in its name, and at least 7 newer verified sets exist and are kept. Nothing is deleted when `LAST_SUCCESS` is missing, invalid, not a verified set or older than 26 hours (a stopped or failing backup can never lead to deleting the last good sets), nor when fewer than 7 verified sets exist. Failed sets (`<ts>.FAILED`), unverifiable sets, symbolic links and every other name are never touched. The default is a dry run (`PRUNE_APPLY=1` deletes); every deletion is logged. Remove the cron file to switch it off.
+
+**Trade-off recorded for the owner:** a 7-day window costs about 9 MB (30 days would cost about 40 MB). Because there is no off-host copy (R2), the window is also the only protection against a logical error (deleted cards, a wrong import) noticed late.
+
+Evidence: 12 scenarios on fake sets passed (dry run deletes nothing; apply keeps the 7 newest days; never below 7 verified sets; fewer than 7 verified deletes nothing; stale `LAST_SUCCESS`; missing or bad `LAST_SUCCESS`; corrupt, missing-sums and extra-file sets; corrupt recent sets do not count toward the 7; `.FAILED` sets and foreign names untouched; symbolic links never followed; environment guards; idempotent second run). The tests and the script are kept in the owner's `~/pm-archive-20261026/backup-prune/`, outside the repository. On the VPS the dry run answered `only 5 verified sets (minimum 7); nothing deleted`.
+
+```python
+#!/usr/bin/env python3
+"""Prune old, verified backup sets of the Sales Pipeline (run daily, after the backup).
+
+Policy (owner decision 2026-10-27): keep every set younger than 7 days; older sets are deleted, but never
+below the 7 newest VERIFIED sets, and never when the backups look unhealthy. Nothing else is ever touched.
+
+Deletes a set only if ALL of these hold:
+  - PM_BACKUP_DIR/LAST_SUCCESS names a set that exists, verifies, and is at most 26 hours old
+    (so a failing or stopped backup can never lead to deleting the last good sets);
+  - the directory name is exactly <YYYYMMDDTHHMMSSZ> (a failed set `<ts>.FAILED` and any other name are never touched);
+  - the set VERIFIES: the four databases and MANIFEST.json are exactly the files listed in SHA256SUMS and every
+    SHA-256 matches (an unverifiable set is kept and reported, never deleted, never counted);
+  - it is older than 7 days by the timestamp in its name (UTC);
+  - at least 7 newer verified sets exist (and are kept).
+Default is a dry run; set PRUNE_APPLY=1 to delete. PRUNE_NOW (epoch seconds) exists for tests.
+Environment: PM_BACKUP_DIR (required), PRUNE_APPLY, PRUNE_NOW. Exit code 0 unless the environment is wrong (2).
+"""
+import hashlib
+import os
+import re
+import shutil
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+SET_RE = re.compile(r"^\d{8}T\d{6}Z$")
+SUM_RE = re.compile(r"^([0-9a-f]{64}) [ *](.+)$")
+EXPECTED = {"identity.db", "salcomp.db", "lity.db", "valor-log.db", "MANIFEST.json"}
+RETENTION = timedelta(days=7)
+KEEP_MIN_VERIFIED = 7
+LAST_SUCCESS_MAX_AGE = timedelta(hours=26)
+
+
+def log(message: str) -> None:
+    print(f"{datetime.now(timezone.utc):%Y-%m-%dT%H:%M:%SZ} prune: {message}", flush=True)
+
+
+def stamp(name: str) -> datetime:
+    return datetime.strptime(name, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+
+
+def verified(directory: Path) -> bool:
+    """The set holds exactly the expected files and every hash in SHA256SUMS matches."""
+    try:
+        if directory.is_symlink() or not directory.is_dir():
+            return False
+        listed = {}
+        for line in (directory / "SHA256SUMS").read_text().splitlines():
+            match = SUM_RE.match(line)
+            if not match:
+                return False
+            listed[match.group(2)] = match.group(1)
+        if set(listed) != EXPECTED:
+            return False
+        for name, digest in listed.items():
+            path = directory / name
+            if path.is_symlink() or not path.is_file():
+                return False
+            if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+                return False
+        return True
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def main() -> int:
+    raw = os.environ.get("PM_BACKUP_DIR", "")
+    if not raw:
+        log("PM_BACKUP_DIR is not set; refusing to run")
+        return 2
+    root = Path(raw)
+    if not root.is_dir() or root.is_symlink():
+        log("PM_BACKUP_DIR is not a directory; refusing to run")
+        return 2
+    apply = os.environ.get("PRUNE_APPLY") == "1"
+    now = datetime.fromtimestamp(float(os.environ.get("PRUNE_NOW", time.time())), timezone.utc)
+    mode = "APPLY" if apply else "dry run"
+
+    try:
+        last = (root / "LAST_SUCCESS").read_text().strip()
+    except OSError:
+        log(f"[{mode}] no LAST_SUCCESS; nothing deleted")
+        return 0
+    if not SET_RE.match(last) or not (root / last).is_dir() or not verified(root / last):
+        log(f"[{mode}] LAST_SUCCESS does not name a verified set; nothing deleted")
+        return 0
+    if now - stamp(last) > LAST_SUCCESS_MAX_AGE:
+        log(f"[{mode}] the last successful backup ({last}) is older than 26 hours; nothing deleted")
+        return 0
+
+    names = sorted((p.name for p in root.iterdir() if SET_RE.match(p.name) and p.is_dir() and not p.is_symlink()), reverse=True)
+    good, unverifiable = [], []
+    for name in names:
+        (good if verified(root / name) else unverifiable).append(name)
+    for name in unverifiable:
+        log(f"[{mode}] kept (cannot be verified, never deleted automatically): {name}")
+    if len(good) < KEEP_MIN_VERIFIED:
+        log(f"[{mode}] only {len(good)} verified sets (minimum {KEEP_MIN_VERIFIED}); nothing deleted")
+        return 0
+
+    keep = set(good[:KEEP_MIN_VERIFIED]) | {name for name in good if now - stamp(name) <= RETENTION} | {last}
+    doomed = [name for name in reversed(good) if name not in keep]
+    for name in doomed:
+        target = root / name
+        if target.parent.resolve() != root.resolve() or target.is_symlink() or not SET_RE.match(target.name):
+            log(f"[{mode}] SKIPPED, unsafe path: {name}")
+            continue
+        if apply:
+            shutil.rmtree(target)
+            log(f"deleted {name}")
+        else:
+            log(f"[{mode}] would delete {name}")
+    log(f"[{mode}] verified sets: {len(good)}, kept: {len(good) - len(doomed)}, {'deleted' if apply else 'would delete'}: {len(doomed)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
 
 ## 9. Deployment and rehearsal record (mandatory)
 
