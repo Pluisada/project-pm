@@ -6,7 +6,7 @@ Every implementation batch passes three separate levels of validation. Passing a
 
 Mocks, simulated services and disposable databases with synthetic data are appropriate here, including for writes and destructive cases.
 
-- Backend: `cd backend && uv run pytest <targeted files>`; the full suite once at the end of a body of work.
+- Backend: `cd backend && uv sync --locked --extra dev` once (pytest, pytest-asyncio and httpx are in the `dev` extra; a plain `uv sync` does not install them), then `uv run pytest <targeted files>`; the full suite once at the end of a body of work.
 - Frontend: `npm run test:unit`, `npx tsc --noEmit`, `npm run lint`, `npm run build`.
 - End to end: `npm run test:e2e` (legacy) and `npm run test:e2e:central` (central mode). Both start their own backend and frontend on temporary databases and never touch real data.
 
