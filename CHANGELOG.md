@@ -2,7 +2,9 @@
 
 User-facing changes, newest first. For design decisions, test results and known gaps behind each entry, see the matching part in `docs/PLAN.md`.
 
-## Unreleased
+## 2026-10-26: in production (release `762c01f`)
+
+Everything below this heading down to the 2026-10-21 section is part of the release that has run at `https://pipeline.pluisada.com.br` since 2026-10-26 (`docs/PRODUCTION.md`, sections 3A and 3B). The qualifiers inside the older entries ("nothing deployed", "working tree", "development only") describe the development stage when they were written and are superseded by this note. The exceptions are the single-database (legacy) mode and any item marked withdrawn: they ship in the image but production runs central mode only.
 
 - **Company Admins are eligible salespeople; imported leads are credited to the workbook's salesperson (deployed to production on 2026-10-26 as `762c01f`, `docs/PRODUCTION.md` section 3B).** An active company Admin can now be assigned a card by the Super Admin or another Admin, appear in the lead options and be named in the Cards workbook (`salesperson_email`), like a Sales Member (a Visitor or a deactivated member still cannot). In the Lead Generation Pareto, a card created by a workbook import is credited to the row's salesperson instead of the person who ran the import; a row with no salesperson is counted as "no recorded creator" and stays out of the ranking. Cards already imported keep the credit they have. No schema change.
 - **Upgrade of production to `e1a79ae` (2026-10-26).** Branded HTML invitation and reset emails with the company logo, an invitation answer that says whether the email went out (plus "Invite again"), the Lead Generation Pareto on the KPIs screen, a company Admin may assign a card to themself (and to no other Admin; widened the same day by `762c01f`, see the entry above), clearer AI provider errors, the label "Confidence level", and the AI assistant enabled in production. No schema change. Evidence and limits: `docs/PRODUCTION.md` section 3A.
@@ -51,7 +53,7 @@ User-facing changes, newest first. For design decisions, test results and known 
   - Frontend unit 723 passed (50 files); `tsc` clean; lint 0 errors (1 existing warning); build ok.
   - Browser E2E: central 25 passed against disposable databases (there is no central-UI E2E against real data); legacy 97 passed, 2 skipped.
   - Manual, on the developer's Mac against the real central databases (reported by the developer, not automated): the UI changes and the Cards import restore of deleted cards on the real Valor Log board worked. The real databases were backed up and upgraded with the two additive init scripts on 2026-10-22 (record in `docs/DEPLOYMENT.md`). Nothing has been deployed to a server.
-- **Pending:** a whole-suite backend rerun on the commit to be deployed, server-side validation (VPS, TLS/proxy, real SMTP) with its own backups and diagnostics, and explicit authorization and a deployment review before any deployment.
+- **Pending (resolved 2026-10-26):** the whole-suite backend rerun, the server-side validation (VPS, TLS/proxy, SMTP), the backups and diagnostics and the deployment authorization were done for the first release and for the two upgrades of that day; see `docs/PRODUCTION.md`.
 
 ## 2026-10-21
 
